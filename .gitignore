@@ -6,3 +6,4 @@ package-lock.json
 go.sum
 uploads/
 *.exe
+test-data/
