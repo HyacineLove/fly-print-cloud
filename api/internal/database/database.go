@@ -253,6 +253,23 @@ func (db *DB) InitTables() error {
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_created_at ON print_jobs(created_at);",
 	}
 
+	// 创建文件表
+	filesTableSQL := `
+	CREATE TABLE IF NOT EXISTS files (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		original_name VARCHAR(255) NOT NULL,
+		file_name VARCHAR(255) NOT NULL,
+		file_path VARCHAR(512) NOT NULL,
+		mime_type VARCHAR(100) NOT NULL,
+		size BIGINT NOT NULL,
+		uploader_id VARCHAR(100) NOT NULL,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	if _, err := db.Exec(filesTableSQL); err != nil {
+		return fmt.Errorf("failed to create files table: %w", err)
+	}
+
 	for _, indexSQL := range indexesSQL {
 		if _, err := db.Exec(indexSQL); err != nil {
 			return fmt.Errorf("failed to create index: %w", err)

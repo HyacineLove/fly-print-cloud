@@ -43,6 +43,7 @@ func main() {
 	edgeNodeRepo := database.NewEdgeNodeRepository(db)
 	printerRepo := database.NewPrinterRepository(db)
 	printJobRepo := database.NewPrintJobRepository(db)
+	fileRepo := database.NewFileRepository(db)
 
 	// 初始化 WebSocket 管理器
 	wsManager := websocket.NewConnectionManager()
@@ -54,6 +55,7 @@ func main() {
 	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo)
 	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, wsManager)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo)
+	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage)
 
 	// 启动 WebSocket 管理器
 	go wsManager.Run()
@@ -67,7 +69,7 @@ func main() {
 	r.Use(middleware.CORSMiddleware())
 
 	// 设置路由
-	setupRoutes(r, userHandler, edgeNodeHandler, printerHandler, printJobHandler, wsHandler, oauth2Handler, printJobRepo)
+	setupRoutes(r, userHandler, edgeNodeHandler, printerHandler, printJobHandler, wsHandler, oauth2Handler, fileHandler, printJobRepo)
 
 	// 启动服务器
 	serverAddr := cfg.Server.GetServerAddr()
@@ -79,7 +81,7 @@ func main() {
 	}
 }
 
-func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandler *handlers.EdgeNodeHandler, printerHandler *handlers.PrinterHandler, printJobHandler *handlers.PrintJobHandler, wsHandler *websocket.WebSocketHandler, oauth2Handler *handlers.OAuth2Handler, printJobRepo *database.PrintJobRepository) {
+func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandler *handlers.EdgeNodeHandler, printerHandler *handlers.PrinterHandler, printJobHandler *handlers.PrintJobHandler, wsHandler *websocket.WebSocketHandler, oauth2Handler *handlers.OAuth2Handler, fileHandler *handlers.FileHandler, printJobRepo *database.PrintJobRepository) {
 	// 公开路由
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -195,6 +197,13 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 			
 			// WebSocket 连接
 			edgeGroup.GET("/ws", wsHandler.HandleConnection)
+		}
+
+		// 文件上传/下载 - 需要 file:upload 权限
+		fileGroup := apiV1Group.Group("/files")
+		{
+			fileGroup.POST("", middleware.OAuth2ResourceServer("file:upload"), fileHandler.Upload)
+			fileGroup.GET("/:id", middleware.OAuth2ResourceServer(), fileHandler.Download)
 		}
 	}
 }

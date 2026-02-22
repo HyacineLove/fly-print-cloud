@@ -16,6 +16,7 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	OAuth2   OAuth2Config   `mapstructure:"oauth2"`
 	Admin    AdminConfig    `mapstructure:"admin"`
+	Storage  StorageConfig  `mapstructure:"storage"`
 }
 
 // AppConfig 应用配置
@@ -66,6 +67,12 @@ type OAuth2Config struct {
 // AdminConfig 管理控制台配置
 type AdminConfig struct {
 	ConsoleURL string `mapstructure:"console_url"`
+}
+
+// StorageConfig 存储配置
+type StorageConfig struct {
+	UploadDir string `mapstructure:"upload_dir"`
+	MaxSize   int64  `mapstructure:"max_size"`
 }
 
 // Load 加载配置
@@ -145,6 +152,10 @@ func setDefaults() {
 	// Admin 创建配置
 	viper.SetDefault("create_default_admin", "false")
 	viper.SetDefault("default_admin_password", "")
+
+	// Storage 默认值
+	viper.SetDefault("storage.upload_dir", "./uploads")
+	viper.SetDefault("storage.max_size", 52428800) // 50MB
 }
 
 // GetDSN 获取数据库连接字符串
