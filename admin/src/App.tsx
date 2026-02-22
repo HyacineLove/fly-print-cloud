@@ -8,17 +8,19 @@ import {
   FileTextOutlined,
   UserOutlined,
   LogoutOutlined,
-  SettingOutlined
+  SettingOutlined,
+  FileAddOutlined
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 
 // 导入页面组件
-import Dashboard from './components/pages/Dashboard.tsx';
-import EdgeNodes from './components/pages/EdgeNodes.tsx';
-import Printers from './components/pages/Printers.tsx';
-import PrintJobs from './components/pages/PrintJobs.tsx';
-import Users from './components/pages/Users.tsx';
-import Settings from './components/pages/Settings.tsx';
+import Dashboard from './components/pages/Dashboard';
+import EdgeNodes from './components/pages/EdgeNodes';
+import Printers from './components/pages/Printers';
+import PrintJobs from './components/pages/PrintJobs';
+import Users from './components/pages/Users';
+import Settings from './components/pages/Settings';
+import PublicUpload from './components/pages/PublicUpload';
 
 const { Header, Sider, Content } = Layout;
 
@@ -30,8 +32,8 @@ interface User {
   status: string;
 }
 
-// 主应用组件
-const AppContent: React.FC = () => {
+// 管理后台主应用组件 (Admin App)
+const AdminApp: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   
@@ -103,6 +105,7 @@ const AppContent: React.FC = () => {
       icon: <FileTextOutlined />,
       label: 'Print Jobs',
     },
+    // Files 菜单项已移除，因为文件上传功能现在是独立的页面
     {
       key: '/users',
       icon: <UserOutlined />,
@@ -245,7 +248,13 @@ const AppContent: React.FC = () => {
 const App: React.FC = () => {
   return (
     <Router>
-      <AppContent />
+      <Routes>
+        {/* 独立的文件上传页面，不需要 Admin 登录 */}
+        <Route path="/upload" element={<PublicUpload />} />
+        
+        {/* 其他路由都进入管理后台应用 (需要登录) */}
+        <Route path="/*" element={<AdminApp />} />
+      </Routes>
     </Router>
   );
 };
