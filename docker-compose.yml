@@ -48,6 +48,8 @@ services:
     depends_on:
       - postgres
       - redis
+    volumes:
+      - file_uploads:/root/uploads
     networks:
       - fly-print-network
 
@@ -81,6 +83,7 @@ volumes:
   postgres_data:
   redis_data:
   admin_build:
+  file_uploads:
 
 networks:
   fly-print-network:
