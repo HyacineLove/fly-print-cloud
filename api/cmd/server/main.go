@@ -47,7 +47,7 @@ func main() {
 
 	// 初始化 WebSocket 管理器
 	wsManager := websocket.NewConnectionManager()
-	wsHandler := websocket.NewWebSocketHandler(wsManager, printerRepo, edgeNodeRepo, printJobRepo)
+	wsHandler := websocket.NewWebSocketHandler(wsManager, printerRepo, edgeNodeRepo, printJobRepo, fileRepo)
 
 	// 初始化处理器
 	userHandler := handlers.NewUserHandler(userRepo)
@@ -55,7 +55,7 @@ func main() {
 	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo)
 	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, wsManager)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo)
-	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage)
+	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, wsManager)
 
 	// 启动 WebSocket 管理器
 	go wsManager.Run()

@@ -24,15 +24,17 @@ type WebSocketHandler struct {
 	printerRepo  *database.PrinterRepository
 	edgeNodeRepo *database.EdgeNodeRepository
 	printJobRepo *database.PrintJobRepository
+	fileRepo     *database.FileRepository
 }
 
 // NewWebSocketHandler 创建 WebSocket 处理器
-func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository) *WebSocketHandler {
+func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository) *WebSocketHandler {
 	return &WebSocketHandler{
 		manager:      manager,
 		printerRepo:  printerRepo,
 		edgeNodeRepo: edgeNodeRepo,
 		printJobRepo: printJobRepo,
+		fileRepo:     fileRepo,
 	}
 }
 
@@ -89,7 +91,7 @@ func (h *WebSocketHandler) HandleConnection(c *gin.Context) {
 	}
 
 	// 创建连接对象
-	connection := NewConnection(nodeID, conn, h.manager, h.printerRepo, h.edgeNodeRepo, h.printJobRepo)
+	connection := NewConnection(nodeID, conn, h.manager, h.printerRepo, h.edgeNodeRepo, h.printJobRepo, h.fileRepo)
 
 	// 注册连接
 	h.manager.register <- connection

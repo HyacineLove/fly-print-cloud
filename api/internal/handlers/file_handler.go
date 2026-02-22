@@ -10,21 +10,23 @@ import (
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type FileHandler struct {
-	repo   *database.FileRepository
-	config *config.StorageConfig
+	repo      *database.FileRepository
+	config    *config.StorageConfig
+	wsManager *websocket.ConnectionManager
 }
 
-func NewFileHandler(repo *database.FileRepository, cfg *config.StorageConfig) *FileHandler {
+func NewFileHandler(repo *database.FileRepository, cfg *config.StorageConfig, wsManager *websocket.ConnectionManager) *FileHandler {
 	// Ensure upload directory exists
 	if err := os.MkdirAll(cfg.UploadDir, 0755); err != nil {
 		fmt.Printf("Failed to create upload directory: %v\n", err)
 	}
-	return &FileHandler{repo: repo, config: cfg}
+	return &FileHandler{repo: repo, config: cfg, wsManager: wsManager}
 }
 
 // Upload 上传文件
@@ -96,6 +98,16 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	
 	// Generate URL (relative path for API)
 	file.URL = fmt.Sprintf("/api/v1/files/%s", file.ID)
+
+	// Check if node_id is provided for preview
+	nodeID := c.Query("node_id")
+	if nodeID != "" {
+		// Dispatch preview command
+		if err := h.wsManager.DispatchPreviewFile(nodeID, file.ID, file.URL, file.OriginalName, file.Size, file.MimeType); err != nil {
+			// Log error but continue
+			fmt.Printf("Failed to dispatch preview to node %s: %v\n", nodeID, err)
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"code": 200,
