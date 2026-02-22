@@ -1,8 +1,15 @@
 package websocket
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,8 +71,16 @@ func (m *ConnectionManager) unregisterConnection(conn *Connection) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if _, exists := m.connections[conn.NodeID]; exists {
-		delete(m.connections, conn.NodeID)
+	if currentConn, exists := m.connections[conn.NodeID]; exists {
+		// 只有当要注销的连接是当前映射中的连接时才删除
+		// 避免新连接注册后，旧连接注销导致新连接被误删
+		if currentConn == conn {
+			delete(m.connections, conn.NodeID)
+			log.Printf("Edge Node %s disconnected, total connections: %d", conn.NodeID, len(m.connections))
+		} else {
+			log.Printf("Ignored unregister request for replaced connection of node %s", conn.NodeID)
+		}
+		
 		// 安全关闭channel，避免重复关闭
 		select {
 		case <-conn.Send:
@@ -73,7 +88,6 @@ func (m *ConnectionManager) unregisterConnection(conn *Connection) {
 		default:
 			close(conn.Send)
 		}
-		log.Printf("Edge Node %s disconnected, total connections: %d", conn.NodeID, len(m.connections))
 	}
 }
 
@@ -140,8 +154,87 @@ func (m *ConnectionManager) GetConnectionCount() int {
 	return len(m.connections)
 }
 
+// GenerateTaskToken 生成任务 Token
+func (m *ConnectionManager) GenerateTaskToken(fileID string) string {
+	// 简单实现：使用 HMAC 签名
+	// TODO: 使用更安全的密钥管理
+	secret := "fly-print-task-secret"
+	data := fmt.Sprintf("%s|%d", fileID, time.Now().Unix())
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(data))
+	signature := hex.EncodeToString(h.Sum(nil))
+	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s|%s", data, signature)))
+}
 
-// DispatchPrintJob 分发打印任务到指定Edge Node
+// ValidateTaskToken 验证任务 Token
+func (m *ConnectionManager) ValidateTaskToken(token string, fileID string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		return false
+	}
+	
+	parts := strings.Split(string(decoded), "|")
+	if len(parts) != 3 {
+		return false
+	}
+	
+	tokenFileID := parts[0]
+	timestampStr := parts[1]
+	signature := parts[2]
+	
+	if tokenFileID != fileID {
+		return false
+	}
+	
+	// 验证过期时间 (例如 1 小时)
+	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
+	if err != nil {
+		return false
+	}
+	
+	if time.Now().Unix()-timestamp > 3600 {
+		return false
+	}
+	
+	// 验证签名
+	secret := "fly-print-task-secret"
+	data := fmt.Sprintf("%s|%s", tokenFileID, timestampStr)
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(data))
+	expectedSignature := hex.EncodeToString(h.Sum(nil))
+	
+	return signature == expectedSignature
+}
+
+// DispatchPreviewFile 发送预览文件命令
+func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string) error {
+	taskToken := m.GenerateTaskToken(fileID)
+
+	payload := PreviewFilePayload{
+		FileID:    fileID,
+		FileURL:   fileURL,
+		FileName:  fileName,
+		FileSize:  fileSize,
+		FileType:  fileType,
+		TaskToken: taskToken,
+	}
+
+	msg := &Message{
+		Type:      CmdTypePreviewFile,
+		NodeID:    nodeID,
+		Timestamp: time.Now(),
+		Data:      payload,
+	}
+
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	return m.SendToNode(nodeID, msgBytes)
+}
+
+// DispatchPrintJob 发送打印任务指令
 func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob, printerName string) error {
 	// 构造打印任务数据
 	printJobData := PrintJobData{
