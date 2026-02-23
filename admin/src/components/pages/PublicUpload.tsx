@@ -19,15 +19,20 @@ interface UploadedFile {
 const PublicUpload: React.FC = () => {
   const [searchParams] = useSearchParams();
   const [token, setToken] = useState<string | null>(null);
+  const [nodeId, setNodeId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const tokenParam = searchParams.get('token');
+    const nodeIdParam = searchParams.get('node_id');
+    
     if (tokenParam) {
       setToken(tokenParam);
-      // Optional: Verify token or just use it
+      if (nodeIdParam) {
+        setNodeId(nodeIdParam);
+      }
     } else {
       setError('Missing access token. Please ensure you have the correct link.');
     }
@@ -39,7 +44,10 @@ const PublicUpload: React.FC = () => {
     showUploadList: false,
     customRequest: async (options) => {
       const { onSuccess, onError, file } = options;
-      if (!token) {
+      const currentToken = searchParams.get('token');
+      const currentNodeId = searchParams.get('node_id');
+
+      if (!currentToken) {
         message.error('Authentication token missing');
         return;
       }
@@ -47,7 +55,9 @@ const PublicUpload: React.FC = () => {
       setUploading(true);
       try {
         // Use the token for upload
-        const response = await apiService.uploadFile(file as File, token);
+        console.log('Uploading with node_id:', currentNodeId);
+        // @ts-ignore
+        const response = await apiService.uploadFile(file as File, currentToken, currentNodeId || undefined);
         
         if (response.code === 200) {
           message.success(`${(file as File).name} uploaded successfully.`);
@@ -69,7 +79,6 @@ const PublicUpload: React.FC = () => {
       }
     },
     onDrop(e) {
-      console.log('Dropped files', e.dataTransfer.files);
     },
   };
 
@@ -111,6 +120,19 @@ const PublicUpload: React.FC = () => {
           <Paragraph type="secondary">
             Upload your documents for printing. Supported formats: PDF, DOCX, JPG, PNG.
           </Paragraph>
+          {nodeId && (
+            <Alert 
+              message={`Connected to Edge Node: ${nodeId}`} 
+              type="info" 
+              showIcon 
+              style={{ marginBottom: 16 }} 
+            />
+          )}
+          {token && (
+             <Text type="secondary" style={{ fontSize: '12px', display: 'block', marginBottom: 16 }}>
+               Session Active
+             </Text>
+          )}
         </Card>
 
         <Card title="Upload Files">

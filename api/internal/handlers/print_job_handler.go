@@ -301,11 +301,13 @@ func (h *PrintJobHandler) UpdatePrintJob(c *gin.Context) {
 	if req.Status != nil {
 		job.Status = *req.Status
 		// 状态变更时设置时间
-		if *req.Status == "printing" && job.StartTime.IsZero() {
-			job.StartTime = time.Now()
+		if *req.Status == "printing" && job.StartTime == nil {
+			now := time.Now()
+			job.StartTime = &now
 		}
-		if (*req.Status == "completed" || *req.Status == "failed" || *req.Status == "cancelled") && job.EndTime.IsZero() {
-			job.EndTime = time.Now()
+		if (*req.Status == "completed" || *req.Status == "failed" || *req.Status == "cancelled") && job.EndTime == nil {
+			now := time.Now()
+			job.EndTime = &now
 		}
 	}
 	if req.FilePath != nil {
@@ -395,8 +397,9 @@ func (h *PrintJobHandler) CancelPrintJob(c *gin.Context) {
 	}
 
 	job.Status = "cancelled"
-	if job.EndTime.IsZero() {
-		job.EndTime = time.Now()
+	if job.EndTime == nil {
+		now := time.Now()
+		job.EndTime = &now
 	}
 
 	err = h.printJobRepo.UpdatePrintJob(job)
