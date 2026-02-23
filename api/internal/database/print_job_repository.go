@@ -223,12 +223,12 @@ func (r *PrintJobRepository) UpdateJobStatus(jobID, status string, progress int,
 			status = $2, 
 			error_message = $3,
 			updated_at = $4,
-			start_time = CASE WHEN $2 = 'printing' THEN $4 ELSE start_time END,
-			end_time = CASE WHEN $2 IN ('completed', 'failed', 'cancelled') THEN $4 ELSE end_time END
+			start_time = CASE WHEN $5 = 'printing' THEN $4 ELSE start_time END,
+			end_time = CASE WHEN $6 IN ('completed', 'failed', 'cancelled') THEN $4 ELSE end_time END
 		WHERE id = $1`
 
 	now := time.Now()
-	_, err := r.db.DB.Exec(query, jobID, status, errorMessage, now)
+	_, err := r.db.DB.Exec(query, jobID, status, errorMessage, now, status, status)
 	return err
 }
 
