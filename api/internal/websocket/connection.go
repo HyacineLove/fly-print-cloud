@@ -156,15 +156,30 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 	log.Printf("Processing print params from node %s", c.NodeID)
 
 	var payload SubmitPrintParamsPayload
-	dataBytes, err := json.Marshal(msg.Data)
-	if err != nil {
-		log.Printf("Failed to marshal submit print params data from node %s: %v", c.NodeID, err)
-		return
-	}
-
-	if err := json.Unmarshal(dataBytes, &payload); err != nil {
-		log.Printf("Failed to parse submit print params data from node %s: %v", c.NodeID, err)
-		return
+	
+	// Check if msg.Data is already a map or needs unmarshalling
+	if dataMap, ok := msg.Data.(map[string]interface{}); ok {
+		// Convert map to struct manually or re-marshal/unmarshal
+		dataBytes, err := json.Marshal(dataMap)
+		if err != nil {
+			log.Printf("Failed to marshal submit print params map from node %s: %v", c.NodeID, err)
+			return
+		}
+		if err := json.Unmarshal(dataBytes, &payload); err != nil {
+			log.Printf("Failed to unmarshal submit print params map from node %s: %v", c.NodeID, err)
+			return
+		}
+	} else {
+		// Try to marshal whatever it is (e.g. string) and unmarshal
+		dataBytes, err := json.Marshal(msg.Data)
+		if err != nil {
+			log.Printf("Failed to marshal submit print params data from node %s: %v", c.NodeID, err)
+			return
+		}
+		if err := json.Unmarshal(dataBytes, &payload); err != nil {
+			log.Printf("Failed to parse submit print params data from node %s: %v", c.NodeID, err)
+			return
+		}
 	}
 
 	// 验证必要字段
@@ -361,15 +376,19 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 		return
 	}
 	
-	log.Printf("Job update data: job_id=%s, status=%s, progress=%d", 
-		jobData.JobID, jobData.Status, jobData.Progress)
-	
-	// 更新数据库中的任务状态
-	if err := c.PrintJobRepo.UpdateJobStatus(jobData.JobID, jobData.Status, jobData.Progress); err != nil {
+	var errMsg string
+	if jobData.ErrorMessage != nil {
+		errMsg = *jobData.ErrorMessage
+	}
+
+	log.Printf("Job update data: job_id=%s, status=%s, progress=%d, error=%s", 
+		jobData.JobID, jobData.Status, jobData.Progress, errMsg)
+
+	if err := c.PrintJobRepo.UpdateJobStatus(jobData.JobID, jobData.Status, jobData.Progress, errMsg); err != nil {
 		log.Printf("Failed to update job %s status: %v", jobData.JobID, err)
 		return
 	}
-	
+
 	log.Printf("Successfully updated job %s status to %s (progress: %d%%)", 
 		jobData.JobID, jobData.Status, jobData.Progress)
 }

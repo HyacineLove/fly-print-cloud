@@ -217,15 +217,18 @@ func (r *PrintJobRepository) GetEdgeNodeIDByPrintJob(jobID string) (string, erro
 }
 
 // UpdateJobStatus 更新打印任务状态和进度
-func (r *PrintJobRepository) UpdateJobStatus(jobID, status string, progress int) error {
+func (r *PrintJobRepository) UpdateJobStatus(jobID, status string, progress int, errorMessage string) error {
 	query := `
 		UPDATE print_jobs SET 
 			status = $2, 
-			updated_at = $3
+			error_message = $3,
+			updated_at = $4,
+			start_time = CASE WHEN $2 = 'printing' THEN $4 ELSE start_time END,
+			end_time = CASE WHEN $2 IN ('completed', 'failed', 'cancelled') THEN $4 ELSE end_time END
 		WHERE id = $1`
 
 	now := time.Now()
-	_, err := r.db.DB.Exec(query, jobID, status, now)
+	_, err := r.db.DB.Exec(query, jobID, status, errorMessage, now)
 	return err
 }
 

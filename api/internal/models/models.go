@@ -107,9 +107,9 @@ type PrintJob struct {
 	DuplexMode   string    `json:"duplex_mode"`   // single/duplex
 	
 	// 执行信息
-	StartTime    time.Time `json:"start_time"`
-	EndTime      time.Time `json:"end_time"`
-	ErrorMessage string    `json:"error_message"`
+	StartTime    *time.Time `json:"start_time"`
+	EndTime      *time.Time `json:"end_time"`
+	ErrorMessage string     `json:"error_message"`
 	
 	// 重试信息
 	RetryCount   int       `json:"retry_count"`

@@ -207,32 +207,35 @@ func (m *ConnectionManager) ValidateTaskToken(token string, fileID string) bool 
 }
 
 // DispatchPreviewFile 发送预览文件命令
-func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string) error {
-	taskToken := m.GenerateTaskToken(fileID)
+	func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string) error {
+		log.Printf("Preparing to dispatch preview file to node %s: %s (%s)", nodeID, fileName, fileID)
+		taskToken := m.GenerateTaskToken(fileID)
 
-	payload := PreviewFilePayload{
-		FileID:    fileID,
-		FileURL:   fileURL,
-		FileName:  fileName,
-		FileSize:  fileSize,
-		FileType:  fileType,
-		TaskToken: taskToken,
+		payload := PreviewFilePayload{
+			FileID:    fileID,
+			FileURL:   fileURL,
+			FileName:  fileName,
+			FileSize:  fileSize,
+			FileType:  fileType,
+			TaskToken: taskToken,
+		}
+
+		msg := &Message{
+			Type:      CmdTypePreviewFile,
+			NodeID:    nodeID,
+			Timestamp: time.Now(),
+			Data:      payload,
+		}
+
+		msgBytes, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("Failed to marshal preview message: %v", err)
+			return err
+		}
+
+		log.Printf("Sending preview message to node %s, payload size: %d", nodeID, len(msgBytes))
+		return m.SendToNode(nodeID, msgBytes)
 	}
-
-	msg := &Message{
-		Type:      CmdTypePreviewFile,
-		NodeID:    nodeID,
-		Timestamp: time.Now(),
-		Data:      payload,
-	}
-
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-
-	return m.SendToNode(nodeID, msgBytes)
-}
 
 // DispatchPrintJob 发送打印任务指令
 func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob, printerName string) error {

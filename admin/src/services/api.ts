@@ -110,7 +110,7 @@ class ApiService {
   }
 
   // 文件上传
-  async uploadFile(file: File, token?: string): Promise<ApiResponse<any>> {
+  async uploadFile(file: File, token?: string, nodeId?: string): Promise<ApiResponse<any>> {
     const formData = new FormData();
     formData.append('file', file);
     
@@ -121,10 +121,14 @@ class ApiService {
     }
 
     try {
-      return await this.request('/files', {
+      let endpoint = '/files';
+      if (nodeId) {
+        endpoint += `?node_id=${nodeId}`;
+      }
+      return await this.request(endpoint, {
         method: 'POST',
         body: formData,
-        // request 方法会自动处理 FormData 的 Content-Type 问题 (前提是 request 方法也修复了)
+        // request 方法会自动处理 FormData 的 Content-Type 问题
       });
     } finally {
       // 恢复 token (虽然在这个场景下可能不需要，但为了安全)
