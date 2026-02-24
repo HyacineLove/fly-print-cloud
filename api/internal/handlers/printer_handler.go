@@ -3,6 +3,7 @@ package handlers
 import (
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/websocket"
 	"log"
 	"strconv"
 
@@ -13,12 +14,14 @@ import (
 type PrinterHandler struct {
 	printerRepo  *database.PrinterRepository
 	edgeNodeRepo *database.EdgeNodeRepository
+	wsManager    *websocket.ConnectionManager
 }
 
-func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository) *PrinterHandler {
+func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, wsManager *websocket.ConnectionManager) *PrinterHandler {
 	return &PrinterHandler{
 		printerRepo:  printerRepo,
 		edgeNodeRepo: edgeNodeRepo,
+		wsManager:    wsManager,
 	}
 }
 
@@ -202,6 +205,7 @@ func (h *PrinterHandler) UpdatePrinter(c *gin.Context) {
 		NotFoundResponse(c, "打印机不存在")
 		return
 	}
+	previousEnabled := printer.Enabled
 
 	// 尝试解析为管理界面的简单更新请求
 	var adminReq AdminUpdatePrinterRequest
@@ -244,6 +248,12 @@ func (h *PrinterHandler) UpdatePrinter(c *gin.Context) {
 		return
 	}
 
+	if adminReq.Enabled != nil && previousEnabled != printer.Enabled && h.wsManager != nil && printer.EdgeNodeID != "" {
+		if err := h.wsManager.DispatchPrinterEnabledChange(printer.EdgeNodeID, printer.ID, printer.Enabled); err != nil {
+			log.Printf("Failed to dispatch printer enabled change for %s: %v", printer.ID, err)
+		}
+	}
+
 	log.Printf("Printer %s updated successfully", printer.Name)
 	SuccessResponse(c, printer)
 }
@@ -257,7 +267,7 @@ func (h *PrinterHandler) DeletePrinter(c *gin.Context) {
 	}
 
 	// 检查打印机是否存在
-	_, err := h.printerRepo.GetPrinterByID(printerID)
+	printer, err := h.printerRepo.GetPrinterByID(printerID)
 	if err != nil {
 		NotFoundResponse(c, "打印机不存在")
 		return
@@ -268,6 +278,12 @@ func (h *PrinterHandler) DeletePrinter(c *gin.Context) {
 		log.Printf("Failed to delete printer %s: %v", printerID, err)
 		InternalErrorResponse(c, "删除打印机失败")
 		return
+	}
+
+	if h.wsManager != nil && printer.EdgeNodeID != "" {
+		if err := h.wsManager.DispatchPrinterDeleted(printer.EdgeNodeID, printerID); err != nil {
+			log.Printf("Failed to dispatch delete printer %s to node %s: %v", printerID, printer.EdgeNodeID, err)
+		}
 	}
 
 	log.Printf("Printer %s deleted successfully", printerID)
@@ -346,4 +362,23 @@ func (h *PrinterHandler) EdgeListPrinters(c *gin.Context) {
 	}
 
 	SuccessResponse(c, gin.H{"items": printers})
+}
+
+func (h *PrinterHandler) EdgeDeletePrinter(c *gin.Context) {
+	edgeNodeID := c.Param("node_id")
+	printerID := c.Param("printer_id")
+	if edgeNodeID == "" || printerID == "" {
+		BadRequestResponse(c, "参数不能为空")
+		return
+	}
+	_, err := h.edgeNodeRepo.GetEdgeNodeByID(edgeNodeID)
+	if err != nil {
+		BadRequestResponse(c, "Edge Node 不存在")
+		return
+	}
+	if err := h.printerRepo.DeletePrinterByEdgeNode(printerID, edgeNodeID); err != nil {
+		NotFoundResponse(c, "打印机不存在")
+		return
+	}
+	SuccessResponse(c, gin.H{"message": "打印机删除成功"})
 }

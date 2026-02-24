@@ -218,6 +218,13 @@ const EdgeNodes: React.FC = () => {
   // 表格列定义
   const columns = [
     {
+      title: '节点ID',
+      dataIndex: 'id',
+      key: 'id',
+      render: (text: string) => text || '-',
+      width: 220,
+    },
+    {
       title: '节点名称',
       dataIndex: 'name',
       key: 'name',

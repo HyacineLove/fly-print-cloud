@@ -339,10 +339,13 @@ func (c *Connection) handlePrinterStatus(msg *Message) {
 		messageNodeID = c.NodeID // 如果消息中没有node_id，使用连接时的ID
 	}
 	
-	// 通过名称和边缘节点ID查找打印机
-	printer, err := c.PrinterRepo.GetPrinterByNameAndEdgeNode(statusData.PrinterID, messageNodeID)
+	printer, err := c.PrinterRepo.GetPrinterByID(statusData.PrinterID)
 	if err != nil {
 		log.Printf("Printer %s not found for node %s (connection: %s): %v", statusData.PrinterID, messageNodeID, c.NodeID, err)
+		return
+	}
+	if printer.EdgeNodeID != messageNodeID {
+		log.Printf("Printer %s does not belong to node %s (connection: %s)", statusData.PrinterID, messageNodeID, c.NodeID)
 		return
 	}
 	

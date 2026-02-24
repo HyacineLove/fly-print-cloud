@@ -274,3 +274,65 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 	// 发送到指定节点
 	return m.SendToNode(nodeID, message)
 }
+
+func (m *ConnectionManager) DispatchPrinterDeleted(nodeID string, printerID string) error {
+	payload := PrinterDeletedData{
+		PrinterID: printerID,
+	}
+
+	command := Command{
+		Type:      CmdTypePrinterDeleted,
+		CommandID: printerID,
+		Timestamp: time.Now(),
+		Target:    nodeID,
+		Data:      payload,
+	}
+
+	message, err := json.Marshal(command)
+	if err != nil {
+		return err
+	}
+
+	return m.SendToNode(nodeID, message)
+}
+
+func (m *ConnectionManager) DispatchPrinterEnabledChange(nodeID string, printerID string, enabled bool) error {
+	payload := PrinterStatePayload{
+		PrinterID: printerID,
+		Enabled:   enabled,
+	}
+
+	msg := &Message{
+		Type:      CmdTypePrinterState,
+		NodeID:    nodeID,
+		Timestamp: time.Now(),
+		Data:      payload,
+	}
+
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	return m.SendToNode(nodeID, msgBytes)
+}
+
+func (m *ConnectionManager) DispatchNodeEnabledChange(nodeID string, enabled bool) error {
+	payload := NodeEnabledPayload{
+		Enabled: enabled,
+	}
+
+	msg := &Message{
+		Type:      CmdTypeNodeState,
+		NodeID:    nodeID,
+		Timestamp: time.Now(),
+		Data:      payload,
+	}
+
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	return m.SendToNode(nodeID, msgBytes)
+}
