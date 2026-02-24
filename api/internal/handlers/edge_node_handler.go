@@ -7,6 +7,7 @@ import (
 
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/websocket"
 	"github.com/gin-gonic/gin"
 )
 
@@ -14,13 +15,15 @@ import (
 type EdgeNodeHandler struct {
 	edgeNodeRepo *database.EdgeNodeRepository
 	printerRepo  *database.PrinterRepository
+	wsManager    *websocket.ConnectionManager
 }
 
 // NewEdgeNodeHandler 创建 Edge Node 管理处理器
-func NewEdgeNodeHandler(edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository) *EdgeNodeHandler {
+func NewEdgeNodeHandler(edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager) *EdgeNodeHandler {
 	return &EdgeNodeHandler{
 		edgeNodeRepo: edgeNodeRepo,
 		printerRepo:  printerRepo,
+		wsManager:    wsManager,
 	}
 }
 
@@ -265,6 +268,7 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 		NotFoundResponse(c, "Edge Node 不存在")
 		return
 	}
+	previousEnabled := node.Enabled
 
 	// 更新节点信息
 	node.Name = req.Name
@@ -297,6 +301,12 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 		log.Printf("Failed to update edge node %s: %v", nodeID, err)
 		InternalErrorResponse(c, "更新 Edge Node 失败")
 		return
+	}
+
+	if req.Enabled != nil && previousEnabled != node.Enabled {
+		if err := h.wsManager.DispatchNodeEnabledChange(node.ID, node.Enabled); err != nil {
+			log.Printf("Failed to dispatch node enabled change for %s: %v", node.ID, err)
+		}
 	}
 
 	nodeInfo := EdgeNodeInfo{

@@ -25,6 +25,9 @@ const (
 	CmdTypeConfigUpdate = "config_update"
 	CmdTypeReportStatus = "report_status"
 	CmdTypePreviewFile  = "preview_file"
+	CmdTypeNodeState    = "node_state"
+	CmdTypePrinterDeleted = "printer_deleted"
+	CmdTypePrinterState = "printer_state"
 )
 
 // PreviewFilePayload 文件预览请求载荷
@@ -52,6 +55,15 @@ type PrintJobPayload struct {
 	FileURL   string                 `json:"file_url"`
 	PrinterID string                 `json:"printer_id"`
 	Options   map[string]interface{} `json:"options"`
+}
+
+type NodeEnabledPayload struct {
+	Enabled bool `json:"enabled"`
+}
+
+type PrinterStatePayload struct {
+	PrinterID string `json:"printer_id"`
+	Enabled   bool   `json:"enabled"`
 }
 
 // 指令消息格式
@@ -118,4 +130,8 @@ type PrintJobData struct {
 	ColorMode   string `json:"color_mode"`
 	DuplexMode  string `json:"duplex_mode"`
 	MaxRetries  int    `json:"max_retries"`
+}
+
+type PrinterDeletedData struct {
+	PrinterID string `json:"printer_id"`
 }

@@ -342,6 +342,13 @@ const Printers: React.FC = () => {
 
   const columns = [
     {
+      title: '打印机ID',
+      dataIndex: 'id',
+      key: 'id',
+      render: (text: string) => text || '-',
+      width: 220,
+    },
+    {
       title: '打印机名称',
       dataIndex: 'name',
       key: 'name',

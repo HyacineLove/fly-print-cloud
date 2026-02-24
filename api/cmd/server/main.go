@@ -51,8 +51,8 @@ func main() {
 
 	// 初始化处理器
 	userHandler := handlers.NewUserHandler(userRepo)
-	edgeNodeHandler := handlers.NewEdgeNodeHandler(edgeNodeRepo, printerRepo)
-	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo)
+	edgeNodeHandler := handlers.NewEdgeNodeHandler(edgeNodeRepo, printerRepo, wsManager)
+	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo, wsManager)
 	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, wsManager)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo)
 	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, wsManager)
@@ -194,6 +194,7 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 			// Edge Node 的打印机管理
 			edgeGroup.POST("/:node_id/printers", middleware.OAuth2ResourceServer("edge:printer"), printerHandler.EdgeRegisterPrinter)
 			edgeGroup.GET("/:node_id/printers", middleware.OAuth2ResourceServer("edge:printer"), printerHandler.EdgeListPrinters)
+			edgeGroup.DELETE("/:node_id/printers/:printer_id", middleware.OAuth2ResourceServer("edge:printer"), printerHandler.EdgeDeletePrinter)
 			
 			// WebSocket 连接
 			edgeGroup.GET("/ws", wsHandler.HandleConnection)

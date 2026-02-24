@@ -331,6 +331,22 @@ func (r *PrinterRepository) DeletePrinter(printerID string) error {
 	return nil
 }
 
+func (r *PrinterRepository) DeletePrinterByEdgeNode(printerID string, edgeNodeID string) error {
+	query := `DELETE FROM printers WHERE id = $1 AND edge_node_id = $2`
+	result, err := r.db.Exec(query, printerID, edgeNodeID)
+	if err != nil {
+		return fmt.Errorf("failed to delete printer: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get affected rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("printer not found")
+	}
+	return nil
+}
+
 // UpsertPrinter 插入或更新打印机（基于 name + edge_node_id 的唯一性）
 func (r *PrinterRepository) UpsertPrinter(printer *models.Printer) error {
 	// 将 Capabilities 结构体转换为 JSON

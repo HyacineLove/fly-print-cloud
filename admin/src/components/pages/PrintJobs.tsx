@@ -396,6 +396,13 @@ const PrintJobs: React.FC = () => {
   // 表格列定义
   const columns = [
     {
+      title: '任务ID',
+      dataIndex: 'id',
+      key: 'id',
+      width: 220,
+      render: (text: string) => text || '-',
+    },
+    {
       title: '任务名称',
       dataIndex: 'name',
       key: 'name',
