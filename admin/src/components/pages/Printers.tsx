@@ -141,6 +141,10 @@ const Printers: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   
+  // 搜索和筛选状态
+  const [searchName, setSearchName] = useState<string>('');
+  const [selectedStatus, setSelectedStatus] = useState<string>('');
+  
   // 别名编辑相关状态
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editingPrinter, setEditingPrinter] = useState<PrinterStatus | null>(null);
@@ -300,14 +304,32 @@ const Printers: React.FC = () => {
     loadData();
   }, []);
 
-  // Edge Node 筛选逻辑
+  // 综合筛选逻辑：Edge Node + 状态 + 名称搜索
   useEffect(() => {
-    if (selectedEdgeNode === '') {
-      setFilteredPrinters(printers);
-    } else {
-      setFilteredPrinters(printers.filter(printer => printer.edge_node_id === selectedEdgeNode));
+    let result = printers;
+    
+    // 按Edge Node筛选
+    if (selectedEdgeNode) {
+      result = result.filter(printer => printer.edge_node_id === selectedEdgeNode);
     }
-  }, [selectedEdgeNode, printers]);
+    
+    // 按状态筛选
+    if (selectedStatus) {
+      result = result.filter(printer => printer.status === selectedStatus);
+    }
+    
+    // 按名称搜索（不区分大小写，匹配名称、别名和ID）
+    if (searchName) {
+      const keyword = searchName.toLowerCase();
+      result = result.filter(printer => 
+        (printer.display_name || '').toLowerCase().includes(keyword) ||
+        printer.name.toLowerCase().includes(keyword) ||
+        printer.id.toLowerCase().includes(keyword)
+      );
+    }
+    
+    setFilteredPrinters(result);
+  }, [selectedEdgeNode, selectedStatus, searchName, printers]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -516,7 +538,7 @@ const Printers: React.FC = () => {
 
       {/* 筛选器 */}
       <div style={{ marginBottom: 16 }}>
-        <Space>
+        <Space wrap>
           <span>边缘节点：</span>
           <Select 
             value={selectedEdgeNode} 
@@ -529,6 +551,30 @@ const Printers: React.FC = () => {
               <Select.Option key={node.id} value={node.id}>{node.name}</Select.Option>
             ))}
           </Select>
+          
+          <span style={{ marginLeft: 16 }}>运行状态：</span>
+          <Select
+            value={selectedStatus}
+            onChange={setSelectedStatus}
+            style={{ width: 120 }}
+            placeholder="选择状态"
+          >
+            <Select.Option value="">全部</Select.Option>
+            <Select.Option value="ready">就绪</Select.Option>
+            <Select.Option value="printing">打印中</Select.Option>
+            <Select.Option value="error">错误</Select.Option>
+            <Select.Option value="offline">离线</Select.Option>
+          </Select>
+          
+          <span style={{ marginLeft: 16 }}>搜索：</span>
+          <Input.Search
+            placeholder="搜索打印机名称/ID"
+            value={searchName}
+            onChange={(e) => setSearchName(e.target.value)}
+            onSearch={setSearchName}
+            style={{ width: 200 }}
+            allowClear
+          />
         </Space>
       </div>
 

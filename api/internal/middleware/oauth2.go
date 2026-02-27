@@ -311,3 +311,54 @@ func contains(slice []string, item string) bool {
 	}
 	return false
 }
+
+// OptionalOAuth2ResourceServer 可选 OAuth2 认证中间件
+// 如果有 Bearer token，验证并设置上下文
+// 如果没有 token，不阻塞请求，由 Handler 处理（支持其他认证方式如凭证）
+func OptionalOAuth2ResourceServer() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 获取 Authorization header
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			// 没有认证头，继续处理（由 Handler 决定是否需要其他认证）
+			c.Next()
+			return
+		}
+
+		// 检查是否为 Bearer token
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			// 不是 Bearer token，继续处理
+			c.Next()
+			return
+		}
+
+		// 提取 token
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if token == "" {
+			// 空 token，继续处理
+			c.Next()
+			return
+		}
+
+		// 验证 token 有效性
+		tokenInfo, err := validateOAuth2Token(token)
+		if err != nil {
+			// Token 验证失败，但不阻塞请求，让 Handler 处理
+			// 可能使用其他认证方式
+			c.Next()
+			return
+		}
+
+		// 提取标准化角色
+		userRoles := extractStandardRoles(tokenInfo)
+
+		// 将用户信息存储到 context 中
+		c.Set("oauth2_token", token)
+		c.Set("external_id", tokenInfo.Sub)
+		c.Set("username", tokenInfo.PreferredUsername)
+		c.Set("email", tokenInfo.Email)
+		c.Set("roles", userRoles)
+		
+		c.Next()
+	}
+}

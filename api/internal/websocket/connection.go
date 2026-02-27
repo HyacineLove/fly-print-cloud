@@ -2,11 +2,13 @@ package websocket
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/security"
 	"github.com/gorilla/websocket"
 )
 
@@ -34,10 +36,11 @@ type Connection struct {
 	EdgeNodeRepo   *database.EdgeNodeRepository
 	PrintJobRepo   *database.PrintJobRepository
 	FileRepo       *database.FileRepository
+	TokenManager   *security.TokenManager
 }
 
 // NewConnection 创建新连接
-func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository) *Connection {
+func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager) *Connection {
 	return &Connection{
 		NodeID:         nodeID,
 		Conn:           conn,
@@ -47,6 +50,7 @@ func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManag
 		EdgeNodeRepo:   edgeNodeRepo,
 		PrintJobRepo:   printJobRepo,
 		FileRepo:       fileRepo,
+		TokenManager:   tokenManager,
 	}
 }
 
@@ -137,15 +141,36 @@ func (c *Connection) WritePump() {
 func (c *Connection) handleMessage(msg *Message) {
 	log.Printf("Received message from node %s: type=%s", c.NodeID, msg.Type)
 
+	// 标准验证顺序（所有消息统一处理）：
+	// 1. 节点存在性检查（所有消息都需要，包括 heartbeat 和 job_update）
+	// 2. 节点启用检查（heartbeat 和 job_update 放行，允许禁用节点维持连接和完成任务收尾）
+	
+	// 步骤1: 检查节点是否存在（所有消息都需要）
+	node, err := c.EdgeNodeRepo.GetEdgeNodeByID(c.NodeID)
+	if err != nil || node == nil {
+		log.Printf("Message rejected: node %s not found, message type: %s", c.NodeID, msg.Type)
+		c.sendError("node_not_found", "Edge node not found", "")
+		return
+	}
+
+	// 步骤2: 检查节点是否启用（heartbeat 和 job_update 放行）
+	if msg.Type != MsgTypeHeartbeat && msg.Type != MsgTypeJobUpdate {
+		if !node.Enabled {
+			log.Printf("Message rejected: node %s is disabled, message type: %s", c.NodeID, msg.Type)
+			c.sendError("node_disabled", "Edge node has been disabled by administrator", "")
+			return
+		}
+	}
+
 	switch msg.Type {
 	case MsgTypeHeartbeat:
 		c.handleHeartbeat(msg)
-	case MsgTypePrinterStatus:
-		c.handlePrinterStatus(msg)
 	case MsgTypeJobUpdate:
 		c.handleJobUpdate(msg)
 	case MsgTypeSubmitPrintParams:
 		c.handleSubmitPrintParams(msg)
+	case MsgTypeRequestUploadToken:
+		c.handleRequestUploadToken(msg)
 	default:
 		log.Printf("Unknown message type: %s from node %s", msg.Type, c.NodeID)
 	}
@@ -187,13 +212,6 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 		log.Printf("Missing required fields (file_id or printer_id) in submit print params from node %s", c.NodeID)
 		return
 	}
-	
-	// 验证 Task Token
-	if !c.Manager.ValidateTaskToken(payload.TaskToken, payload.FileID) {
-		log.Printf("Invalid or expired task token for file %s from node %s", payload.FileID, c.NodeID)
-		// TODO: 可以发送错误消息回 Edge
-		return
-	}
 
 	// 获取文件信息
 	file, err := c.FileRepo.GetByID(payload.FileID)
@@ -209,20 +227,33 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 	// 重新生成文件URL（因为DB不存储URL）
 	file.URL = "/api/v1/files/" + file.ID
 
-	// 获取打印机信息
+	// 标准验证顺序：节点存在性 → 打印机存在性 → 节点启用 → 打印机启用
+	// 注意：节点存在性和启用已由 handleMessage 通用拦截器处理
+
+	// 步骤1: 检查打印机是否存在
 	printer, err := c.PrinterRepo.GetPrinterByID(payload.PrinterID)
 	if err != nil {
 		log.Printf("Failed to get printer %s: %v", payload.PrinterID, err)
+		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
 	if printer == nil {
 		log.Printf("Printer %s not found", payload.PrinterID)
+		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
 	
-	// 验证打印机是否属于该 Node
+	// 步骤2: 验证打印机是否属于该节点
 	if printer.EdgeNodeID != c.NodeID {
 		log.Printf("Printer %s does not belong to node %s", payload.PrinterID, c.NodeID)
+		c.sendError("printer_not_belong_to_node", "Printer does not belong to this node", payload.PrinterID)
+		return
+	}
+	
+	// 步骤3: 检查打印机是否被禁用
+	if !printer.Enabled {
+		log.Printf("Printer %s is disabled, rejecting print job submission from node %s", payload.PrinterID, c.NodeID)
+		c.sendError("printer_disabled", "Printer has been disabled by administrator", payload.PrinterID)
 		return
 	}
 
@@ -296,6 +327,10 @@ func (c *Connection) handleHeartbeat(msg *Message) {
 		log.Printf("Failed to update heartbeat for node %s: %v", c.NodeID, err)
 		return
 	}
+	if err := c.EdgeNodeRepo.UpdateStatus(c.NodeID, "online"); err != nil {
+		log.Printf("Failed to update status for node %s: %v", c.NodeID, err)
+		return
+	}
 	
 	// 解析心跳数据（可选）
 	if msg.Data != nil {
@@ -313,53 +348,117 @@ func (c *Connection) handleHeartbeat(msg *Message) {
 	log.Printf("Successfully processed heartbeat from node %s", c.NodeID)
 }
 
-// handlePrinterStatus 处理打印机状态消息
-func (c *Connection) handlePrinterStatus(msg *Message) {
-	log.Printf("Processing printer status update from node %s", c.NodeID)
-	
-	// 解析打印机状态数据
-	var statusData PrinterStatusData
+// handleRequestUploadToken 处理请求上传凭证消息
+func (c *Connection) handleRequestUploadToken(msg *Message) {
+	log.Printf("Processing upload token request from node %s", c.NodeID)
+
+	// 标准验证顺序：节点存在性 → 节点启用 → 打印机存在性 → 打印机归属 → 打印机启用
+	// 注意：节点存在性和启用已由 handleMessage 通用拦截器处理
+
+	// 解析请求数据
+	var payload RequestUploadTokenPayload
 	dataBytes, err := json.Marshal(msg.Data)
 	if err != nil {
-		log.Printf("Failed to marshal printer status data from node %s: %v", c.NodeID, err)
+		log.Printf("Failed to marshal upload token request data from node %s: %v", c.NodeID, err)
+		c.sendError("invalid_request", "Failed to parse request data", "")
 		return
 	}
-	
-	if err := json.Unmarshal(dataBytes, &statusData); err != nil {
-		log.Printf("Failed to parse printer status data from node %s: %v", c.NodeID, err)
+
+	if err := json.Unmarshal(dataBytes, &payload); err != nil {
+		log.Printf("Failed to parse upload token request data from node %s: %v", c.NodeID, err)
+		c.sendError("invalid_request", "Failed to parse request data", "")
 		return
 	}
-	
-	log.Printf("Printer status data: printer_id=%s, status=%s, queue_length=%d", 
-		statusData.PrinterID, statusData.Status, statusData.QueueLength)
-	
-	// 使用消息中的node_id而不是连接时的NodeID，因为可能不匹配
-	messageNodeID := msg.NodeID
-	if messageNodeID == "" {
-		messageNodeID = c.NodeID // 如果消息中没有node_id，使用连接时的ID
+
+	// 验证 printer_id 必填
+	if payload.PrinterID == "" {
+		log.Printf("Missing printer_id in upload token request from node %s", c.NodeID)
+		c.sendError("invalid_request", "printer_id is required", "")
+		return
 	}
-	
-	printer, err := c.PrinterRepo.GetPrinterByID(statusData.PrinterID)
+
+	// 步骤3: 检查打印机是否存在
+	printer, err := c.PrinterRepo.GetPrinterByID(payload.PrinterID)
 	if err != nil {
-		log.Printf("Printer %s not found for node %s (connection: %s): %v", statusData.PrinterID, messageNodeID, c.NodeID, err)
+		log.Printf("Failed to get printer %s: %v", payload.PrinterID, err)
+		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
-	if printer.EdgeNodeID != messageNodeID {
-		log.Printf("Printer %s does not belong to node %s (connection: %s)", statusData.PrinterID, messageNodeID, c.NodeID)
+	if printer == nil {
+		log.Printf("Printer %s not found", payload.PrinterID)
+		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
-	
-	// 直接使用客户端状态（统一标准）
-	printer.Status = statusData.Status
-	printer.QueueLength = statusData.QueueLength
-	
-	if err := c.PrinterRepo.UpdatePrinter(printer); err != nil {
-		log.Printf("Failed to update printer %s status: %v", statusData.PrinterID, err)
+
+	// 步骤4: 验证打印机是否属于该节点
+	if printer.EdgeNodeID != c.NodeID {
+		log.Printf("Printer %s does not belong to node %s", payload.PrinterID, c.NodeID)
+		c.sendError("printer_not_belong_to_node", "Printer does not belong to this node", payload.PrinterID)
 		return
 	}
+
+	// 步骤5: 检查打印机是否被禁用
+	if !printer.Enabled {
+		log.Printf("Printer %s is disabled, rejecting upload token request from node %s", payload.PrinterID, c.NodeID)
+		c.sendError("printer_disabled", "Printer has been disabled by administrator", payload.PrinterID)
+		return
+	}
+
+	// 生成上传凭证
+	token, expiresAt, err := c.TokenManager.GenerateUploadToken(c.NodeID, payload.PrinterID)
+	if err != nil {
+		log.Printf("Failed to generate upload token for node %s: %v", c.NodeID, err)
+		c.sendError("token_generation_failed", "Failed to generate upload token", "")
+		return
+	}
+
+	// 构造两个URL
+	// 1. API上传URL：用于Edge端程序化上传（POST请求）
+	apiUploadURL := fmt.Sprintf("/api/v1/files?token=%s", token)
 	
-	log.Printf("Successfully updated printer %s status to %s (queue: %d)", 
-		statusData.PrinterID, statusData.Status, statusData.QueueLength)
+	// 2. Web上传页面URL：用于生成二维码/链接给用户（GET请求）
+	webUploadURL := fmt.Sprintf("/upload?token=%s&node_id=%s&printer_id=%s", token, c.NodeID, payload.PrinterID)
+
+	// 发送上传凭证响应
+	response := map[string]interface{}{
+		"type": CmdTypeUploadToken,
+		"data": UploadTokenResponsePayload{
+			Token:     token,
+			ExpiresAt: expiresAt,
+			UploadURL: apiUploadURL,  // API上传端点
+			WebURL:    webUploadURL,  // Web上传页面
+			NodeID:    c.NodeID,
+			PrinterID: payload.PrinterID,
+		},
+	}
+
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal upload token response: %v", err)
+		return
+	}
+
+	c.Send <- responseBytes
+	log.Printf("Upload token generated for node %s, printer %s - API: %s, Web: %s", c.NodeID, payload.PrinterID, apiUploadURL, webUploadURL)
+}
+
+// sendError 发送错误消息到 Edge 节点
+func (c *Connection) sendError(code, message, printerID string) {
+	errorData := map[string]interface{}{
+		"code":    code,
+		"message": message,
+	}
+	if printerID != "" {
+		errorData["printer_id"] = printerID
+	}
+
+	errorMsg := map[string]interface{}{
+		"type": CmdTypeError,
+		"data": errorData,
+	}
+
+	errorBytes, _ := json.Marshal(errorMsg)
+	c.Send <- errorBytes
 }
 
 // handleJobUpdate 处理任务状态更新

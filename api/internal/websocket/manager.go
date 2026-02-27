@@ -1,37 +1,33 @@
 package websocket
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/security"
 )
 
 // ConnectionManager 管理所有 WebSocket 连接
 type ConnectionManager struct {
-	connections map[string]*Connection // node_id -> connection
-	broadcast   chan []byte           // 广播消息通道
-	register    chan *Connection      // 新连接注册
-	unregister  chan *Connection      // 连接断开
-	mutex       sync.RWMutex         // 并发安全
+	connections  map[string]*Connection // node_id -> connection
+	broadcast    chan []byte           // 广播消息通道
+	register     chan *Connection      // 新连接注册
+	unregister   chan *Connection      // 连接断开
+	mutex        sync.RWMutex         // 并发安全
+	TokenManager *security.TokenManager // 凭证管理器
 }
 
 // NewConnectionManager 创建连接管理器
-func NewConnectionManager() *ConnectionManager {
+func NewConnectionManager(tokenManager *security.TokenManager) *ConnectionManager {
 	return &ConnectionManager{
-		connections: make(map[string]*Connection),
-		broadcast:   make(chan []byte),
-		register:    make(chan *Connection),
-		unregister:  make(chan *Connection),
+		connections:  make(map[string]*Connection),
+		broadcast:    make(chan []byte),
+		register:     make(chan *Connection),
+		unregister:   make(chan *Connection),
+		TokenManager: tokenManager,
 	}
 }
 
@@ -146,6 +142,44 @@ func (m *ConnectionManager) IsNodeConnected(nodeID string) bool {
 	return exists
 }
 
+// DisconnectNode 主动断开指定节点的 WebSocket 连接
+// 用于节点删除时清理资源
+func (m *ConnectionManager) DisconnectNode(nodeID string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	conn, exists := m.connections[nodeID]
+	if !exists {
+		return ErrNodeNotConnected
+	}
+
+	// 发送关闭通知（可选）
+	closeMsg := map[string]interface{}{
+		"type": "server_close",
+		"data": map[string]string{
+			"reason": "node_deleted",
+			"message": "Edge node has been deleted by administrator",
+		},
+	}
+	if msgBytes, err := json.Marshal(closeMsg); err == nil {
+		select {
+		case conn.Send <- msgBytes:
+			// 消息发送成功，等待一小段时间让 Edge 端接收
+			time.Sleep(100 * time.Millisecond)
+		default:
+			// 发送失败，直接关闭
+		}
+	}
+
+	// 关闭连接
+	delete(m.connections, nodeID)
+	close(conn.Send)
+	conn.Conn.Close()
+
+	log.Printf("Forcefully disconnected Edge Node %s (node deleted), total connections: %d", nodeID, len(m.connections))
+	return nil
+}
+
 // GetConnectionCount 获取连接数量
 func (m *ConnectionManager) GetConnectionCount() int {
 	m.mutex.RLock()
@@ -154,88 +188,34 @@ func (m *ConnectionManager) GetConnectionCount() int {
 	return len(m.connections)
 }
 
-// GenerateTaskToken 生成任务 Token
-func (m *ConnectionManager) GenerateTaskToken(fileID string) string {
-	// 简单实现：使用 HMAC 签名
-	// TODO: 使用更安全的密钥管理
-	secret := "fly-print-task-secret"
-	data := fmt.Sprintf("%s|%d", fileID, time.Now().Unix())
-	h := hmac.New(sha256.New, []byte(secret))
-	h.Write([]byte(data))
-	signature := hex.EncodeToString(h.Sum(nil))
-	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s|%s", data, signature)))
-}
-
-// ValidateTaskToken 验证任务 Token
-func (m *ConnectionManager) ValidateTaskToken(token string, fileID string) bool {
-	decoded, err := base64.StdEncoding.DecodeString(token)
-	if err != nil {
-		return false
-	}
-	
-	parts := strings.Split(string(decoded), "|")
-	if len(parts) != 3 {
-		return false
-	}
-	
-	tokenFileID := parts[0]
-	timestampStr := parts[1]
-	signature := parts[2]
-	
-	if tokenFileID != fileID {
-		return false
-	}
-	
-	// 验证过期时间 (例如 1 小时)
-	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
-	if err != nil {
-		return false
-	}
-	
-	if time.Now().Unix()-timestamp > 3600 {
-		return false
-	}
-	
-	// 验证签名
-	secret := "fly-print-task-secret"
-	data := fmt.Sprintf("%s|%s", tokenFileID, timestampStr)
-	h := hmac.New(sha256.New, []byte(secret))
-	h.Write([]byte(data))
-	expectedSignature := hex.EncodeToString(h.Sum(nil))
-	
-	return signature == expectedSignature
-}
-
 // DispatchPreviewFile 发送预览文件命令
-	func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string) error {
-		log.Printf("Preparing to dispatch preview file to node %s: %s (%s)", nodeID, fileName, fileID)
-		taskToken := m.GenerateTaskToken(fileID)
+func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string) error {
+	log.Printf("Preparing to dispatch preview file to node %s: %s (%s)", nodeID, fileName, fileID)
 
-		payload := PreviewFilePayload{
-			FileID:    fileID,
-			FileURL:   fileURL,
-			FileName:  fileName,
-			FileSize:  fileSize,
-			FileType:  fileType,
-			TaskToken: taskToken,
-		}
-
-		msg := &Message{
-			Type:      CmdTypePreviewFile,
-			NodeID:    nodeID,
-			Timestamp: time.Now(),
-			Data:      payload,
-		}
-
-		msgBytes, err := json.Marshal(msg)
-		if err != nil {
-			log.Printf("Failed to marshal preview message: %v", err)
-			return err
-		}
-
-		log.Printf("Sending preview message to node %s, payload size: %d", nodeID, len(msgBytes))
-		return m.SendToNode(nodeID, msgBytes)
+	payload := PreviewFilePayload{
+		FileID:   fileID,
+		FileURL:  fileURL,
+		FileName: fileName,
+		FileSize: fileSize,
+		FileType: fileType,
 	}
+
+	msg := &Message{
+		Type:      CmdTypePreviewFile,
+		NodeID:    nodeID,
+		Timestamp: time.Now(),
+		Data:      payload,
+	}
+
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("Failed to marshal preview message: %v", err)
+		return err
+	}
+
+	log.Printf("Sending preview message to node %s, payload size: %d", nodeID, len(msgBytes))
+	return m.SendToNode(nodeID, msgBytes)
+}
 
 // DispatchPrintJob 发送打印任务指令
 func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob, printerName string) error {
@@ -256,6 +236,25 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 		MaxRetries:  job.MaxRetries,
 	}
 
+	// 如果有文件URL，生成一次性下载凭证
+	if job.FileURL != "" && m.TokenManager != nil {
+		// 从 FileURL 提取 fileID（格式: /api/v1/files/{fileID}）
+		fileID := ""
+		if len(job.FileURL) > 14 { // len("/api/v1/files/") = 14
+			fileID = job.FileURL[14:]
+		}
+		if fileID != "" {
+			token, expiresAt, err := m.TokenManager.GenerateDownloadToken(fileID, job.ID, nodeID)
+			if err != nil {
+				log.Printf("Failed to generate download token for job %s: %v", job.ID, err)
+			} else {
+				printJobData.FileAccessToken = token
+				printJobData.FileAccessTokenExpiresAt = &expiresAt
+				log.Printf("Generated download token for job %s, expires at %s", job.ID, expiresAt.Format(time.RFC3339))
+			}
+		}
+	}
+
 	// 构造指令消息
 	command := Command{
 		Type:      CmdTypePrintJob,
@@ -273,48 +272,6 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 
 	// 发送到指定节点
 	return m.SendToNode(nodeID, message)
-}
-
-func (m *ConnectionManager) DispatchPrinterDeleted(nodeID string, printerID string) error {
-	payload := PrinterDeletedData{
-		PrinterID: printerID,
-	}
-
-	command := Command{
-		Type:      CmdTypePrinterDeleted,
-		CommandID: printerID,
-		Timestamp: time.Now(),
-		Target:    nodeID,
-		Data:      payload,
-	}
-
-	message, err := json.Marshal(command)
-	if err != nil {
-		return err
-	}
-
-	return m.SendToNode(nodeID, message)
-}
-
-func (m *ConnectionManager) DispatchPrinterEnabledChange(nodeID string, printerID string, enabled bool) error {
-	payload := PrinterStatePayload{
-		PrinterID: printerID,
-		Enabled:   enabled,
-	}
-
-	msg := &Message{
-		Type:      CmdTypePrinterState,
-		NodeID:    nodeID,
-		Timestamp: time.Now(),
-		Data:      payload,
-	}
-
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-
-	return m.SendToNode(nodeID, msgBytes)
 }
 
 func (m *ConnectionManager) DispatchNodeEnabledChange(nodeID string, enabled bool) error {

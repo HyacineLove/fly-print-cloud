@@ -9,28 +9,31 @@ import (
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/websocket"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // EdgeNodeHandler Edge Node 管理处理器
 type EdgeNodeHandler struct {
-	edgeNodeRepo *database.EdgeNodeRepository
-	printerRepo  *database.PrinterRepository
-	wsManager    *websocket.ConnectionManager
+	edgeNodeRepo   *database.EdgeNodeRepository
+	printerRepo    *database.PrinterRepository
+	wsManager      *websocket.ConnectionManager
+	tokenUsageRepo *database.TokenUsageRepository
 }
 
 // NewEdgeNodeHandler 创建 Edge Node 管理处理器
-func NewEdgeNodeHandler(edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager) *EdgeNodeHandler {
+func NewEdgeNodeHandler(edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository) *EdgeNodeHandler {
 	return &EdgeNodeHandler{
-		edgeNodeRepo: edgeNodeRepo,
-		printerRepo:  printerRepo,
-		wsManager:    wsManager,
+		edgeNodeRepo:   edgeNodeRepo,
+		printerRepo:    printerRepo,
+		wsManager:      wsManager,
+		tokenUsageRepo: tokenUsageRepo,
 	}
 }
 
-// RegisterEdgeNodeRequest Edge Node 注册请求（按照README规划）
+// RegisterEdgeNodeRequest Edge Node 注册请求
+// node_id 由服务端生成，客户端只需提供节点名称
 type RegisterEdgeNodeRequest struct {
-	NodeID string `json:"node_id" binding:"required,min=1,max=100"`
-	Name   string `json:"name" binding:"required,min=1,max=100"`
+	Name string `json:"name" binding:"required,min=1,max=100"`
 }
 
 // UpdateEdgeNodeRequest Edge Node 更新请求
@@ -80,6 +83,8 @@ type EdgeNodeInfo struct {
 }
 
 // RegisterEdgeNode 注册 Edge Node
+// 服务端生成 node_id (UUID)，状态默认为 offline
+// Edge 端需保存返回的 node_id，避免重复注册
 func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 	var req RegisterEdgeNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -87,15 +92,16 @@ func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 		return
 	}
 
-	// 创建 Edge Node（按照README规划，只设置基本信息）
+	// 创建 Edge Node，服务端生成 UUID 作为 node_id
 	node := &models.EdgeNode{
-		ID:            req.NodeID, // 使用客户端提供的 node_id
+		ID:            uuid.New().String(), // 服务端生成 UUID
 		Name:          req.Name,
-		Status:        "online", // 注册时默认为在线状态
+		Status:        "offline", // 默认为 offline，通过 WebSocket 心跳变为 online
+		Enabled:       true,       // 注册完成后默认启用节点
 		LastHeartbeat: time.Now(),
 	}
 
-	if err := h.edgeNodeRepo.UpsertEdgeNode(node); err != nil {
+	if err := h.edgeNodeRepo.CreateEdgeNode(node); err != nil {
 		log.Printf("Failed to register edge node: %v", err)
 		InternalErrorResponse(c, "注册 Edge Node 失败")
 		return
@@ -130,11 +136,35 @@ func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 }
 
 // ListEdgeNodes 获取 Edge Node 列表
+// 支持分页、状态过滤、排序和搜索
 func (h *EdgeNodeHandler) ListEdgeNodes(c *gin.Context) {
 	// 获取分页参数
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
 	status := c.Query("status")
+	
+	// 获取排序参数
+	sortBy := c.DefaultQuery("sort_by", "created_at")
+	sortOrder := c.DefaultQuery("sort_order", "desc")
+	
+	// 获取搜索参数
+	search := c.Query("search")
+
+	// 验证排序字段
+	validSortFields := map[string]bool{
+		"last_heartbeat": true,
+		"printer_count":  true,
+		"created_at":     true,
+		"name":           true,
+	}
+	if !validSortFields[sortBy] {
+		sortBy = "created_at"
+	}
+	
+	// 验证排序方向
+	if sortOrder != "asc" && sortOrder != "desc" {
+		sortOrder = "desc"
+	}
 
 	if page < 1 {
 		page = 1
@@ -153,8 +183,9 @@ func (h *EdgeNodeHandler) ListEdgeNodes(c *gin.Context) {
 	}
 
 	// 查询 Edge Node 列表
-	log.Printf("🔍 [DEBUG] 查询Edge Nodes: offset=%d, pageSize=%d, status='%s'", offset, pageSize, status)
-	nodes, total, err := h.edgeNodeRepo.ListEdgeNodes(offset, pageSize, status)
+	log.Printf("🔍 [DEBUG] 查询Edge Nodes: offset=%d, pageSize=%d, status='%s', sortBy='%s', sortOrder='%s', search='%s'", 
+		offset, pageSize, status, sortBy, sortOrder, search)
+	nodes, total, err := h.edgeNodeRepo.ListEdgeNodes(offset, pageSize, status, sortBy, sortOrder, search)
 	if err != nil {
 		log.Printf("❌ [DEBUG] Failed to list edge nodes: %v", err)
 		InternalErrorResponse(c, "获取 Edge Node 列表失败")
@@ -268,7 +299,6 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 		NotFoundResponse(c, "Edge Node 不存在")
 		return
 	}
-	previousEnabled := node.Enabled
 
 	// 更新节点信息
 	node.Name = req.Name
@@ -279,6 +309,7 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 	}
 	
 	// 处理Enabled字段更新（逻辑级联，不修改printer的enable状态）
+	oldEnabled := node.Enabled
 	if req.Enabled != nil {
 		node.Enabled = *req.Enabled
 	}
@@ -303,11 +334,17 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 		return
 	}
 
-	if req.Enabled != nil && previousEnabled != node.Enabled {
-		if err := h.wsManager.DispatchNodeEnabledChange(node.ID, node.Enabled); err != nil {
-			log.Printf("Failed to dispatch node enabled change for %s: %v", node.ID, err)
+	// 当节点从启用变为禁用时，撤销该节点的所有上传Token
+	if oldEnabled && !node.Enabled && h.tokenUsageRepo != nil {
+		if revoked, err := h.tokenUsageRepo.RevokeTokensByNodeAndType("upload", node.ID); err != nil {
+			log.Printf("Warning: failed to revoke upload tokens for disabled node %s: %v", node.ID, err)
+		} else if revoked > 0 {
+			log.Printf("Revoked %d upload tokens for disabled node %s", revoked, node.ID)
 		}
 	}
+
+	// 不再向 Edge 端发送 node_state 消息
+	// 禁用节点的请求将在云端通过中间件拦截
 
 	nodeInfo := EdgeNodeInfo{
 		ID:                node.ID,
@@ -358,36 +395,29 @@ func (h *EdgeNodeHandler) DeleteEdgeNode(c *gin.Context) {
 		return
 	}
 
+	// 级联删除该节点下的所有打印机（硬删除）
+	// 由于节点是软删除，数据库的 ON DELETE CASCADE 不会触发，需要手动删除打印机
+	if h.printerRepo != nil {
+		if err := h.printerRepo.DeletePrintersByEdgeNode(nodeID); err != nil {
+			log.Printf("Warning: failed to delete printers for node %s: %v", nodeID, err)
+			// 不中断流程，继续关闭 WebSocket 连接
+		} else {
+			log.Printf("Successfully deleted all printers for node %s", nodeID)
+		}
+	}
+
+	// 关闭该节点的 WebSocket 连接（如果存在）
+	if h.wsManager != nil {
+		if err := h.wsManager.DisconnectNode(nodeID); err != nil {
+			if err.Error() != "edge node not connected" {
+				log.Printf("Warning: failed to disconnect WebSocket for deleted node %s: %v", nodeID, err)
+			}
+		} else {
+			log.Printf("WebSocket connection closed for deleted node %s", nodeID)
+		}
+	}
+
 	log.Printf("Edge Node %s deleted successfully", nodeID)
 	SuccessResponse(c, gin.H{"message": "Edge Node 删除成功"})
 }
 
-// HeartbeatRequest 心跳请求
-type HeartbeatRequest struct {
-	NodeID string `json:"node_id" binding:"required"`
-}
-
-// Heartbeat Edge Node 心跳
-func (h *EdgeNodeHandler) Heartbeat(c *gin.Context) {
-	var req HeartbeatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		ValidationErrorResponse(c, err)
-		return
-	}
-
-	// 更新心跳时间
-	if err := h.edgeNodeRepo.UpdateHeartbeat(req.NodeID); err != nil {
-		log.Printf("Failed to update heartbeat for edge node %s: %v", req.NodeID, err)
-		InternalErrorResponse(c, "更新心跳失败")
-		return
-	}
-
-	// 更新状态为在线
-	if err := h.edgeNodeRepo.UpdateStatus(req.NodeID, "online"); err != nil {
-		log.Printf("Failed to update status for edge node %s: %v", req.NodeID, err)
-		InternalErrorResponse(c, "更新状态失败")
-		return
-	}
-
-	SuccessResponse(c, gin.H{"message": "心跳更新成功"})
-}

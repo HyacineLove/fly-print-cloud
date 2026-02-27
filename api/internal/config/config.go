@@ -11,12 +11,12 @@ import (
 type Config struct {
 	App      AppConfig      `mapstructure:"app"`
 	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
 
 	Server   ServerConfig   `mapstructure:"server"`
 	OAuth2   OAuth2Config   `mapstructure:"oauth2"`
 	Admin    AdminConfig    `mapstructure:"admin"`
 	Storage  StorageConfig  `mapstructure:"storage"`
+	Security SecurityConfig `mapstructure:"security"`
 }
 
 // AppConfig 应用配置
@@ -35,14 +35,6 @@ type DatabaseConfig struct {
 	Password string `mapstructure:"password"`
 	DBName   string `mapstructure:"dbname"`
 	SSLMode  string `mapstructure:"sslmode"`
-}
-
-// RedisConfig Redis配置
-type RedisConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
 }
 
 
@@ -73,6 +65,13 @@ type AdminConfig struct {
 type StorageConfig struct {
 	UploadDir string `mapstructure:"upload_dir"`
 	MaxSize   int64  `mapstructure:"max_size"`
+}
+
+// SecurityConfig 安全配置
+type SecurityConfig struct {
+	FileAccessSecret string `mapstructure:"file_access_secret"` // 文件访问凭证签名密钥
+	UploadTokenTTL   int    `mapstructure:"upload_token_ttl"`   // 上传凭证有效期（秒）
+	DownloadTokenTTL int    `mapstructure:"download_token_ttl"` // 下载凭证有效期（秒）
 }
 
 // Load 加载配置
@@ -128,12 +127,6 @@ func setDefaults() {
 	viper.SetDefault("database.dbname", "fly_print_cloud")
 	viper.SetDefault("database.sslmode", "disable")
 
-	// Redis 默认值
-	viper.SetDefault("redis.host", "localhost")
-	viper.SetDefault("redis.port", 6379)
-	viper.SetDefault("redis.password", "")
-	viper.SetDefault("redis.db", 0)
-
 	// Server 默认值
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.port", 8080)
@@ -156,17 +149,17 @@ func setDefaults() {
 	// Storage 默认值
 	viper.SetDefault("storage.upload_dir", "./uploads")
 	viper.SetDefault("storage.max_size", 52428800) // 50MB
+
+	// Security 默认值
+	viper.SetDefault("security.file_access_secret", "fly-print-file-access-secret-dev-only")
+	viper.SetDefault("security.upload_token_ttl", 180)   // 3分钟
+	viper.SetDefault("security.download_token_ttl", 180) // 3分钟
 }
 
 // GetDSN 获取数据库连接字符串
 func (c *DatabaseConfig) GetDSN() string {
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		c.Host, c.Port, c.User, c.Password, c.DBName, c.SSLMode)
-}
-
-// GetRedisAddr 获取Redis地址
-func (c *RedisConfig) GetRedisAddr() string {
-	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
 // GetServerAddr 获取服务器地址
