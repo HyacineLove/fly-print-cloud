@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 
 	"fly-print-cloud/api/internal/models"
 )
@@ -241,8 +242,10 @@ func (r *EdgeNodeRepository) HardDeleteEdgeNode(id string) error {
 }
 
 // ListEdgeNodes 获取 Edge Node 列表
-func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status string) ([]*models.EdgeNode, int, error) {
-	log.Printf("🔍 [DB DEBUG] ListEdgeNodes: offset=%d, limit=%d, status='%s'", offset, limit, status)
+// 支持按状态过滤、排序和搜索
+func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, sortOrder, search string) ([]*models.EdgeNode, int, error) {
+	log.Printf("🔍 [DB DEBUG] ListEdgeNodes: offset=%d, limit=%d, status='%s', sortBy='%s', sortOrder='%s', search='%s'", 
+		offset, limit, status, sortBy, sortOrder, search)
 	var nodes []*models.EdgeNode
 	
 	// 构建查询条件
@@ -254,6 +257,34 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status string) ([]
 		whereClause += fmt.Sprintf(" AND status = $%d", argIndex)
 		args = append(args, status)
 		argIndex++
+	}
+
+	// 添加搜索条件（按节点名称模糊搜索）
+	if search != "" {
+		whereClause += fmt.Sprintf(" AND name ILIKE $%d", argIndex)
+		args = append(args, "%"+search+"%")
+		argIndex++
+	}
+
+	// 构建排序子句
+	var orderClause string
+	switch sortBy {
+	case "last_heartbeat":
+		orderClause = "last_heartbeat"
+	case "printer_count":
+		// 使用子查询计算打印机数量进行排序
+		orderClause = "(SELECT COUNT(*) FROM printers WHERE edge_node_id = edge_nodes.id AND deleted_at IS NULL)"
+	case "name":
+		orderClause = "name"
+	default:
+		orderClause = "created_at"
+	}
+	
+	// 排序方向
+	if strings.ToLower(sortOrder) == "asc" {
+		orderClause += " ASC"
+	} else {
+		orderClause += " DESC"
 	}
 
 	// 查询总数
@@ -276,8 +307,8 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status string) ([]
 			   connection_quality, latency,
 			   created_at, updated_at, deleted_at
 		FROM edge_nodes %s
-		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d`, whereClause, argIndex, argIndex+1)
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d`, whereClause, orderClause, argIndex, argIndex+1)
 
 	args = append(args, limit, offset)
 	log.Printf("📊 [DB DEBUG] Data query: %s", query)

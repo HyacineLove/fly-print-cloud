@@ -18,13 +18,15 @@ import (
 type PrintJobHandler struct {
 	printJobRepo *database.PrintJobRepository
 	printerRepo  *database.PrinterRepository
+	edgeNodeRepo *database.EdgeNodeRepository
 	wsManager    *websocket.ConnectionManager
 }
 
-func NewPrintJobHandler(printJobRepo *database.PrintJobRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager) *PrintJobHandler {
+func NewPrintJobHandler(printJobRepo *database.PrintJobRepository, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, wsManager *websocket.ConnectionManager) *PrintJobHandler {
 	return &PrintJobHandler{
 		printJobRepo: printJobRepo,
 		printerRepo:  printerRepo,
+		edgeNodeRepo: edgeNodeRepo,
 		wsManager:    wsManager,
 	}
 }
@@ -153,6 +155,35 @@ func (h *PrintJobHandler) CreatePrintJob(c *gin.Context) {
 		return
 	}
 
+	// 检查打印机启用状态
+	if !printer.Enabled {
+		c.JSON(http.StatusForbidden, gin.H{
+			"code":    403,
+			"error":   "printer_disabled",
+			"message": "Cannot create print job for disabled printer",
+		})
+		return
+	}
+
+	// 检查节点启用状态
+	edgeNode, err := h.edgeNodeRepo.GetEdgeNodeByID(printer.EdgeNodeID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取节点信息失败"})
+		return
+	}
+	if edgeNode == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "打印机所属节点不存在"})
+		return
+	}
+	if !edgeNode.Enabled {
+		c.JSON(http.StatusForbidden, gin.H{
+			"code":    403,
+			"error":   "node_disabled",
+			"message": "Cannot create print job for printer on disabled node",
+		})
+		return
+	}
+
 	// 校验打印机能力
 	if err := h.validatePrintJobCapabilities(job, printer); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -247,8 +278,33 @@ func (h *PrintJobHandler) ListPrintJobs(c *gin.Context) {
 	status := c.Query("status")
 	printerID := c.Query("printer_id")
 	userID := c.Query("user_id")
+	edgeNodeID := c.Query("edge_node_id")
 
-	jobs, total, err := h.printJobRepo.ListPrintJobsWithTotal(limit, offset, status, printerID, userID)
+	// 时间筛选参数
+	var startTime, endTime *time.Time
+	if startTimeStr := c.Query("start_time"); startTimeStr != "" {
+		// 支持 RFC3339 和 "YYYY-MM-DD HH:mm" 格式
+		if t, err := time.Parse(time.RFC3339, startTimeStr); err == nil {
+			startTime = &t
+		} else if t, err := time.Parse("2006-01-02 15:04", startTimeStr); err == nil {
+			startTime = &t
+		} else if t, err := time.Parse("2006-01-02", startTimeStr); err == nil {
+			startTime = &t
+		}
+	}
+	if endTimeStr := c.Query("end_time"); endTimeStr != "" {
+		if t, err := time.Parse(time.RFC3339, endTimeStr); err == nil {
+			endTime = &t
+		} else if t, err := time.Parse("2006-01-02 15:04", endTimeStr); err == nil {
+			endTime = &t
+		} else if t, err := time.Parse("2006-01-02", endTimeStr); err == nil {
+			// 日期格式时，设置为该日结束时间
+			t = t.Add(24 * time.Hour)
+			endTime = &t
+		}
+	}
+
+	jobs, total, err := h.printJobRepo.ListPrintJobsWithTotal(limit, offset, status, printerID, userID, edgeNodeID, startTime, endTime)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取打印任务列表失败"})
 		return
@@ -305,7 +361,8 @@ func (h *PrintJobHandler) UpdatePrintJob(c *gin.Context) {
 			now := time.Now()
 			job.StartTime = &now
 		}
-		if (*req.Status == "completed" || *req.Status == "failed" || *req.Status == "cancelled") && job.EndTime == nil {
+		// 注意：新任务流程不再使用 cancelled 状态，仅 completed 和 failed 为终态
+		if (*req.Status == "completed" || *req.Status == "failed") && job.EndTime == nil {
 			now := time.Now()
 			job.EndTime = &now
 		}
@@ -348,185 +405,6 @@ func (h *PrintJobHandler) UpdatePrintJob(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, job)
-}
-
-// DeletePrintJob 删除打印任务
-func (h *PrintJobHandler) DeletePrintJob(c *gin.Context) {
-	id := c.Param("id")
-
-	// 检查任务是否存在
-	job, err := h.printJobRepo.GetPrintJobByID(id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取打印任务失败"})
-		return
-	}
-
-	if job == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "打印任务不存在"})
-		return
-	}
-
-	err = h.printJobRepo.DeletePrintJob(id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除打印任务失败"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "打印任务删除成功"})
-}
-
-// CancelPrintJob 取消打印任务
-func (h *PrintJobHandler) CancelPrintJob(c *gin.Context) {
-	id := c.Param("id")
-
-	job, err := h.printJobRepo.GetPrintJobByID(id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取打印任务失败"})
-		return
-	}
-
-	if job == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "打印任务不存在"})
-		return
-	}
-
-	// 只有pending和printing状态的任务可以取消
-	if job.Status != "pending" && job.Status != "printing" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "任务状态不允许取消"})
-		return
-	}
-
-	job.Status = "cancelled"
-	if job.EndTime == nil {
-		now := time.Now()
-		job.EndTime = &now
-	}
-
-	err = h.printJobRepo.UpdatePrintJob(job)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "取消打印任务失败"})
-		return
-	}
-
-	c.JSON(http.StatusOK, job)
-}
-
-// ReprintRequest 重新打印请求
-type ReprintRequest struct {
-	PrinterID  string `json:"printer_id" binding:"required"`
-	Copies     int    `json:"copies" binding:"omitempty,min=1,max=99"`
-	PaperSize  string `json:"paper_size"`
-	ColorMode  string `json:"color_mode"`
-	DuplexMode string `json:"duplex_mode"`
-}
-
-// ReprintJob 重新打印任务（基于原任务创建新任务）
-func (h *PrintJobHandler) ReprintJob(c *gin.Context) {
-	id := c.Param("id")
-
-	// 获取原任务
-	originalJob, err := h.printJobRepo.GetPrintJobByID(id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取原任务失败"})
-		return
-	}
-
-	if originalJob == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "原任务不存在"})
-		return
-	}
-
-	// 只有已完成、失败、取消的任务可以重新打印
-	if originalJob.Status != "completed" && originalJob.Status != "failed" && originalJob.Status != "cancelled" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "任务状态不允许重新打印"})
-		return
-	}
-
-	// 解析重新打印参数
-	var req ReprintRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效"})
-		return
-	}
-
-	// 从OAuth2认证中获取用户信息
-	userID, exists := c.Get("external_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权"})
-		return
-	}
-
-	userName, exists := c.Get("username")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权"})
-		return
-	}
-
-	// 创建新任务（基于原任务和新参数）
-	newJob := &models.PrintJob{
-		Name:         fmt.Sprintf("重打-%s", originalJob.Name),
-		Status:       "pending",
-		PrinterID:    req.PrinterID,  // 使用请求中的打印机ID
-		UserID:       userID.(string),
-		UserName:     userName.(string),
-		FilePath:     originalJob.FilePath,  // 文件信息保持不变
-		FileURL:      originalJob.FileURL,
-		FileSize:     originalJob.FileSize,
-		PageCount:    originalJob.PageCount,
-		Copies:       req.Copies,     // 使用请求中的份数
-		PaperSize:    req.PaperSize,  // 使用请求中的纸张大小
-		ColorMode:    req.ColorMode,  // 使用请求中的颜色模式
-		DuplexMode:   req.DuplexMode, // 使用请求中的双面模式
-		RetryCount:   0,  // 新任务重置为0
-		MaxRetries:   3,  // 新任务使用默认值
-	}
-
-	// 设置默认值
-	if newJob.Copies == 0 {
-		newJob.Copies = 1
-	}
-
-	// 获取打印机信息进行能力校验
-	printer, err := h.printerRepo.GetPrinterByID(newJob.PrinterID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取打印机信息失败"})
-		return
-	}
-
-	if printer == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "打印机不存在"})
-		return
-	}
-
-	// 校验打印机能力
-	if err := h.validatePrintJobCapabilities(newJob, printer); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	err = h.printJobRepo.CreatePrintJob(newJob)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建重新打印任务失败"})
-		return
-	}
-
-	// 打印机信息已在上面获取并校验过
-
-	// 分发任务到Edge Node
-	err = h.wsManager.DispatchPrintJob(printer.EdgeNodeID, newJob, printer.Name)
-	if err != nil {
-		log.Printf("Failed to dispatch print job %s to node %s: %v", newJob.ID, printer.EdgeNodeID, err)
-		// 任务已创建，但分发失败，保持pending状态
-	} else {
-		log.Printf("Print job %s dispatched to node %s", newJob.ID, printer.EdgeNodeID)
-		// 更新任务状态为已分发
-		newJob.Status = "dispatched"
-		if updateErr := h.printJobRepo.UpdatePrintJob(newJob); updateErr != nil {
-			log.Printf("Failed to update job status to dispatched: %v", updateErr)
-		}
-	}
-
-	c.JSON(http.StatusCreated, newJob)
 }
 
 // validatePrintJobCapabilities 校验打印任务参数是否符合打印机能力

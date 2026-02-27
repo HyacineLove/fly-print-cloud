@@ -7,3 +7,10 @@ go.sum
 uploads/
 *.exe
 test-data/
+
+.qoder
+
+ai_docs/
+
+# Test directory - excluded from version control
+test/

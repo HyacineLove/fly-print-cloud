@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 	"fly-print-cloud/api/internal/models"
 )
@@ -413,5 +414,19 @@ func (r *PrinterRepository) EnablePrintersByEdgeNode(edgeNodeID string) error {
 	query := `UPDATE printers SET enabled = true WHERE edge_node_id = $1`
 	_, err := r.db.DB.Exec(query, edgeNodeID)
 	return err
+}
+
+// DeletePrintersByEdgeNode 删除指定Edge Node下的所有打印机
+// 用于节点软删除时级联删除打印机
+func (r *PrinterRepository) DeletePrintersByEdgeNode(edgeNodeID string) error {
+	query := `DELETE FROM printers WHERE edge_node_id = $1`
+	result, err := r.db.DB.Exec(query, edgeNodeID)
+	if err != nil {
+		return fmt.Errorf("failed to delete printers by edge node: %w", err)
+	}
+	
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("Deleted %d printers for edge node %s", rowsAffected, edgeNodeID)
+	return nil
 }
 

@@ -241,6 +241,23 @@ func (db *DB) InitTables() error {
 		return fmt.Errorf("failed to create print_jobs update trigger: %w", err)
 	}
 
+	// 创建Token使用记录表（用于一次性凭证验证）
+	tokenUsageTableSQL := `
+	CREATE TABLE IF NOT EXISTS token_usage_records (
+		token_hash VARCHAR(64) PRIMARY KEY,
+		token_type VARCHAR(20) NOT NULL,
+		node_id VARCHAR(100) NOT NULL,
+		resource_id VARCHAR(100),
+		job_id VARCHAR(100),
+		used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		expires_at TIMESTAMP NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	if _, err := db.Exec(tokenUsageTableSQL); err != nil {
+		return fmt.Errorf("failed to create token_usage_records table: %w", err)
+	}
+
 	// 创建索引
 	indexesSQL := []string{
 		"CREATE INDEX IF NOT EXISTS idx_edge_nodes_status ON edge_nodes(status);",
@@ -251,6 +268,7 @@ func (db *DB) InitTables() error {
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_printer_id ON print_jobs(printer_id);",
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_user_id ON print_jobs(user_id);",
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_created_at ON print_jobs(created_at);",
+		"CREATE INDEX IF NOT EXISTS idx_token_usage_expires_at ON token_usage_records(expires_at);",
 	}
 
 	// 创建文件表

@@ -1,186 +1,279 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, message, Button, Card, Progress, Typography, Alert } from 'antd';
-import { InboxOutlined, DownloadOutlined, FileOutlined } from '@ant-design/icons';
+import { Upload, message, Button, Card, Typography, Alert, Spin, Result } from 'antd';
+import { InboxOutlined, FileOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
-import type { UploadProps } from 'antd';
+import type { RcFile } from 'antd/es/upload';
 import { apiService } from '../../services/api';
 
-const { Dragger } = Upload;
 const { Title, Text, Paragraph } = Typography;
 
-interface UploadedFile {
-  id: string;
-  original_name: string;
-  url: string;
-  size: number;
-  mime_type: string;
-}
+// 错误码映射
+const ERROR_MESSAGES: Record<string, string> = {
+  // Token 相关错误
+  invalid_format: '上传凭证格式无效',
+  token_expired: '上传凭证已过期，请重新扫码',
+  invalid_signature: '上传凭证签名无效',
+  token_already_used: '上传凭证已被使用',
+  missing_token: '缺少上传凭证',
+  // 文件相关错误
+  file_type_not_allowed: '不支持该文件类型，仅支持：PNG、JPG、BMP、GIF、TIFF、WEBP、PDF、DOC、DOCX',
+  // 节点相关错误
+  node_not_found: '打印节点已被删除，请重新扫码',
+  node_disabled: '打印节点已被禁用',
+  // 打印机相关错误
+  printer_not_found: '打印机已被删除，请重新扫码',
+  printer_disabled: '打印机已被禁用',
+  printer_not_belong_to_node: '打印机不属于该节点',
+  // 通用错误
+  unauthorized: '认证失败，请重新扫码',
+};
+
+// 文件类型配置
+// 前端不做严格限制，让用户可以选择任何文件，由后端验证
+const ACCEPTED_FILE_TYPES = '*';  // 接受所有文件类型
+const FILE_TYPE_LABEL = 'PNG, JPG, BMP, GIF, TIFF, WEBP, PDF, DOC, DOCX';
+
+// 文件图标映射
+const getFileIcon = (fileName: string) => {
+  return <FileOutlined style={{ fontSize: 48, color: '#1890ff' }} />;
+};
+
+// 格式化文件大小
+const formatFileSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 const PublicUpload: React.FC = () => {
   const [searchParams] = useSearchParams();
   const [token, setToken] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  
+  // 页面状态：verifying | ready | uploading | success | error
+  const [pageState, setPageState] = useState<'verifying' | 'ready' | 'uploading' | 'success' | 'error'>('verifying');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+  
+  // 文件选择
+  const [selectedFile, setSelectedFile] = useState<RcFile | null>(null);
+  
+  // 上传成功后倒计时
+  const [countdown, setCountdown] = useState(5);
 
+  // 页面加载时验证token
   useEffect(() => {
     const tokenParam = searchParams.get('token');
     const nodeIdParam = searchParams.get('node_id');
+    const printerIdParam = searchParams.get('printer_id');
     
-    if (tokenParam) {
-      setToken(tokenParam);
-      if (nodeIdParam) {
-        setNodeId(nodeIdParam);
-      }
-    } else {
-      setError('Missing access token. Please ensure you have the correct link.');
+    if (!tokenParam) {
+      setErrorMessage('缺少上传凭证，请确保您使用了正确的链接');
+      setPageState('error');
+      return;
     }
+
+    // 轻量验证token（不消耗一次性token）
+    verifyToken(tokenParam, nodeIdParam, printerIdParam);
   }, [searchParams]);
 
-  const props: UploadProps = {
-    name: 'file',
-    multiple: true,
-    showUploadList: false,
-    customRequest: async (options) => {
-      const { onSuccess, onError, file } = options;
-      const currentToken = searchParams.get('token');
-      const currentNodeId = searchParams.get('node_id');
+  // 上传成功后倒计时
+  useEffect(() => {
+    if (pageState === 'success' && countdown > 0) {
+      const timer = setTimeout(() => {
+        setCountdown(countdown - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    } else if (pageState === 'success' && countdown === 0) {
+      // 倒计时结束，尝试关闭页面
+      // 注意：微信和大多数移动浏览器不允许脚本关闭由用户打开的页面
+      window.close();
+      // 如果关闭失败，保持在成功页面，用户手动关闭
+    }
+  }, [pageState, countdown]);
 
-      if (!currentToken) {
-        message.error('Authentication token missing');
-        return;
-      }
-
-      setUploading(true);
-      try {
-        // Use the token for upload
-        console.log('Uploading with node_id:', currentNodeId);
-        // @ts-ignore
-        const response = await apiService.uploadFile(file as File, currentToken, currentNodeId || undefined);
-        
-        if (response.code === 200) {
-          message.success(`${(file as File).name} uploaded successfully.`);
-          const newFile: UploadedFile = {
-            ...response.data,
-            url: response.data.url.startsWith('/') ? response.data.url : `/api/v1/files/${response.data.id}`
-          };
-          setUploadedFiles(prev => [newFile, ...prev]);
-          onSuccess && onSuccess(response.data);
-        } else {
-          message.error(`${(file as File).name} upload failed: ${response.message}`);
-          onError && onError(new Error(response.message));
-        }
-      } catch (err: any) {
-        message.error(`${(file as File).name} upload failed.`);
-        onError && onError(err);
-      } finally {
-        setUploading(false);
-      }
-    },
-    onDrop(e) {
-    },
-  };
-
-  const handleDownload = async (file: UploadedFile) => {
+  const verifyToken = async (tokenParam: string, nodeIdParam: string | null, printerIdParam: string | null) => {
     try {
-      const blob = await apiService.downloadFile(file.url, token || undefined);
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = file.original_name;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
+      const response = await fetch(`/api/v1/files/verify-upload-token?token=${encodeURIComponent(tokenParam)}`);
+      const result = await response.json();
+      
+      if (result.code === 200 && result.valid) {
+        setToken(tokenParam);
+        setNodeId(nodeIdParam || result.data.node_id);
+        setPageState('ready');
+      } else {
+        const errorMsg = ERROR_MESSAGES[result.error] || result.message || '上传凭证验证失败';
+        setErrorMessage(errorMsg);
+        setPageState('error');
+      }
     } catch (err: any) {
-      message.error(`Download failed: ${err.message}`);
+      setErrorMessage('网络错误，请检查您的网络连接');
+      setPageState('error');
     }
   };
 
-  if (error) {
+  // 处理文件选择
+  const handleFileSelect = (file: RcFile) => {
+    setSelectedFile(file);
+    return false; // 阻止自动上传
+  };
+
+  // 开始上传
+  const handleUpload = async () => {
+    if (!selectedFile || !token) {
+      message.error('请先选择文件');
+      return;
+    }
+
+    setPageState('uploading');
+    
+    try {
+      const response = await apiService.uploadFile(selectedFile, token, nodeId || undefined);
+      
+      if (response.code === 200) {
+        setPageState('success');
+      } else {
+        // response.message 是字符串类型
+        const errorMsg = response.message || '上传失败';
+        message.error(errorMsg);
+        setErrorMessage(errorMsg);
+        setPageState('error');
+      }
+    } catch (err: any) {
+      // 从错误对象中提取错误码
+      const errorCode = err.details?.error;
+      const errorMsg = ERROR_MESSAGES[errorCode] || err.message || '上传失败';
+      message.error(errorMsg);
+      setErrorMessage(errorMsg);
+      setPageState('error');
+    }
+  };
+
+  // 重新选择文件
+  const handleReselect = () => {
+    setSelectedFile(null);
+  };
+
+  // 验证中页面
+  if (pageState === 'verifying') {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', background: '#f0f2f5' }}>
+        <Spin size="large" tip="正在验证上传凭证..." />
+      </div>
+    );
+  }
+
+  // 错误页面
+  if (pageState === 'error') {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', background: '#f0f2f5' }}>
         <Alert
-          message="Access Denied"
-          description={error}
+          message="访问失败"
+          description={errorMessage}
           type="error"
           showIcon
-          style={{ maxWidth: 400 }}
+          style={{ maxWidth: 500, padding: '24px' }}
         />
       </div>
     );
   }
 
+  // 上传成功页面
+  if (pageState === 'success') {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', background: '#f0f2f5' }}>
+        <Result
+          status="success"
+          title="上传成功！"
+          subTitle={
+            countdown > 0 
+              ? `文件已成功上传，${countdown} 秒后自动关闭`
+              : '文件已成功上传，请手动关闭此页面'
+          }
+          icon={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
+          style={{ maxWidth: 500 }}
+          extra={
+            countdown === 0 && (
+              <Button type="primary" onClick={() => window.close()}>
+                关闭页面
+              </Button>
+            )
+          }
+        />
+      </div>
+    );
+  }
+
+  // 主上传页面
   return (
-    <div style={{ minHeight: '100vh', background: '#f0f2f5', padding: '24px' }}>
-      <div style={{ maxWidth: 800, margin: '0 auto' }}>
-        <Card style={{ marginBottom: 24, textAlign: 'center' }}>
-          <Title level={2}>Fly Print Upload</Title>
+    <div style={{ minHeight: '100vh', background: '#f0f2f5', padding: '24px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+      <div style={{ maxWidth: 600, width: '100%' }}>
+        <Card style={{ textAlign: 'center' }}>
+          <Title level={2}>文件上传</Title>
           <Paragraph type="secondary">
-            Upload your documents for printing. Supported formats: PDF, DOCX, JPG, PNG.
+            请选择要打印的文件
           </Paragraph>
-          {nodeId && (
-            <Alert 
-              message={`Connected to Edge Node: ${nodeId}`} 
-              type="info" 
-              showIcon 
-              style={{ marginBottom: 16 }} 
-            />
-          )}
-          {token && (
-             <Text type="secondary" style={{ fontSize: '12px', display: 'block', marginBottom: 16 }}>
-               Session Active
-             </Text>
-          )}
-        </Card>
+          <Paragraph type="secondary" style={{ fontSize: '12px' }}>
+            支持格式: {FILE_TYPE_LABEL}
+          </Paragraph>
 
-        <Card title="Upload Files">
-          <Dragger {...props} disabled={!token || uploading}>
-            <p className="ant-upload-drag-icon">
-              <InboxOutlined />
-            </p>
-            <p className="ant-upload-text">Click or drag file to this area to upload</p>
-            <p className="ant-upload-hint">
-              Support for a single or bulk upload. Strictly prohibited from uploading banned files.
-            </p>
-          </Dragger>
-        </Card>
-
-        {uploadedFiles.length > 0 && (
-          <Card title="Uploaded Files" style={{ marginTop: 24 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {uploadedFiles.map(file => (
-                <div key={file.id} style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  alignItems: 'center',
-                  padding: '12px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '4px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <FileOutlined style={{ fontSize: 24, color: '#1890ff' }} />
-                    <div>
-                      <Text strong>{file.original_name}</Text>
-                      <br />
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        {(file.size / 1024).toFixed(1)} KB
-                      </Text>
-                    </div>
-                  </div>
-                  <Button 
-                    icon={<DownloadOutlined />} 
-                    onClick={() => handleDownload(file)}
-                  >
-                    Download
-                  </Button>
+          {!selectedFile ? (
+            // 未选择文件 - 显示选择区域
+            <Upload.Dragger
+              accept={ACCEPTED_FILE_TYPES}
+              beforeUpload={handleFileSelect}
+              showUploadList={false}
+              disabled={pageState === 'uploading'}
+              style={{ marginTop: 24 }}
+            >
+              <p className="ant-upload-drag-icon">
+                <InboxOutlined />
+              </p>
+              <p className="ant-upload-text">点击或拖拽文件到此区域</p>
+              <p className="ant-upload-hint">支持 {FILE_TYPE_LABEL}</p>
+            </Upload.Dragger>
+          ) : (
+            // 已选择文件 - 显示文件预览
+            <div style={{ marginTop: 24 }}>
+              <div
+                style={{
+                  border: '1px dashed #d9d9d9',
+                  borderRadius: '8px',
+                  padding: '32px',
+                  background: '#fafafa',
+                  cursor: 'pointer',
+                  transition: 'all 0.3s',
+                }}
+                onClick={handleReselect}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#1890ff';
+                  e.currentTarget.style.background = '#e6f7ff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#d9d9d9';
+                  e.currentTarget.style.background = '#fafafa';
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                  {getFileIcon(selectedFile.name)}
+                  <Text strong style={{ fontSize: 16 }}>{selectedFile.name}</Text>
+                  <Text type="secondary">{formatFileSize(selectedFile.size)}</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>点击可重新选择文件</Text>
                 </div>
-              ))}
+              </div>
+              
+              <Button
+                type="primary"
+                size="large"
+                block
+                loading={pageState === 'uploading'}
+                onClick={handleUpload}
+                style={{ marginTop: 24, height: 48 }}
+              >
+                {pageState === 'uploading' ? '上传中...' : '开始上传'}
+              </Button>
             </div>
-          </Card>
-        )}
+          )}
+        </Card>
       </div>
     </div>
   );

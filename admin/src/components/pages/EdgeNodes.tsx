@@ -1,12 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, Table, Tag, Space, Row, Col, Statistic, message, Modal, Form, Input, Button } from 'antd';
+import type { TableProps } from 'antd';
+import type { SorterResult } from 'antd/es/table/interface';
+import type { ColumnType } from 'antd/es/table';
 import { 
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   StopOutlined,
   PrinterOutlined,
   CloudServerOutlined,
-  EditOutlined
+  EditOutlined,
+  SearchOutlined,
+  ReloadOutlined
 } from '@ant-design/icons';
 
 // 边缘节点接口（适配后端数据模型）
@@ -39,10 +44,27 @@ class EdgeNodesService {
     return null;
   }
 
-  async getEdgeNodes(): Promise<EdgeNode[]> {
+  async getEdgeNodes(params?: {
+    search?: string;
+    sort_by?: string;
+    sort_order?: string;
+  }): Promise<EdgeNode[]> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/edge-nodes', {
+      
+      // 构建 URL 查询参数
+      let url = '/api/v1/admin/edge-nodes?page=1&page_size=100';
+      if (params?.search) {
+        url += `&search=${encodeURIComponent(params.search)}`;
+      }
+      if (params?.sort_by) {
+        url += `&sort_by=${params.sort_by}`;
+      }
+      if (params?.sort_order) {
+        url += `&sort_order=${params.sort_order}`;
+      }
+      
+      const response = await fetch(url, {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
@@ -110,6 +132,23 @@ class EdgeNodesService {
       return false;
     }
   }
+
+  async deleteEdgeNode(id: string): Promise<boolean> {
+    try {
+      const token = await this.getToken();
+      const response = await fetch(`/api/v1/admin/edge-nodes/${id}`, {
+        method: 'DELETE',
+        headers: {
+          ...(token && { 'Authorization': `Bearer ${token}` }),
+        },
+      });
+
+      return response.ok;
+    } catch (error) {
+      console.error('删除Edge Node失败:', error);
+      return false;
+    }
+  }
 }
 
 const edgeNodesService = new EdgeNodesService();
@@ -119,16 +158,28 @@ const EdgeNodes: React.FC = () => {
   const [edgeNodes, setEdgeNodes] = useState<EdgeNode[]>([]);
   const [loading, setLoading] = useState(true);
   
+  // 搜索和排序状态
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [sortField, setSortField] = useState<string>('');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | ''>('');
+  
   // 编辑相关状态
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editingNode, setEditingNode] = useState<EdgeNode | null>(null);
   const [form] = Form.useForm();
 
+  // 定时刷新间隔（30秒）
+  const REFRESH_INTERVAL = 30000;
+
   // 加载边缘节点数据
-  const loadEdgeNodes = async () => {
+  const loadEdgeNodes = useCallback(async () => {
     try {
       setLoading(true);
-      const nodes = await edgeNodesService.getEdgeNodes();
+      const nodes = await edgeNodesService.getEdgeNodes({
+        search: searchKeyword || undefined,
+        sort_by: sortField || undefined,
+        sort_order: sortOrder || undefined,
+      });
       setEdgeNodes(nodes.map(node => ({ ...node, key: node.id })));
     } catch (error) {
       console.error('加载边缘节点失败:', error);
@@ -136,11 +187,25 @@ const EdgeNodes: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchKeyword, sortField, sortOrder]);
 
+  // 初始加载和定时刷新
   useEffect(() => {
     loadEdgeNodes();
-  }, []);
+    
+    // 设置定时器
+    const timer = setInterval(() => {
+      // 编辑弹窗打开时不刷新，避免数据冲突
+      if (!editModalVisible) {
+        loadEdgeNodes();
+      }
+    }, REFRESH_INTERVAL);
+    
+    // 清理定时器
+    return () => clearInterval(timer);
+  }, [loadEdgeNodes, editModalVisible]);
+
+  // 搜索/排序变化时重新加载（已通过 useCallback 依赖实现）
 
   // 编辑Edge Node名称
   const handleEditNode = (node: EdgeNode) => {
@@ -187,6 +252,38 @@ const EdgeNodes: React.FC = () => {
     }
   };
 
+  // 删除 Edge Node（软删除）
+  const handleDeleteNode = (node: EdgeNode) => {
+    Modal.confirm({
+      title: '确认删除该边缘节点？',
+      icon: <ExclamationCircleOutlined />,
+      content: (
+        <div>
+          <div>节点名称：{node.name}</div>
+          <div>节点ID：{node.id}</div>
+          <div style={{ marginTop: 8, color: '#888' }}>删除为软删除操作，节点将从列表中移除，但相关历史记录不会被物理删除。</div>
+        </div>
+      ),
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const success = await edgeNodesService.deleteEdgeNode(node.id);
+          if (success) {
+            message.success('删除 Edge Node 成功');
+            loadEdgeNodes();
+          } else {
+            message.error('删除失败，请稍后重试');
+          }
+        } catch (error) {
+          console.error('删除Edge Node失败:', error);
+          message.error('删除失败，请稍后重试');
+        }
+      },
+    });
+  };
+
   // 状态图标映射
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -215,8 +312,25 @@ const EdgeNodes: React.FC = () => {
     }
   };
 
+  // 处理搜索
+  const handleSearch = (value: string) => {
+    setSearchKeyword(value);
+  };
+
+  // 处理表格排序变化
+  const handleTableChange: TableProps<EdgeNode>['onChange'] = (pagination, filters, sorter) => {
+    const sortInfo = sorter as SorterResult<EdgeNode>;
+    if (sortInfo.field && sortInfo.order) {
+      setSortField(sortInfo.field as string);
+      setSortOrder(sortInfo.order === 'ascend' ? 'asc' : 'desc');
+    } else {
+      setSortField('');
+      setSortOrder('');
+    }
+  };
+
   // 表格列定义
-  const columns = [
+  const columns: ColumnType<EdgeNode>[] = [
     {
       title: '节点ID',
       dataIndex: 'id',
@@ -256,6 +370,8 @@ const EdgeNodes: React.FC = () => {
       title: '最后心跳',
       dataIndex: 'last_heartbeat',
       key: 'last_heartbeat',
+      sorter: true,
+      sortOrder: sortField === 'last_heartbeat' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
       render: (time: string) => {
         if (!time) return '-';
         const date = new Date(time);
@@ -272,6 +388,8 @@ const EdgeNodes: React.FC = () => {
       title: '打印机数量',
       dataIndex: 'printer_count',
       key: 'printer_count',
+      sorter: true,
+      sortOrder: sortField === 'printer_count' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
       render: (count: number) => (
         <Space>
           <PrinterOutlined />
@@ -282,7 +400,7 @@ const EdgeNodes: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 120,
+      width: 180,
       render: (_, record: EdgeNode) => (
         <Space size="small">
           <Button 
@@ -302,6 +420,14 @@ const EdgeNodes: React.FC = () => {
             }}
           >
             {record.enabled ? '禁用' : '启用'}
+          </Button>
+          <Button
+            type="text"
+            size="small"
+            danger
+            onClick={() => handleDeleteNode(record)}
+          >
+            删除
           </Button>
         </Space>
       ),
@@ -363,11 +489,32 @@ const EdgeNodes: React.FC = () => {
       </Row>
 
       {/* 边缘节点列表 */}
-      <Card title="边缘节点列表">
+      <Card 
+        title="边缘节点列表"
+        extra={
+          <Space>
+            <Input.Search
+              placeholder="搜索节点名称"
+              allowClear
+              onSearch={handleSearch}
+              style={{ width: 250 }}
+              prefix={<SearchOutlined />}
+            />
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={loadEdgeNodes}
+              loading={loading}
+            >
+              刷新
+            </Button>
+          </Space>
+        }
+      >
         <Table
           columns={columns}
           dataSource={edgeNodes}
           loading={loading}
+          onChange={handleTableChange}
           pagination={{
             total: edgeNodes.length,
             pageSize: 10,

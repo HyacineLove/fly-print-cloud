@@ -83,37 +83,58 @@ func (r *PrintJobRepository) GetPrintJobByID(id string) (*models.PrintJob, error
 }
 
 // ListPrintJobs 获取打印任务列表
-func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID, userID string) ([]*models.PrintJob, error) {
+func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID, userID, edgeNodeID string, startTime, endTime *time.Time) ([]*models.PrintJob, error) {
 	query := `
-		SELECT id, name, status, printer_id, 
-			   user_id, user_name, file_path, file_url, file_size, page_count, 
-			   copies, paper_size, color_mode, duplex_mode, 
-			   start_time, end_time, error_message, retry_count, 
-			   max_retries, created_at, updated_at
-		FROM print_jobs WHERE 1=1`
+		SELECT pj.id, pj.name, pj.status, pj.printer_id, 
+			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.file_size, pj.page_count, 
+			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode, 
+			   pj.start_time, pj.end_time, pj.error_message, pj.retry_count, 
+			   pj.max_retries, pj.created_at, pj.updated_at,
+			   COALESCE(p.edge_node_id, '') as edge_node_id
+		FROM print_jobs pj
+		LEFT JOIN printers p ON pj.printer_id = p.id
+		WHERE 1=1`
 
 	args := []interface{}{}
 	argIndex := 1
 
 	if status != "" {
-		query += fmt.Sprintf(" AND status = $%d", argIndex)
+		query += fmt.Sprintf(" AND pj.status = $%d", argIndex)
 		args = append(args, status)
 		argIndex++
 	}
 
 	if printerID != "" {
-		query += fmt.Sprintf(" AND printer_id = $%d", argIndex)
+		query += fmt.Sprintf(" AND pj.printer_id = $%d", argIndex)
 		args = append(args, printerID)
 		argIndex++
 	}
 
 	if userID != "" {
-		query += fmt.Sprintf(" AND user_id = $%d", argIndex)
+		query += fmt.Sprintf(" AND pj.user_id = $%d", argIndex)
 		args = append(args, userID)
 		argIndex++
 	}
 
-	query += " ORDER BY created_at DESC"
+	if edgeNodeID != "" {
+		query += fmt.Sprintf(" AND p.edge_node_id = $%d", argIndex)
+		args = append(args, edgeNodeID)
+		argIndex++
+	}
+
+	if startTime != nil {
+		query += fmt.Sprintf(" AND pj.created_at >= $%d", argIndex)
+		args = append(args, *startTime)
+		argIndex++
+	}
+
+	if endTime != nil {
+		query += fmt.Sprintf(" AND pj.created_at < $%d", argIndex)
+		args = append(args, *endTime)
+		argIndex++
+	}
+
+	query += " ORDER BY pj.created_at DESC"
 
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d", argIndex)
@@ -136,12 +157,14 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 	for rows.Next() {
 		job := &models.PrintJob{}
 		var userID sql.NullString
+		var edgeNodeID sql.NullString
 		err := rows.Scan(
 			&job.ID, &job.Name, &job.Status, &job.PrinterID,
 			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.FileSize, &job.PageCount,
 			&job.Copies, &job.PaperSize, &job.ColorMode, &job.DuplexMode,
 			&job.StartTime, &job.EndTime, &job.ErrorMessage, &job.RetryCount,
 			&job.MaxRetries, &job.CreatedAt, &job.UpdatedAt,
+			&edgeNodeID,
 		)
 		if err != nil {
 			return nil, err
@@ -150,6 +173,9 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 		// 有值就设置，没值就空着
 		if userID.Valid {
 			job.UserID = userID.String
+		}
+		if edgeNodeID.Valid {
+			job.EdgeNodeID = edgeNodeID.String
 		}
 		
 		jobs = append(jobs, job)
@@ -191,12 +217,12 @@ func (r *PrintJobRepository) DeletePrintJob(id string) error {
 
 // GetPrintJobsByPrinterID 根据打印机ID获取任务列表
 func (r *PrintJobRepository) GetPrintJobsByPrinterID(printerID string, limit, offset int) ([]*models.PrintJob, error) {
-	return r.ListPrintJobs(limit, offset, "", printerID, "")
+	return r.ListPrintJobs(limit, offset, "", printerID, "", "", nil, nil)
 }
 
 // GetPrintJobsByUserID 根据用户ID获取任务列表
 func (r *PrintJobRepository) GetPrintJobsByUserID(userID string, limit, offset int) ([]*models.PrintJob, error) {
-	return r.ListPrintJobs(limit, offset, "", "", userID)
+	return r.ListPrintJobs(limit, offset, "", "", userID, "", nil, nil)
 }
 
 // GetEdgeNodeIDByPrintJob 根据打印任务获取对应的 Edge Node ID
@@ -233,26 +259,51 @@ func (r *PrintJobRepository) UpdateJobStatus(jobID, status string, progress int,
 }
 
 // CountPrintJobs 统计打印任务总数
-func (r *PrintJobRepository) CountPrintJobs(status, printerID, userID string) (int, error) {
-	query := `SELECT COUNT(*) FROM print_jobs WHERE 1=1`
+func (r *PrintJobRepository) CountPrintJobs(status, printerID, userID, edgeNodeID string, startTime, endTime *time.Time) (int, error) {
+	query := `SELECT COUNT(*) FROM print_jobs pj`
+	
+	// 如果需要按节点ID筛选，需要 JOIN printers 表
+	if edgeNodeID != "" {
+		query += ` LEFT JOIN printers p ON pj.printer_id = p.id`
+	}
+	
+	query += ` WHERE 1=1`
 	args := []interface{}{}
 	argIndex := 1
 
 	if status != "" {
-		query += fmt.Sprintf(" AND status = $%d", argIndex)
+		query += fmt.Sprintf(" AND pj.status = $%d", argIndex)
 		args = append(args, status)
 		argIndex++
 	}
 
 	if printerID != "" {
-		query += fmt.Sprintf(" AND printer_id = $%d", argIndex)
+		query += fmt.Sprintf(" AND pj.printer_id = $%d", argIndex)
 		args = append(args, printerID)
 		argIndex++
 	}
 
 	if userID != "" {
-		query += fmt.Sprintf(" AND user_id = $%d", argIndex)
+		query += fmt.Sprintf(" AND pj.user_id = $%d", argIndex)
 		args = append(args, userID)
+		argIndex++
+	}
+
+	if edgeNodeID != "" {
+		query += fmt.Sprintf(" AND p.edge_node_id = $%d", argIndex)
+		args = append(args, edgeNodeID)
+		argIndex++
+	}
+
+	if startTime != nil {
+		query += fmt.Sprintf(" AND pj.created_at >= $%d", argIndex)
+		args = append(args, *startTime)
+		argIndex++
+	}
+
+	if endTime != nil {
+		query += fmt.Sprintf(" AND pj.created_at < $%d", argIndex)
+		args = append(args, *endTime)
 		argIndex++
 	}
 
@@ -271,13 +322,13 @@ func (r *PrintJobRepository) CountJobsByStatusAndDate(status string, startDate, 
 }
 
 // ListPrintJobsWithTotal 获取打印任务列表和总数
-func (r *PrintJobRepository) ListPrintJobsWithTotal(limit, offset int, status, printerID, userID string) ([]*models.PrintJob, int, error) {
-	jobs, err := r.ListPrintJobs(limit, offset, status, printerID, userID)
+func (r *PrintJobRepository) ListPrintJobsWithTotal(limit, offset int, status, printerID, userID, edgeNodeID string, startTime, endTime *time.Time) ([]*models.PrintJob, int, error) {
+	jobs, err := r.ListPrintJobs(limit, offset, status, printerID, userID, edgeNodeID, startTime, endTime)
 	if err != nil {
 		return nil, 0, err
 	}
 	
-	total, err := r.CountPrintJobs(status, printerID, userID)
+	total, err := r.CountPrintJobs(status, printerID, userID, edgeNodeID, startTime, endTime)
 	if err != nil {
 		return nil, 0, err
 	}

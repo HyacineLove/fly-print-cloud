@@ -11,14 +11,6 @@ services:
     networks:
       - fly-print-network
 
-  redis:
-    image: docker.m.daocloud.io/library/redis:7-alpine
-    container_name: fly-print-redis
-    volumes:
-      - redis_data:/data
-    networks:
-      - fly-print-network
-
   api:
     build:
       context: ./api
@@ -32,8 +24,6 @@ services:
       - FLY_PRINT_DATABASE_DBNAME=${POSTGRES_DB}
       - FLY_PRINT_DATABASE_USER=${POSTGRES_USER}
       - FLY_PRINT_DATABASE_PASSWORD=${POSTGRES_PASSWORD}
-      - FLY_PRINT_REDIS_HOST=redis
-      - FLY_PRINT_REDIS_PORT=6379
       - FLY_PRINT_CREATE_DEFAULT_ADMIN=${CREATE_DEFAULT_ADMIN:-false}
       - FLY_PRINT_DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}
       - FLY_PRINT_OAUTH2_CLIENT_ID=${OAUTH2_CLIENT_ID}
@@ -47,7 +37,6 @@ services:
       - FLY_PRINT_ADMIN_CONSOLE_URL=${ADMIN_CONSOLE_URL}
     depends_on:
       - postgres
-      - redis
     volumes:
       - file_uploads:/root/uploads
     networks:
@@ -81,7 +70,6 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
   admin_build:
   file_uploads:
 
