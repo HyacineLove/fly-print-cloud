@@ -12,7 +12,9 @@ import (
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/security"
+	"fly-print-cloud/api/internal/utils"
 	"fly-print-cloud/api/internal/websocket"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -40,10 +42,10 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	var nodeID string
 
 	if token != "" {
-		// 使用凭证验证
-		payload, err := h.tokenManager.ValidateUploadToken(token)
+		// 第一阶段：使用轻量验证（不消耗Token），提前检查Token有效性
+		payload, err := h.tokenManager.VerifyUploadTokenLightweight(token)
 		if err != nil {
-			log.Printf("Upload token validation failed: %v", err)
+			log.Printf("Upload token lightweight verification failed: %v", err)
 			errorCode := security.GetTokenErrorCode(err)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    401,
@@ -52,9 +54,10 @@ func (h *FileHandler) Upload(c *gin.Context) {
 			})
 			return
 		}
-		uploaderID = payload.NodeID // 使用节点ID作为上传者标识
+		// 暂存信息，稍后验证通过再使用
 		nodeID = payload.NodeID
-		log.Printf("File upload authorized via token for node %s, printer %s", payload.NodeID, payload.PrinterID)
+		uploaderID = payload.NodeID // 使用节点ID作为上传者标识
+		log.Printf("File upload pre-authorized for node %s, printer %s", payload.NodeID, payload.PrinterID)
 	} else {
 		// 使用 OAuth2 验证（可选认证模式下由中间件处理）
 		if val, exists := c.Get("external_id"); exists {
@@ -80,38 +83,61 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	// Validate size
+	// Open the file to check magic bytes
+	srcFile, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to open uploaded file"})
+		return
+	}
+	defer srcFile.Close()
+
+	// Read first 512 bytes
+	buffer := make([]byte, 512)
+	if _, err := srcFile.Read(buffer); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file content"})
+		return
+	}
+
+	// Detect content type
+	contentType := http.DetectContentType(buffer)
+
+	// Validate against allowed types using security whitelist
+	if !security.IsAllowedFileType(contentType, security.AllowedPrintFileTypes) {
+		// Special handling for Office documents (often detected as zip)
+		ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+		allowedExtensions := []string{".docx", ".doc", ".xlsx", ".xls", ".pdf", ".txt", ".ps"}
+		isAllowedExt := false
+		for _, allowedExt := range allowedExtensions {
+			if ext == allowedExt {
+				isAllowedExt = true
+				break
+			}
+		}
+
+		if !isAllowedExt {
+			BadRequestWithCode(c, ErrCodeFileInvalidType)
+			return
+		}
+	}
+
+	// Validate size - 先检查硬编码的安全上限(100MB)
+	const maxFileSizeHardLimit = 100 * 1024 * 1024 // 100MB硬编码安全上限
+	if fileHeader.Size > maxFileSizeHardLimit {
+		BadRequestWithCode(c, ErrCodeFileTooLarge)
+		return
+	}
+
+	// 再检查配置的大小限制
 	if fileHeader.Size > h.config.MaxSize {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("File too large. Max size: %d bytes", h.config.MaxSize)})
+		BadRequestWithCode(c, ErrCodeFileTooLarge)
 		return
 	}
 
-	// Validate extension
-	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-	allowed := map[string]bool{
-		// 图片格式
-		".png":  true,
-		".jpg":  true,
-		".jpeg": true,
-		".bmp":  true,
-		".gif":  true,
-		".tiff": true,
-		".webp": true,
-		// 文档格式
-		".pdf":  true,
-		".doc":  true,
-		".docx": true,
-	}
-	if !allowed[ext] {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"error":   "file_type_not_allowed",
-			"message": fmt.Sprintf("不支持的文件类型 '%s'。仅支持：PNG, JPG, JPEG, BMP, GIF, TIFF, WEBP, PDF, DOC, DOCX", ext),
-		})
-		return
-	}
+	// Sanitize filename
+	safeFilename := security.SanitizeFilename(fileHeader.Filename)
 
-	// Generate safe filename
+	// Generate safe filename with extension
+	ext := filepath.Ext(safeFilename)
 	fileUUID := uuid.New().String()
 	fileName := fileUUID + ext
 	filePath := filepath.Join(h.config.UploadDir, fileName)
@@ -120,6 +146,39 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	if err := c.SaveUploadedFile(fileHeader, filePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
 		return
+	}
+
+	// 对 PDF 文件进行页数验证（在消耗Token之前）
+	if strings.ToLower(ext) == ".pdf" && h.config.MaxDocumentPages > 0 {
+		pageCount, err := utils.ValidatePDFPageCount(filePath, h.config.MaxDocumentPages)
+		if err != nil {
+			// 页数超限，删除已保存的文件
+			os.Remove(filePath)
+			log.Printf("PDF page count validation failed: %v (file: %s, pages: %d)", err, fileHeader.Filename, pageCount)
+			
+			// 返回标准错误响应
+			BadRequestWithCode(c, ErrCodeFileTooManyPages)
+			return
+		}
+		log.Printf("PDF page count validation passed: %d pages (file: %s)", pageCount, fileHeader.Filename)
+	}
+
+	// 第二阶段：所有验证通过后，真正验证并消耗Token
+	if token != "" {
+		payload, err := h.tokenManager.ValidateUploadToken(token)
+		if err != nil {
+			// Token验证失败，删除已保存的文件
+			os.Remove(filePath)
+			log.Printf("Upload token validation failed: %v", err)
+			errorCode := security.GetTokenErrorCode(err)
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":    401,
+				"error":   errorCode,
+				"message": err.Error(),
+			})
+			return
+		}
+		log.Printf("File upload fully authorized via token for node %s, printer %s", payload.NodeID, payload.PrinterID)
 	}
 
 	// Create DB record
@@ -138,7 +197,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata"})
 		return
 	}
-	
+
 	// Generate URL (relative path for API)
 	file.URL = fmt.Sprintf("/api/v1/files/%s", file.ID)
 
@@ -152,16 +211,16 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"code": 200,
+		"code":    200,
 		"message": "success",
-		"data": file,
+		"data":    file,
 	})
 }
 
 // Download 下载文件
 func (h *FileHandler) Download(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	// 检查是否使用下载凭证
 	token := c.Query("token")
 
@@ -206,7 +265,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 		// Permission check for OAuth2 users
 		roles, _ := c.Get("roles")
 		rolesSlice, _ := roles.([]string)
-		
+
 		hasAdmin := false
 		hasReadScope := false
 		for _, r := range rolesSlice {
@@ -225,7 +284,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 			return
 		}
-		
+
 		// Serve file
 		c.FileAttachment(file.FilePath, file.OriginalName)
 		return
@@ -241,7 +300,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 		return
 	}
-	
+
 	// Serve file
 	c.FileAttachment(file.FilePath, file.OriginalName)
 }

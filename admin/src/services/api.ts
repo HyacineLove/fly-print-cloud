@@ -1,4 +1,6 @@
 // API 基础服务
+import { ErrorHandler } from '../utils/errorHandler';
+
 export interface ApiResponse<T = any> {
   code: number;
   message: string;
@@ -9,6 +11,18 @@ export interface ApiError {
   code: number;
   message: string;
   details?: any;
+}
+
+export class ApiError extends Error {
+  code: number;
+  details?: any;
+
+  constructor({ code, message, details }: { code: number; message: string; details?: any }) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+    this.details = details;
+  }
 }
 
 class ApiService {
@@ -183,18 +197,6 @@ class ApiService {
 
 // 创建单例实例
 const apiService = new ApiService();
-
-export class ApiError extends Error {
-  code: number;
-  details?: any;
-
-  constructor({ code, message, details }: { code: number; message: string; details?: any }) {
-    super(message);
-    this.name = 'ApiError';
-    this.code = code;
-    this.details = details;
-  }
-}
 
 export { apiService };
 export default apiService;

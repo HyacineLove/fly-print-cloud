@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Table, Tag, Space, Button, Select, message, DatePicker } from 'antd';
+import { Card, Table, Tag, Space, Button, Select, message, DatePicker, Popconfirm } from 'antd';
 import { 
   ReloadOutlined,
   FileTextOutlined,
@@ -133,6 +133,27 @@ class PrintJobsService {
     }
     return [];
   }
+
+  async cancelPrintJob(jobId: string): Promise<void> {
+    const token = await this.getToken();
+    const response = await fetch(`/api/v1/admin/print-jobs/${jobId}/cancel`, {
+      method: 'POST',
+      headers: {
+        ...(token && { 'Authorization': `Bearer ${token}` }),
+      },
+    });
+
+    if (!response.ok) {
+      let errorMessage = '取消打印任务失败';
+      try {
+        const result = await response.json();
+        errorMessage = result?.message || result?.error || errorMessage;
+      } catch {
+        // keep default message when response body is not json
+      }
+      throw new Error(errorMessage);
+    }
+  }
 }
 
 const printJobsService = new PrintJobsService();
@@ -148,6 +169,7 @@ const PrintJobs: React.FC = () => {
   const [pageSize, setPageSize] = useState(10);
   const [total, setTotal] = useState(0);
   const [edgeNodes, setEdgeNodes] = useState<EdgeNode[]>([]);
+  const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
 
   // 加载打印任务数据
   const loadPrintJobs = async (
@@ -261,6 +283,25 @@ const PrintJobs: React.FC = () => {
     loadPrintJobs(currentPage, pageSize, statusFilter, edgeNodeFilter, startTime, endTime);
   };
 
+  const canCancel = (status: string) => {
+    return status === 'pending' || status === 'dispatched' || status === 'printing';
+  };
+
+  const handleCancelJob = async (job: PrintJob) => {
+    try {
+      setCancellingJobId(job.id);
+      await printJobsService.cancelPrintJob(job.id);
+      message.success('任务已取消');
+      const [startTime, endTime] = getDateRangeStrings();
+      await loadPrintJobs(currentPage, pageSize, statusFilter, edgeNodeFilter, startTime, endTime);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '取消打印任务失败';
+      message.error(errorMessage);
+    } finally {
+      setCancellingJobId(null);
+    }
+  };
+
   // 表格列定义
   const columns = [
     {
@@ -365,6 +406,34 @@ const PrintJobs: React.FC = () => {
         if (size < 1024) return `${size} B`;
         if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
         return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+      },
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 120,
+      render: (_: unknown, record: PrintJob) => {
+        if (!canCancel(record.status)) {
+          return '-';
+        }
+
+        return (
+          <Popconfirm
+            title="确认取消该打印任务？"
+            description="取消后任务将在云端立即结束，不会再参与重发。"
+            okText="确认"
+            cancelText="取消"
+            onConfirm={() => handleCancelJob(record)}
+          >
+            <Button
+              type="link"
+              danger
+              loading={cancellingJobId === record.id}
+            >
+              取消任务
+            </Button>
+          </Popconfirm>
+        );
       },
     },
   ];

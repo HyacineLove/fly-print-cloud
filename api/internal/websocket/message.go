@@ -17,6 +17,7 @@ const (
 	MsgTypeJobUpdate         = "job_update"
 	MsgTypeSubmitPrintParams = "submit_print_params"
 	MsgTypeRequestUploadToken = "request_upload_token" // 请求上传凭证
+	MsgTypeAck               = "ack"                  // 确认消息
 )
 
 // 下行指令类型
@@ -32,11 +33,13 @@ const (
 
 // PreviewFilePayload 文件预览请求载荷
 type PreviewFilePayload struct {
-	FileID    string `json:"file_id"`
-	FileURL   string `json:"file_url"`
-	FileName  string `json:"file_name"`
-	FileSize  int64  `json:"file_size"`
-	FileType  string `json:"file_type"`
+	FileID                   string     `json:"file_id"`
+	FileURL                  string     `json:"file_url"`
+	FileName                 string     `json:"file_name"`
+	FileSize                 int64      `json:"file_size"`
+	FileType                 string     `json:"file_type"`
+	FileAccessToken          string     `json:"file_access_token,omitempty"`           // 文件访问凭证
+	FileAccessTokenExpiresAt *time.Time `json:"file_access_token_expires_at,omitempty"` // 凭证过期时间
 }
 
 // SubmitPrintParamsPayload 提交打印参数载荷
@@ -63,6 +66,7 @@ type NodeEnabledPayload struct {
 type Command struct {
 	Type      string      `json:"type"`
 	CommandID string      `json:"command_id"`
+	MsgID     string      `json:"msg_id,omitempty"` // 用于通信层 ACK 的唯一消息 ID
 	Timestamp time.Time   `json:"timestamp"`
 	Target    string      `json:"target"` // edge_node_id 或 printer_id
 	Data      interface{} `json:"data"`
@@ -72,6 +76,7 @@ type Command struct {
 type CommandAck struct {
 	Type      string    `json:"type"`
 	CommandID string    `json:"command_id"`
+	MsgID     string    `json:"msg_id,omitempty"` // 对应 Command 的 MsgID
 	NodeID    string    `json:"node_id"`
 	Timestamp time.Time `json:"timestamp"`
 	Status    string    `json:"status"`  // accepted/rejected/processing

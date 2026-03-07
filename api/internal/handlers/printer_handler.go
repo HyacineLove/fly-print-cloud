@@ -1,57 +1,58 @@
 package handlers
 
 import (
+	"fmt"
+	"log"
+	"strings"
+
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/websocket"
-	"log"
-	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type PrinterHandler struct {
-	printerRepo   *database.PrinterRepository
-	edgeNodeRepo  *database.EdgeNodeRepository
-	wsManager     *websocket.ConnectionManager
+	printerRepo    *database.PrinterRepository
+	edgeNodeRepo   *database.EdgeNodeRepository
+	printJobRepo   *database.PrintJobRepository
+	wsManager      *websocket.ConnectionManager
 	tokenUsageRepo *database.TokenUsageRepository
 }
 
-func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository) *PrinterHandler {
+func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository) *PrinterHandler {
 	return &PrinterHandler{
-		printerRepo:   printerRepo,
-		edgeNodeRepo:  edgeNodeRepo,
-		wsManager:     wsManager,
+		printerRepo:    printerRepo,
+		edgeNodeRepo:   edgeNodeRepo,
+		printJobRepo:   printJobRepo,
+		wsManager:      wsManager,
 		tokenUsageRepo: tokenUsageRepo,
 	}
 }
 
-
-
 // UpdatePrinterRequest 更新打印机请求（Edge Node使用）
 type UpdatePrinterRequest struct {
-	Name            string                        `json:"name" binding:"required,min=1,max=100"`
-	Model           string                        `json:"model"`
-	SerialNumber    string                        `json:"serial_number"`
-	Status          string                        `json:"status" binding:"required,oneof=ready printing error offline"`
-	FirmwareVersion string                        `json:"firmware_version"`
-	PortInfo        string                        `json:"port_info"`
-	IPAddress       *string                       `json:"ip_address"`
-	MACAddress      string                        `json:"mac_address"`
-	NetworkConfig   string                        `json:"network_config"`
-	Latitude        *float64                      `json:"latitude"`
-	Longitude       *float64                      `json:"longitude"`
-	Location        string                        `json:"location"`
-	Capabilities    models.PrinterCapabilities    `json:"capabilities"`
-	QueueLength     int                           `json:"queue_length"`
+	Name            string                     `json:"name" binding:"required,min=1,max=100"`
+	Model           string                     `json:"model"`
+	SerialNumber    string                     `json:"serial_number"`
+	Status          string                     `json:"status" binding:"required,oneof=ready printing error offline"`
+	FirmwareVersion string                     `json:"firmware_version"`
+	PortInfo        string                     `json:"port_info"`
+	IPAddress       *string                    `json:"ip_address"`
+	MACAddress      string                     `json:"mac_address"`
+	NetworkConfig   string                     `json:"network_config"`
+	Latitude        *float64                   `json:"latitude"`
+	Longitude       *float64                   `json:"longitude"`
+	Location        string                     `json:"location"`
+	Capabilities    models.PrinterCapabilities `json:"capabilities"`
+	QueueLength     int                        `json:"queue_length"`
 }
 
 // AdminUpdatePrinterRequest 管理界面更新打印机请求
 type AdminUpdatePrinterRequest struct {
 	DisplayName string `json:"display_name" binding:"omitempty,max=100"`
-	Enabled     *bool  `json:"enabled"`  // 使用指针类型以区分未设置和false
+	Enabled     *bool  `json:"enabled"` // 使用指针类型以区分未设置和false
 }
 
 // PrinterWithStatus 包含实际状态的打印机信息
@@ -65,7 +66,7 @@ type PrinterWithStatus struct {
 // NewPrinterWithStatus 创建包含实际状态的打印机信息
 func NewPrinterWithStatus(printer *models.Printer, edgeNodeEnabled bool) *PrinterWithStatus {
 	actuallyEnabled := printer.Enabled && edgeNodeEnabled
-	
+
 	var disabledReason string
 	if !actuallyEnabled {
 		if !printer.Enabled {
@@ -74,7 +75,7 @@ func NewPrinterWithStatus(printer *models.Printer, edgeNodeEnabled bool) *Printe
 			disabledReason = "Edge Node被禁用"
 		}
 	}
-	
+
 	return &PrinterWithStatus{
 		Printer:         printer,
 		EdgeNodeEnabled: edgeNodeEnabled,
@@ -85,14 +86,61 @@ func NewPrinterWithStatus(printer *models.Printer, edgeNodeEnabled bool) *Printe
 
 // Edge 注册打印机请求（简化版）
 type EdgeRegisterPrinterRequest struct {
-	Name            string                        `json:"name" binding:"required,min=1,max=100"`
-	Model           string                        `json:"model"`
-	SerialNumber    string                        `json:"serial_number"`
-	FirmwareVersion string                        `json:"firmware_version"`
-	PortInfo        string                        `json:"port_info"`
-	IPAddress       *string                       `json:"ip_address"`
-	MACAddress      string                        `json:"mac_address"`
-	Capabilities    models.PrinterCapabilities    `json:"capabilities"`
+	Name            string                     `json:"name" binding:"required,min=1,max=100"`
+	Model           string                     `json:"model"`
+	SerialNumber    string                     `json:"serial_number"`
+	FirmwareVersion string                     `json:"firmware_version"`
+	PortInfo        string                     `json:"port_info"`
+	IPAddress       *string                    `json:"ip_address"`
+	MACAddress      string                     `json:"mac_address"`
+	Capabilities    models.PrinterCapabilities `json:"capabilities"`
+}
+
+// validatePrinterCapabilities 验证打印机能力数据
+func validatePrinterCapabilities(cap models.PrinterCapabilities) error {
+	// 验证纸张尺寸不为空
+	if len(cap.PaperSizes) == 0 {
+		return fmt.Errorf("paper_sizes cannot be empty")
+	}
+
+	// 验证纸张尺寸数量不超过50个
+	if len(cap.PaperSizes) > 50 {
+		return fmt.Errorf("paper_sizes exceeds maximum of 50")
+	}
+
+	// 验证每个纸张尺寸不为空且长度合理
+	for i, size := range cap.PaperSizes {
+		if size == "" {
+			return fmt.Errorf("paper_sizes[%d] cannot be empty", i)
+		}
+		if len(size) > 50 {
+			return fmt.Errorf("paper_sizes[%d] exceeds maximum length of 50", i)
+		}
+	}
+
+	// 验证介质类型数量不超过50个
+	if len(cap.MediaTypes) > 50 {
+		return fmt.Errorf("media_types exceeds maximum of 50")
+	}
+
+	// 验证每个介质类型长度合理
+	for i, mediaType := range cap.MediaTypes {
+		if len(mediaType) > 50 {
+			return fmt.Errorf("media_types[%d] exceeds maximum length of 50", i)
+		}
+	}
+
+	// 验证分辨率字段长度
+	if len(cap.Resolution) > 50 {
+		return fmt.Errorf("resolution exceeds maximum length of 50")
+	}
+
+	// 验证打印速度字段长度
+	if len(cap.PrintSpeed) > 50 {
+		return fmt.Errorf("print_speed exceeds maximum length of 50")
+	}
+
+	return nil
 }
 
 // 管理员 API
@@ -100,18 +148,10 @@ type EdgeRegisterPrinterRequest struct {
 // ListPrinters 获取所有打印机列表（管理员）
 // 支持分页、按Edge Node筛选、按状态筛选、按名称搜索
 func (h *PrinterHandler) ListPrinters(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+	page, pageSize, _ := ParsePaginationParams(c)
 	edgeNodeID := c.Query("edge_node_id") // 支持按Edge Node筛选
 	status := c.Query("status")           // 支持按状态筛选
 	search := c.Query("search")           // 支持按名称/别名/ID搜索
-
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 10
-	}
 
 	var printers []*models.Printer
 	var total int
@@ -277,6 +317,12 @@ func (h *PrinterHandler) UpdatePrinter(c *gin.Context) {
 			return
 		}
 
+		// 验证打印机能力数据
+		if err := validatePrinterCapabilities(req.Capabilities); err != nil {
+			BadRequestResponse(c, "打印机能力数据无效: "+err.Error())
+			return
+		}
+
 		// 更新所有打印机信息
 		printer.Name = req.Name
 		printer.Model = req.Model
@@ -323,6 +369,20 @@ func (h *PrinterHandler) DeletePrinter(c *gin.Context) {
 		return
 	}
 
+	// 检查是否有活动任务（pending, dispatched, printing 状态）
+	if h.printJobRepo != nil {
+		activeCount, err := h.printJobRepo.CountActiveJobsByPrinter(printerID)
+		if err != nil {
+			log.Printf("Failed to count active jobs for printer %s: %v", printerID, err)
+			InternalErrorResponse(c, "检查活动任务失败")
+			return
+		}
+		if activeCount > 0 {
+			BadRequestResponse(c, "该打印机有正在进行的任务，无法删除")
+			return
+		}
+	}
+
 	// 删除打印机
 	if err := h.printerRepo.DeletePrinter(printerID); err != nil {
 		log.Printf("Failed to delete printer %s: %v", printerID, err)
@@ -355,6 +415,12 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 		return
 	}
 
+	// 验证打印机能力数据
+	if err := validatePrinterCapabilities(req.Capabilities); err != nil {
+		BadRequestResponse(c, "打印机能力数据无效: "+err.Error())
+		return
+	}
+
 	// 验证 Edge Node 是否存在
 	_, err := h.edgeNodeRepo.GetEdgeNodeByID(edgeNodeID)
 	if err != nil {
@@ -365,7 +431,7 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 	// 检查是否已存在相同名称的打印机
 	existingPrinter, err := h.printerRepo.GetPrinterByNameAndEdgeNode(req.Name, edgeNodeID)
 	isNew := false
-	
+
 	var printer *models.Printer
 	if err == nil && existingPrinter != nil {
 		// 打印机已存在，更新信息但保持原ID
@@ -376,7 +442,7 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 		existingPrinter.IPAddress = req.IPAddress
 		existingPrinter.MACAddress = req.MACAddress
 		existingPrinter.Capabilities = req.Capabilities
-		
+
 		if err := h.printerRepo.UpdatePrinter(existingPrinter); err != nil {
 			log.Printf("Failed to update existing printer %s: %v", existingPrinter.ID, err)
 			InternalErrorResponse(c, "更新打印机失败")
@@ -414,10 +480,10 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 
 	// 返回响应，包含打印机ID和是否为新注册
 	CreatedResponse(c, gin.H{
-		"id":       printer.ID,
-		"name":     printer.Name,
-		"is_new":   isNew,
-		"printer":  printer,
+		"id":      printer.ID,
+		"name":    printer.Name,
+		"is_new":  isNew,
+		"printer": printer,
 	})
 }
 

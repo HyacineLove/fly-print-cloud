@@ -3,7 +3,6 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"strings"
 
 	"fly-print-cloud/api/internal/models"
@@ -220,7 +219,7 @@ func (r *EdgeNodeRepository) UpdateEdgeNode(node *models.EdgeNode) error {
 // DeleteEdgeNode 删除 Edge Node（软删除）
 func (r *EdgeNodeRepository) DeleteEdgeNode(id string) error {
 	query := `UPDATE edge_nodes SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL`
-	
+
 	_, err := r.db.Exec(query, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete edge node: %w", err)
@@ -229,10 +228,22 @@ func (r *EdgeNodeRepository) DeleteEdgeNode(id string) error {
 	return nil
 }
 
+// DeleteEdgeNodeTx 删除 Edge Node（软删除，使用事务）
+func (r *EdgeNodeRepository) DeleteEdgeNodeTx(tx *Tx, id string) error {
+	query := `UPDATE edge_nodes SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL`
+
+	_, err := tx.Exec(query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete edge node in transaction: %w", err)
+	}
+
+	return nil
+}
+
 // HardDeleteEdgeNode 硬删除 Edge Node（彻底删除）
 func (r *EdgeNodeRepository) HardDeleteEdgeNode(id string) error {
 	query := `DELETE FROM edge_nodes WHERE id = $1`
-	
+
 	_, err := r.db.Exec(query, id)
 	if err != nil {
 		return fmt.Errorf("failed to hard delete edge node: %w", err)
@@ -244,10 +255,8 @@ func (r *EdgeNodeRepository) HardDeleteEdgeNode(id string) error {
 // ListEdgeNodes 获取 Edge Node 列表
 // 支持按状态过滤、排序和搜索
 func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, sortOrder, search string) ([]*models.EdgeNode, int, error) {
-	log.Printf("🔍 [DB DEBUG] ListEdgeNodes: offset=%d, limit=%d, status='%s', sortBy='%s', sortOrder='%s', search='%s'", 
-		offset, limit, status, sortBy, sortOrder, search)
 	var nodes []*models.EdgeNode
-	
+
 	// 构建查询条件
 	whereClause := "WHERE deleted_at IS NULL"
 	args := []interface{}{}
@@ -279,7 +288,7 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 	default:
 		orderClause = "created_at"
 	}
-	
+
 	// 排序方向
 	if strings.ToLower(sortOrder) == "asc" {
 		orderClause += " ASC"
@@ -289,14 +298,11 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 
 	// 查询总数
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM edge_nodes %s", whereClause)
-	log.Printf("📊 [DB DEBUG] Count query: %s, args: %v", countQuery, args)
 	var total int
 	err := r.db.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
-		log.Printf("❌ [DB DEBUG] Count query failed: %v", err)
 		return nil, 0, fmt.Errorf("failed to count edge nodes: %w", err)
 	}
-	log.Printf("📊 [DB DEBUG] Total count: %d", total)
 
 	// 查询数据
 	query := fmt.Sprintf(`
@@ -311,12 +317,9 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 		LIMIT $%d OFFSET $%d`, whereClause, orderClause, argIndex, argIndex+1)
 
 	args = append(args, limit, offset)
-	log.Printf("📊 [DB DEBUG] Data query: %s", query)
-	log.Printf("📊 [DB DEBUG] Query args: %v", args)
 
 	rows, err := r.db.Query(query, args...)
 	if err != nil {
-		log.Printf("❌ [DB DEBUG] Data query failed: %v", err)
 		return nil, 0, fmt.Errorf("failed to query edge nodes: %w", err)
 	}
 	defer rows.Close()
@@ -408,7 +411,7 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 func (r *EdgeNodeRepository) UpdateHeartbeat(id string) error {
 	// 简化：每次心跳都更新时间（因为不再存储status字段）
 	query := `UPDATE edge_nodes SET last_heartbeat = CURRENT_TIMESTAMP WHERE id = $1`
-	
+
 	_, err := r.db.Exec(query, id)
 	if err != nil {
 		return fmt.Errorf("failed to update heartbeat: %w", err)
@@ -420,7 +423,7 @@ func (r *EdgeNodeRepository) UpdateHeartbeat(id string) error {
 // UpdateStatus 更新状态
 func (r *EdgeNodeRepository) UpdateStatus(id, status string) error {
 	query := `UPDATE edge_nodes SET status = $2 WHERE id = $1`
-	
+
 	_, err := r.db.Exec(query, id, status)
 	if err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
@@ -437,16 +440,16 @@ func (r *EdgeNodeRepository) CheckAndUpdateOfflineNodes(timeoutMinutes int) (int
 		WHERE status = 'online' 
 		  AND last_heartbeat < CURRENT_TIMESTAMP - INTERVAL '%d minutes'
 		  AND deleted_at IS NULL`
-	
+
 	result, err := r.db.Exec(fmt.Sprintf(query, timeoutMinutes))
 	if err != nil {
 		return 0, fmt.Errorf("failed to update offline nodes: %w", err)
 	}
-	
+
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get rows affected: %w", err)
 	}
-	
+
 	return int(rowsAffected), nil
 }
