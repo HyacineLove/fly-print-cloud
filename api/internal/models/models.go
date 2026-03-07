@@ -91,6 +91,7 @@ type PrintJob struct {
 	
 	// 关联信息
 	PrinterID    string    `json:"printer_id"`
+	PrinterName  string    `json:"printer_name,omitempty"` // 打印机名称 (非DB字段，仅用于API返回或内部逻辑)
 	EdgeNodeID   string    `json:"edge_node_id,omitempty"` // 所属节点ID（查询时填充）
 	UserID       string    `json:"user_id"`       // 提交用户
 	UserName     string    `json:"user_name"`     // 提交用户名

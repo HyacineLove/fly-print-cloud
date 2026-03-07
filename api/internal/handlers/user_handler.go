@@ -2,10 +2,10 @@ package handlers
 
 import (
 	"log"
-	"strconv"
 
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -44,6 +44,16 @@ type ChangePasswordRequest struct {
 }
 
 // GetCurrentUserProfile 获取当前用户业务信息
+// @Summary 获取当前用户信息
+// @Description 获取当前登录用户的详细信息
+// @Tags 用户管理
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} map[string]interface{} "用户信息"
+// @Failure 401 {object} map[string]interface{} "未授权"
+// @Failure 404 {object} map[string]interface{} "用户不存在"
+// @Router /api/v1/users/profile [get]
 func (h *UserHandler) GetCurrentUserProfile(c *gin.Context) {
 	// 从认证中间件获取 external_id
 	externalID, exists := c.Get("external_id")
@@ -65,17 +75,7 @@ func (h *UserHandler) GetCurrentUserProfile(c *gin.Context) {
 // ListUsers 获取用户列表
 func (h *UserHandler) ListUsers(c *gin.Context) {
 	// 获取分页参数
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
-	
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 10
-	}
-
-	offset := (page - 1) * pageSize
+	page, pageSize, offset := ParsePaginationParams(c)
 
 	// 查询用户列表
 	users, total, err := h.userRepo.ListUsers(offset, pageSize)

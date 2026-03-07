@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/security"
+
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -21,6 +23,21 @@ func NewUserRepository(db *DB) *UserRepository {
 
 // CreateUser 创建用户
 func (r *UserRepository) CreateUser(user *models.User) error {
+	// 验证用户名格式
+	if err := security.ValidateUsername(user.Username); err != nil {
+		return fmt.Errorf("invalid username: %w", err)
+	}
+
+	// 验证邮箱格式
+	if err := security.ValidateEmail(user.Email); err != nil {
+		return fmt.Errorf("invalid email: %w", err)
+	}
+
+	// 验证密码强度（user.PasswordHash 此时存储的是明文密码）
+	if err := security.ValidatePasswordStrength(user.PasswordHash); err != nil {
+		return fmt.Errorf("weak password: %w", err)
+	}
+
 	// 加密密码
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.PasswordHash), bcrypt.DefaultCost)
 	if err != nil {
@@ -66,18 +83,23 @@ func (r *UserRepository) GetUserByID(id string) (*models.User, error) {
 // GetUserByUsername 根据用户名获取用户（包含密码哈希，用于登录验证）
 func (r *UserRepository) GetUserByUsername(username string) (*models.User, error) {
 	user := &models.User{}
+	var lastLogin sql.NullTime
 	query := `
 		SELECT id, username, email, password_hash, role, status, last_login, created_at, updated_at
 		FROM users WHERE username = $1 AND status = 'active'`
 
 	err := r.db.QueryRow(query, username).Scan(
 		&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Role,
-		&user.Status, &user.LastLogin, &user.CreatedAt, &user.UpdatedAt)
+		&user.Status, &lastLogin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("user not found")
 		}
 		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if lastLogin.Valid {
+		user.LastLogin = lastLogin.Time
 	}
 
 	return user, nil
@@ -242,10 +264,10 @@ func (r *UserRepository) GetUserByExternalID(externalID string) (*models.User, e
 		SELECT id, username, email, password_hash, external_id, role, status, last_login, created_at, updated_at
 		FROM users 
 		WHERE external_id = $1`
-	
+
 	var user models.User
 	var externalIDPtr sql.NullString
-	
+
 	err := r.db.QueryRow(query, externalID).Scan(
 		&user.ID,
 		&user.Username,
@@ -258,15 +280,15 @@ func (r *UserRepository) GetUserByExternalID(externalID string) (*models.User, e
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if externalIDPtr.Valid {
 		user.ExternalID = &externalIDPtr.String
 	}
-	
+
 	return &user, nil
 }
 
@@ -276,7 +298,7 @@ func (r *UserRepository) CreateUserFromOAuth2(externalID, username, email string
 		INSERT INTO users (username, email, external_id, password_hash, role, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id`
-	
+
 	user := &models.User{
 		Username:     username,
 		Email:        email,
@@ -287,7 +309,7 @@ func (r *UserRepository) CreateUserFromOAuth2(externalID, username, email string
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
-	
+
 	err := r.db.QueryRow(query,
 		user.Username,
 		user.Email,
@@ -298,10 +320,10 @@ func (r *UserRepository) CreateUserFromOAuth2(externalID, username, email string
 		user.CreatedAt,
 		user.UpdatedAt,
 	).Scan(&user.ID)
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return user, nil
 }

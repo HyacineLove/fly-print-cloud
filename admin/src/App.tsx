@@ -9,7 +9,8 @@ import {
   UserOutlined,
   LogoutOutlined,
   SettingOutlined,
-  FileAddOutlined
+  FileAddOutlined,
+  KeyOutlined
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 
@@ -21,6 +22,13 @@ import PrintJobs from './components/pages/PrintJobs';
 import Users from './components/pages/Users';
 import Settings from './components/pages/Settings';
 import PublicUpload from './components/pages/PublicUpload';
+import Login from './components/pages/Login';
+import OAuth2Clients from './components/pages/OAuth2Clients';
+
+// 导入错误边界和工具
+import ErrorBoundary from './components/ErrorBoundary';
+import Loading from './components/Loading';
+import { handleError } from './utils/errorHandler';
 
 const { Header, Sider, Content } = Layout;
 
@@ -46,9 +54,16 @@ const AdminApp: React.FC = () => {
     const getCurrentUser = async () => {
       try {
         const response = await fetch('/auth/me');
+        
+        // 检查 HTTP 状态码，如果是 401 未授权，直接跳转登录
+        if (response.status === 401 || !response.ok) {
+          window.location.href = '/login';
+          return;
+        }
+        
         const result = await response.json();
         
-        if (result.code === 200) {
+        if (result.code === 200 && result.data) {
           setUser({
             id: result.data.user_id || '1',
             username: result.data.preferred_username || result.data.username || 'n/a',
@@ -58,12 +73,12 @@ const AdminApp: React.FC = () => {
           });
         } else {
           // 如果获取用户信息失败，重定向到登录页面
-          window.location.href = '/auth/login';
+          window.location.href = '/login';
         }
       } catch (error) {
         console.error('获取用户信息失败:', error);
-        // 网络错误时也重定向到登录页面
-        window.location.href = '/auth/login';
+        // 任何错误都重定向到登录页面（无需延迟）
+        window.location.href = '/login';
       } finally {
         setLoading(false);
       }
@@ -79,7 +94,7 @@ const AdminApp: React.FC = () => {
     } catch (error) {
       console.error('登出失败:', error);
     } finally {
-      window.location.href = '/auth/login';
+      window.location.href = '/login';
     }
   };
 
@@ -110,6 +125,11 @@ const AdminApp: React.FC = () => {
       key: '/users',
       icon: <UserOutlined />,
       label: 'Users',
+    },
+    {
+      key: '/oauth2-clients',
+      icon: <KeyOutlined />,
+      label: 'OAuth2 Clients',
     },
     {
       key: '/settings',
@@ -146,16 +166,7 @@ const AdminApp: React.FC = () => {
   };
 
   if (loading) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh' 
-      }}>
-        <Spin size="large" tip="加载中..." />
-      </div>
-    );
+    return <Loading fullscreen tip="加载用户信息..." />;
   }
 
   return (
@@ -234,6 +245,7 @@ const AdminApp: React.FC = () => {
               <Route path="/printers" element={<Printers />} />
               <Route path="/print-jobs" element={<PrintJobs />} />
               <Route path="/users" element={<Users />} />
+              <Route path="/oauth2-clients" element={<OAuth2Clients />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
@@ -247,15 +259,20 @@ const AdminApp: React.FC = () => {
 // App 根组件
 const App: React.FC = () => {
   return (
-    <Router>
-      <Routes>
-        {/* 独立的文件上传页面，不需要 Admin 登录 */}
-        <Route path="/upload" element={<PublicUpload />} />
-        
-        {/* 其他路由都进入管理后台应用 (需要登录) */}
-        <Route path="/*" element={<AdminApp />} />
-      </Routes>
-    </Router>
+    <ErrorBoundary>
+      <Router>
+        <Routes>
+          {/* 独立的文件上传页面，不需要 Admin 登录 */}
+          <Route path="/upload" element={<PublicUpload />} />
+          
+          {/* 登录页面 (builtin OAuth2 模式) */}
+          <Route path="/login" element={<Login />} />
+          
+          {/* 其他路由都进入管理后台应用 (需要登录) */}
+          <Route path="/*" element={<AdminApp />} />
+        </Routes>
+      </Router>
+    </ErrorBoundary>
   );
 };
 
