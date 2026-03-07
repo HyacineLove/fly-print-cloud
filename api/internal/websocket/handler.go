@@ -8,41 +8,44 @@ import (
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/middleware"
 	"fly-print-cloud/api/internal/security"
+
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		// TODO: 生产环境需要更严格的 Origin 检查
-		return true
-	},
-}
-
 // WebSocketHandler WebSocket 处理器
 type WebSocketHandler struct {
-	manager      *ConnectionManager
-	printerRepo  *database.PrinterRepository
-	edgeNodeRepo *database.EdgeNodeRepository
-	printJobRepo *database.PrintJobRepository
-	fileRepo     *database.FileRepository
-	tokenManager *security.TokenManager
+	manager        *ConnectionManager
+	printerRepo    *database.PrinterRepository
+	edgeNodeRepo   *database.EdgeNodeRepository
+	printJobRepo   *database.PrintJobRepository
+	fileRepo       *database.FileRepository
+	tokenManager   *security.TokenManager
+	allowedOrigins []string // 允许的Origin列表
 }
 
 // NewWebSocketHandler 创建 WebSocket 处理器
-func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager) *WebSocketHandler {
+func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, allowedOrigins []string) *WebSocketHandler {
 	return &WebSocketHandler{
-		manager:      manager,
-		printerRepo:  printerRepo,
-		edgeNodeRepo: edgeNodeRepo,
-		printJobRepo: printJobRepo,
-		fileRepo:     fileRepo,
-		tokenManager: tokenManager,
+		manager:        manager,
+		printerRepo:    printerRepo,
+		edgeNodeRepo:   edgeNodeRepo,
+		printJobRepo:   printJobRepo,
+		fileRepo:       fileRepo,
+		tokenManager:   tokenManager,
+		allowedOrigins: allowedOrigins,
 	}
 }
 
 // HandleConnection 处理 WebSocket 连接升级
 func (h *WebSocketHandler) HandleConnection(c *gin.Context) {
+	// 检查连接数限制
+	if h.manager.GetConnectionCount() >= 1000 {
+		log.Printf("WebSocket connection limit reached (1000), rejecting new connection")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "too many connections"})
+		return
+	}
+
 	// 验证 OAuth2 token
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
@@ -98,6 +101,30 @@ func (h *WebSocketHandler) HandleConnection(c *gin.Context) {
 		log.Printf("WebSocket connection accepted for disabled node %s (monitoring only)", nodeID)
 	}
 
+	// 配置WebSocket升级器
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  10 * 1024 * 1024, // 10MB - 限制单次读取消息大小
+		WriteBufferSize: 10 * 1024 * 1024, // 10MB - 限制单次写入消息大小
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+
+			// 非浏览器客户端（如边缘节点）可能没有 Origin
+			if origin == "" {
+				return true
+			}
+
+			// 检查Origin是否在允许列表中
+			for _, allowed := range h.allowedOrigins {
+				if origin == allowed {
+					return true
+				}
+			}
+
+			log.Printf("WebSocket connection rejected: origin not allowed: %s", origin)
+			return false
+		},
+	}
+
 	// 升级 HTTP 连接到 WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -125,7 +152,7 @@ func (h *WebSocketHandler) extractNodeIDFromTokenInfo(tokenInfo *middleware.OAut
 	if tokenInfo.Sub != "" {
 		return tokenInfo.Sub
 	}
-	
+
 	// 如果有自定义 claims，也可以从中提取
 	// 这里可以根据实际的 token 结构调整
 	return ""

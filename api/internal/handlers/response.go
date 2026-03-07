@@ -97,9 +97,9 @@ func InternalErrorResponse(c *gin.Context, message string) {
 
 // PaginatedResponse 分页响应
 type PaginatedResponse struct {
-	Code    int                    `json:"code"`
-	Message string                 `json:"message"`
-	Data    PaginatedData          `json:"data"`
+	Code    int           `json:"code"`
+	Message string        `json:"message"`
+	Data    PaginatedData `json:"data"`
 }
 
 // PaginatedData 分页数据
@@ -114,7 +114,7 @@ type PaginatedData struct {
 // PaginatedSuccessResponse 分页成功响应
 func PaginatedSuccessResponse(c *gin.Context, items interface{}, total, page, pageSize int) {
 	totalPages := (total + pageSize - 1) / pageSize
-	
+
 	c.JSON(http.StatusOK, PaginatedResponse{
 		Code:    http.StatusOK,
 		Message: "success",
@@ -126,4 +126,39 @@ func PaginatedSuccessResponse(c *gin.Context, items interface{}, total, page, pa
 			TotalPages: totalPages,
 		},
 	})
+}
+
+// ErrorResponseWithCode 带错误码的错误响应
+func ErrorResponseWithCode(c *gin.Context, httpStatus, errorCode int, message string) {
+	c.JSON(httpStatus, gin.H{
+		"code":      errorCode,
+		"message":   message,
+		"http_code": httpStatus,
+	})
+}
+
+// StandardErrorResponse 标准错误响应（使用预定义错误码）
+func StandardErrorResponse(c *gin.Context, httpStatus, errorCode int) {
+	message := GetErrorMessage(errorCode)
+	ErrorResponseWithCode(c, httpStatus, errorCode, message)
+}
+
+// NotFoundWithCode 未找到响应（带错误码）
+func NotFoundWithCode(c *gin.Context, errorCode int) {
+	StandardErrorResponse(c, http.StatusNotFound, errorCode)
+}
+
+// BadRequestWithCode 请求错误响应（带错误码）
+func BadRequestWithCode(c *gin.Context, errorCode int) {
+	StandardErrorResponse(c, http.StatusBadRequest, errorCode)
+}
+
+// InternalErrorWithCode 内部错误响应（带错误码）
+func InternalErrorWithCode(c *gin.Context, errorCode int) {
+	StandardErrorResponse(c, http.StatusInternalServerError, errorCode)
+}
+
+// ForbiddenWithCode 禁止访问响应（带错误码）
+func ForbiddenWithCode(c *gin.Context, errorCode int) {
+	StandardErrorResponse(c, http.StatusForbidden, errorCode)
 }

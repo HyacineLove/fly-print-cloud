@@ -28,6 +28,9 @@ const (
 // TokenUsageMarker 用于标记Token为已使用的接口
 // 使用接口避免security包与database包的循环依赖
 type TokenUsageMarker interface {
+	// PreRegisterToken 预注册Token（在生成Token时调用）
+	PreRegisterToken(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error
+
 	// MarkTokenAsUsed 标记Token为已使用
 	// 返回nil表示成功标记，返回错误表示token已被使用或其他错误
 	MarkTokenAsUsed(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error
@@ -118,7 +121,7 @@ func (tm *TokenManager) GenerateUploadToken(nodeID, printerID string) (string, t
 			}
 		}
 	}
-	
+
 	now := time.Now()
 	issuedAt := now.Unix()
 	expiresAt := now.Add(time.Duration(tm.uploadTokenTTL) * time.Second).Unix()
@@ -131,6 +134,20 @@ func (tm *TokenManager) GenerateUploadToken(nodeID, printerID string) (string, t
 
 	// 组合并 Base64 编码
 	token := base64.StdEncoding.EncodeToString([]byte(payload + "|" + signature))
+
+	// 预注册Token到数据库（确保撤销时可以找到）
+	if tm.tokenRepo != nil {
+		if preRegRepo, ok := tm.tokenRepo.(interface {
+			PreRegisterToken(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error
+		}); ok {
+			tokenHash := generateTokenHash(token)
+			err := preRegRepo.PreRegisterToken(tokenHash, TokenTypeUpload, nodeID, printerID, "", time.Unix(expiresAt, 0))
+			if err != nil {
+				log.Printf("Warning: Failed to pre-register upload token: %v", err)
+				// 不阻断流程，继续返回token
+			}
+		}
+	}
 
 	return token, time.Unix(expiresAt, 0), nil
 }
@@ -154,7 +171,7 @@ func (tm *TokenManager) GenerateDownloadToken(fileID, jobID, nodeID string) (str
 			}
 		}
 	}
-	
+
 	now := time.Now()
 	issuedAt := now.Unix()
 	expiresAt := now.Add(time.Duration(tm.downloadTokenTTL) * time.Second).Unix()
@@ -167,6 +184,20 @@ func (tm *TokenManager) GenerateDownloadToken(fileID, jobID, nodeID string) (str
 
 	// 组合并 Base64 编码
 	token := base64.StdEncoding.EncodeToString([]byte(payload + "|" + signature))
+
+	// 预注册Token到数据库（确保撤销时可以找到）
+	if tm.tokenRepo != nil {
+		if preRegRepo, ok := tm.tokenRepo.(interface {
+			PreRegisterToken(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error
+		}); ok {
+			tokenHash := generateTokenHash(token)
+			err := preRegRepo.PreRegisterToken(tokenHash, TokenTypeDownload, nodeID, fileID, jobID, time.Unix(expiresAt, 0))
+			if err != nil {
+				log.Printf("Warning: Failed to pre-register download token: %v", err)
+				// 不阻断流程，继续返回token
+			}
+		}
+	}
 
 	return token, time.Unix(expiresAt, 0), nil
 }
@@ -235,6 +266,10 @@ func (tm *TokenManager) ValidateUploadToken(token string) (*UploadTokenPayload, 
 			// 检查是否是"已使用"错误
 			if err.Error() == "token has already been used" {
 				return nil, ErrTokenAlreadyUsed
+			}
+			// 检查是否是"已撤销"错误
+			if err.Error() == "token has been revoked" {
+				return nil, &TokenError{Code: "token_revoked", Message: "Token has been revoked"}
 			}
 			// 其他数据库错误，记录但仍允许通过（降级处理）
 			// 这里可以选择返回错误或忽略，为了安全起见返回错误
@@ -323,6 +358,10 @@ func (tm *TokenManager) ValidateDownloadToken(token, expectedFileID, expectedNod
 			// 检查是否是"已使用"错误
 			if err.Error() == "token has already been used" {
 				return nil, ErrTokenAlreadyUsed
+			}
+			// 检查是否是"已撤销"错误
+			if err.Error() == "token has been revoked" {
+				return nil, &TokenError{Code: "token_revoked", Message: "Token has been revoked"}
 			}
 			// 其他数据库错误，为了安全起见返回错误
 			return nil, &TokenError{Code: "database_error", Message: "Failed to verify token usage"}

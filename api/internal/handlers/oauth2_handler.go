@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
+	"fly-print-cloud/api/internal/auth"
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/database"
 	"github.com/gin-gonic/gin"
@@ -18,6 +20,10 @@ import (
 
 // OAuth2Handler OAuth2 认证处理器
 type OAuth2Handler struct {
+	mode                    string // "builtin" | "keycloak"
+	builtinAuth             *auth.BuiltinAuthService
+
+	// Keycloak 模式字段
 	config                  *oauth2.Config
 	userInfoURL             string
 	adminConsoleURL         string
@@ -27,15 +33,26 @@ type OAuth2Handler struct {
 }
 
 // NewOAuth2Handler 创建 OAuth2 处理器
-func NewOAuth2Handler(oauth2Cfg *config.OAuth2Config, adminCfg *config.AdminConfig, userRepo *database.UserRepository) *OAuth2Handler {
-	// 如果 OAuth2 配置为空，创建一个基本的处理器
-	if oauth2Cfg.ClientID == "" || oauth2Cfg.AuthURL == "" || oauth2Cfg.TokenURL == "" {
-		return &OAuth2Handler{
-			config: nil, // 配置为空时设为 nil
-		}
+func NewOAuth2Handler(oauth2Cfg *config.OAuth2Config, adminCfg *config.AdminConfig, userRepo *database.UserRepository, builtinAuth *auth.BuiltinAuthService) *OAuth2Handler {
+	handler := &OAuth2Handler{
+		mode:            oauth2Cfg.Mode,
+		builtinAuth:     builtinAuth,
+		adminConsoleURL: adminCfg.ConsoleURL,
+		userRepo:        userRepo,
 	}
 
-	oauth2Config := &oauth2.Config{
+	// builtin 模式下不需要外部 OAuth2 配置
+	if oauth2Cfg.IsBuiltinMode() {
+		return handler
+	}
+
+	// Keycloak 模式：配置外部 OAuth2
+	if oauth2Cfg.ClientID == "" || oauth2Cfg.AuthURL == "" || oauth2Cfg.TokenURL == "" {
+		handler.config = nil
+		return handler
+	}
+
+	handler.config = &oauth2.Config{
 		ClientID:     oauth2Cfg.ClientID,
 		ClientSecret: oauth2Cfg.ClientSecret,
 		RedirectURL:  oauth2Cfg.RedirectURI,
@@ -45,58 +62,141 @@ func NewOAuth2Handler(oauth2Cfg *config.OAuth2Config, adminCfg *config.AdminConf
 		},
 		Scopes: []string{"openid", "profile", "email", "admin:users", "admin:edge-nodes", "admin:printers", "admin:print-jobs"},
 	}
+	handler.userInfoURL = oauth2Cfg.UserInfoURL
+	handler.logoutURL = oauth2Cfg.LogoutURL
+	handler.logoutRedirectURIParam = oauth2Cfg.LogoutRedirectURIParam
 
-	return &OAuth2Handler{
-		config:                  oauth2Config,
-		userInfoURL:             oauth2Cfg.UserInfoURL,
-		adminConsoleURL:         adminCfg.ConsoleURL,
-		logoutURL:               oauth2Cfg.LogoutURL,
-		logoutRedirectURIParam:  oauth2Cfg.LogoutRedirectURIParam,
-		userRepo:                userRepo,
+	return handler
+}
+
+// Token 处理 POST /auth/token（OAuth2 Token 端点）
+func (h *OAuth2Handler) Token(c *gin.Context) {
+	if h.mode != "builtin" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_request",
+			"error_description": "builtin token endpoint not available in keycloak mode",
+		})
+		return
 	}
+
+	if err := c.Request.ParseForm(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_request",
+			"error_description": "invalid form data",
+		})
+		return
+	}
+
+	grantType := c.Request.FormValue("grant_type")
+	clientID := c.Request.FormValue("client_id")
+	clientSecret := c.Request.FormValue("client_secret")
+	username := c.Request.FormValue("username")
+	password := c.Request.FormValue("password")
+	scope := c.Request.FormValue("scope")
+
+	resp, err := h.builtinAuth.HandleTokenRequest(grantType, clientID, clientSecret, username, password, scope)
+	if err != nil {
+		errMsg := err.Error()
+		// 根据错误类型返回不同的 HTTP 状态码
+		statusCode := http.StatusBadRequest
+		errorType := "invalid_request"
+		if strings.HasPrefix(errMsg, "invalid_client") {
+			statusCode = http.StatusUnauthorized
+			errorType = "invalid_client"
+		} else if strings.HasPrefix(errMsg, "invalid_grant") {
+			statusCode = http.StatusUnauthorized
+			errorType = "invalid_grant"
+		} else if strings.HasPrefix(errMsg, "server_error") {
+			statusCode = http.StatusInternalServerError
+			errorType = "server_error"
+		}
+
+		c.JSON(statusCode, gin.H{
+			"error":             errorType,
+			"error_description": errMsg,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// UserInfo 处理 GET /auth/userinfo
+func (h *OAuth2Handler) UserInfo(c *gin.Context) {
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "missing bearer token",
+		})
+		return
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+
+	if h.mode == "builtin" {
+		// 内置模式：直接解析 JWT
+		info, err := h.builtinAuth.HandleUserInfo(token)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+		c.JSON(http.StatusOK, info)
+		return
+	}
+
+	// Keycloak 模式：代理到外部 UserInfo 端点
+	userInfo, err := h.fetchOAuth2UserInfo(token)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		return
+	}
+	c.JSON(http.StatusOK, userInfo)
 }
 
 // Login 发起 OAuth2 授权
 func (h *OAuth2Handler) Login(c *gin.Context) {
-	// 检查配置是否可用
+	if h.mode == "builtin" {
+		// 内置模式：重定向到 Admin Console 登录页（前端处理密码登录）
+		c.Redirect(http.StatusFound, h.adminConsoleURL+"/login")
+		return
+	}
+
+	// Keycloak 模式
 	if h.config == nil {
 		BadRequestResponse(c, "OAuth2 配置未设置")
 		return
 	}
 
-	// 生成随机 state 参数防止 CSRF 攻击（由 Keycloak 验证）
 	state := generateRandomState()
-	
-	// 重定向到授权服务器
 	authURL := h.config.AuthCodeURL(state, oauth2.AccessTypeOffline)
 	c.Redirect(http.StatusFound, authURL)
 }
 
 // Callback 处理 OAuth2 回调
 func (h *OAuth2Handler) Callback(c *gin.Context) {
-	// 检查配置是否可用
+	if h.mode == "builtin" {
+		// 内置模式不使用 Authorization Code Flow callback
+		BadRequestResponse(c, "builtin mode does not use callback")
+		return
+	}
+
+	// Keycloak 模式
 	if h.config == nil {
 		BadRequestResponse(c, "OAuth2 配置未设置")
 		return
 	}
 
-	// 检查是否有 OAuth2 错误
 	if errorCode := c.Query("error"); errorCode != "" {
 		errorDesc := c.Query("error_description")
 		BadRequestResponse(c, "OAuth2 授权失败: "+errorCode+" - "+errorDesc)
 		return
 	}
 
-	// State 参数由 Keycloak 验证，我们信任其验证结果
-
-	// 获取授权码
 	code := c.Query("code")
 	if code == "" {
 		BadRequestResponse(c, "缺少授权码")
 		return
 	}
 
-	// 交换 token
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -106,59 +206,50 @@ func (h *OAuth2Handler) Callback(c *gin.Context) {
 		return
 	}
 
-	// 设置安全的 HTTP-only cookies（同域名下共享）
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("access_token", token.AccessToken, int(time.Until(token.Expiry).Seconds()), "/", "", false, true)
-	
+
 	if token.RefreshToken != "" {
-		c.SetCookie("refresh_token", token.RefreshToken, 7*24*3600, "/", "", false, true) // 7天
+		c.SetCookie("refresh_token", token.RefreshToken, 7*24*3600, "/", "", false, true)
 	}
-	
-	// 保存 ID Token 用于登出
+
 	if idToken := token.Extra("id_token"); idToken != nil {
 		if idTokenStr, ok := idToken.(string); ok {
 			c.SetCookie("id_token", idTokenStr, int(time.Until(token.Expiry).Seconds()), "/", "", false, true)
 		}
 	}
 
-	// 获取用户信息并同步到本地数据库
 	if h.userRepo != nil {
 		h.syncUserOnLogin(token.AccessToken)
 	}
 
-	// 重定向到管理控制台首页
 	c.Redirect(http.StatusFound, h.adminConsoleURL)
 }
 
 // OAuth2UserInfo OAuth2 用户信息结构
 type OAuth2UserInfo struct {
-	Sub               string   `json:"sub"`
-	PreferredUsername string   `json:"preferred_username"`
-	Email             string   `json:"email"`
-	Name              string   `json:"name"`
-	RealmAccess       struct {
+	Sub              string `json:"sub"`
+	PreferredUsername string `json:"preferred_username"`
+	Email            string `json:"email"`
+	Name             string `json:"name"`
+	RealmAccess      struct {
 		Roles []string `json:"roles"`
 	} `json:"realm_access"`
 }
 
 // syncUserOnLogin 登录时同步用户信息到本地数据库
 func (h *OAuth2Handler) syncUserOnLogin(accessToken string) {
-	// 获取用户信息
 	userInfo, err := h.fetchOAuth2UserInfo(accessToken)
 	if err != nil {
-		// 同步失败不影响登录流程，只记录错误
 		fmt.Printf("用户同步失败: %v\n", err)
 		return
 	}
 
-	// 检查用户是否已存在
 	_, err = h.userRepo.GetUserByExternalID(userInfo.Sub)
 	if err == nil {
-		// 用户已存在，无需创建
 		return
 	}
 
-	// 创建新用户
 	_, err = h.userRepo.CreateUserFromOAuth2(
 		userInfo.Sub,
 		userInfo.PreferredUsername,
@@ -171,21 +262,38 @@ func (h *OAuth2Handler) syncUserOnLogin(accessToken string) {
 
 // Me 获取当前用户认证信息
 func (h *OAuth2Handler) Me(c *gin.Context) {
-	// 从 cookie 获取 access token
 	accessToken, err := c.Cookie("access_token")
 	if err != nil {
 		UnauthorizedResponse(c, "未登录")
 		return
 	}
 
-	// 调用 OAuth2 UserInfo endpoint 获取用户信息
+	if h.mode == "builtin" {
+		// 内置模式：直接解析 JWT 获取用户信息
+		info, err := h.builtinAuth.HandleUserInfo(accessToken)
+		if err != nil {
+			UnauthorizedResponse(c, "Token 无效")
+			return
+		}
+		SuccessResponse(c, gin.H{
+			"external_id":   info.Sub,
+			"username":      info.PreferredUsername,
+			"email":         info.Email,
+			"name":          info.Name,
+			"roles":         info.RealmAccess.Roles,
+			"access_token":  accessToken,
+			"authenticated": true,
+		})
+		return
+	}
+
+	// Keycloak 模式
 	oauth2UserInfo, err := h.fetchOAuth2UserInfo(accessToken)
 	if err != nil {
 		UnauthorizedResponse(c, "Token 无效")
 		return
 	}
 
-	// 返回 OAuth2 认证信息和 access token
 	SuccessResponse(c, gin.H{
 		"external_id":   oauth2UserInfo.Sub,
 		"username":      oauth2UserInfo.PreferredUsername,
@@ -194,6 +302,13 @@ func (h *OAuth2Handler) Me(c *gin.Context) {
 		"roles":         oauth2UserInfo.RealmAccess.Roles,
 		"access_token":  accessToken,
 		"authenticated": true,
+	})
+}
+
+// Mode 返回当前 OAuth2 模式（公开端点，供前端判断）
+func (h *OAuth2Handler) Mode(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"mode": h.mode,
 	})
 }
 
@@ -230,55 +345,58 @@ func (h *OAuth2Handler) fetchOAuth2UserInfo(accessToken string) (*OAuth2UserInfo
 
 // Verify 验证认证状态 (用于 Nginx auth_request)
 func (h *OAuth2Handler) Verify(c *gin.Context) {
-	// 从 cookie 获取 access token
 	accessToken, err := c.Cookie("access_token")
 	if err != nil {
 		c.Status(http.StatusUnauthorized)
 		return
 	}
 
-	// 验证 token 有效性
+	if h.mode == "builtin" {
+		// 内置模式：直接解析 JWT 验证
+		_, err := h.builtinAuth.HandleUserInfo(accessToken)
+		if err != nil {
+			c.Status(http.StatusUnauthorized)
+			return
+		}
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Keycloak 模式
 	_, err = h.fetchOAuth2UserInfo(accessToken)
 	if err != nil {
 		c.Status(http.StatusUnauthorized)
 		return
 	}
-
-	// 认证成功
 	c.Status(http.StatusOK)
 }
 
 // Logout 登出
 func (h *OAuth2Handler) Logout(c *gin.Context) {
-	// 获取 ID Token 用于登出
 	idToken, _ := c.Cookie("id_token")
-	
+
 	// 清除所有认证相关的 cookies
 	c.SetCookie("access_token", "", -1, "/", "", false, true)
 	c.SetCookie("refresh_token", "", -1, "/", "", false, true)
 	c.SetCookie("id_token", "", -1, "/", "", false, true)
-	
-	// 如果没有配置登出 URL，只做本地登出
-	if h.logoutURL == "" {
+
+	if h.mode == "builtin" || h.logoutURL == "" {
+		// 内置模式或没有配置登出 URL：只做本地登出
 		SuccessResponse(c, gin.H{"message": "登出成功"})
 		return
 	}
-	
-	// 构建 OAuth2 提供商登出 URL
+
+	// Keycloak 模式：重定向到 OAuth2 提供商登出页面
 	redirectURI := url.QueryEscape(h.adminConsoleURL)
 	fullLogoutURL := fmt.Sprintf("%s?%s=%s", h.logoutURL, h.logoutRedirectURIParam, redirectURI)
-	
-	// 添加 id_token_hint（如果可用）
+
 	if idToken != "" {
 		idTokenEncoded := url.QueryEscape(idToken)
 		fullLogoutURL += fmt.Sprintf("&id_token_hint=%s", idTokenEncoded)
 	}
-	
-	// 重定向到 OAuth2 提供商登出页面
+
 	c.Redirect(http.StatusFound, fullLogoutURL)
 }
-
-
 
 // generateRandomState 生成随机 state 参数
 func generateRandomState() string {

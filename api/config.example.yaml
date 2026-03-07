@@ -15,3 +15,32 @@ database:
 server:
   host: "0.0.0.0"
   port: 8080
+  # CORS允许的来源列表（支持的前端域名）
+  allowed_origins:
+    - "https://admin.fly-print.local"
+    - "https://kiosk.fly-print.local"
+    - "http://localhost:3000"  # 本地开发环境
+    - "http://localhost:8080"  # 本地开发环境
+
+# OAuth2 认证配置
+oauth2:
+  mode: "builtin"  # "builtin" 或 "keycloak"
+  jwt_signing_secret: "your-secret-key-change-in-production"
+  jwt_token_expiry: 86400  # JWT Token 有效期（秒）
+  jwt_issuer: "fly-print-cloud"
+
+# 管理控制台配置
+admin:
+  console_url: "https://admin.fly-print.local"
+
+# 存储配置
+storage:
+  upload_dir: "./uploads"
+  max_size: 104857600  # 100MB (字节)
+  max_document_pages: 5  # PDF/DOCX 等文档的最大页数限制
+
+# 安全配置
+security:
+  file_access_secret: "your-file-access-secret-change-in-production"
+  upload_token_ttl: 300    # 上传凭证有效期（秒），默认5分钟
+  download_token_ttl: 300  # 下载凭证有效期（秒），默认5分钟

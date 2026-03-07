@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/security"
+
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -24,33 +27,41 @@ const (
 
 	// 最大消息大小
 	maxMessageSize = 8192
+
+	// ACK 等待超时时间
+	ackTimeout = 5 * time.Second
 )
 
 // Connection 表示单个 WebSocket 连接
 type Connection struct {
-	NodeID         string
-	Conn           *websocket.Conn
-	Send           chan []byte
-	Manager        *ConnectionManager
-	PrinterRepo    *database.PrinterRepository
-	EdgeNodeRepo   *database.EdgeNodeRepository
-	PrintJobRepo   *database.PrintJobRepository
-	FileRepo       *database.FileRepository
-	TokenManager   *security.TokenManager
+	NodeID       string
+	Conn         *websocket.Conn
+	Send         chan []byte
+	Manager      *ConnectionManager
+	PrinterRepo  *database.PrinterRepository
+	EdgeNodeRepo *database.EdgeNodeRepository
+	PrintJobRepo *database.PrintJobRepository
+	FileRepo     *database.FileRepository
+	TokenManager *security.TokenManager
+
+	// ACK 机制相关
+	pendingAcks map[string]chan struct{}
+	ackMutex    sync.Mutex
 }
 
 // NewConnection 创建新连接
 func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager) *Connection {
 	return &Connection{
-		NodeID:         nodeID,
-		Conn:           conn,
-		Send:           make(chan []byte, 256),
-		Manager:        manager,
-		PrinterRepo:    printerRepo,
-		EdgeNodeRepo:   edgeNodeRepo,
-		PrintJobRepo:   printJobRepo,
-		FileRepo:       fileRepo,
-		TokenManager:   tokenManager,
+		NodeID:       nodeID,
+		Conn:         conn,
+		Send:         make(chan []byte, 256),
+		Manager:      manager,
+		PrinterRepo:  printerRepo,
+		EdgeNodeRepo: edgeNodeRepo,
+		PrintJobRepo: printJobRepo,
+		FileRepo:     fileRepo,
+		TokenManager: tokenManager,
+		pendingAcks:  make(map[string]chan struct{}),
 	}
 }
 
@@ -80,7 +91,7 @@ func (c *Connection) ReadPump() {
 
 		log.Printf("WebSocket received raw message from node %s: %s", c.NodeID, string(messageBytes))
 
-		// 解析消息
+		// 先解析消息类型
 		var msg Message
 		if err := json.Unmarshal(messageBytes, &msg); err != nil {
 			log.Printf("Failed to parse message from node %s: %v", c.NodeID, err)
@@ -89,8 +100,18 @@ func (c *Connection) ReadPump() {
 
 		log.Printf("WebSocket parsed message from node %s: type=%s", c.NodeID, msg.Type)
 
-		// 处理消息
-		c.handleMessage(&msg)
+		// ACK 消息特殊处理：msg_id 在顶层而非 data 中
+		if msg.Type == MsgTypeAck {
+			var ack CommandAck
+			if err := json.Unmarshal(messageBytes, &ack); err != nil {
+				log.Printf("Failed to parse ACK message from node %s: %v", c.NodeID, err)
+				continue
+			}
+			c.handleAckDirect(&ack)
+		} else {
+			// 其他消息正常处理
+			c.handleMessage(&msg)
+		}
 	}
 }
 
@@ -144,7 +165,7 @@ func (c *Connection) handleMessage(msg *Message) {
 	// 标准验证顺序（所有消息统一处理）：
 	// 1. 节点存在性检查（所有消息都需要，包括 heartbeat 和 job_update）
 	// 2. 节点启用检查（heartbeat 和 job_update 放行，允许禁用节点维持连接和完成任务收尾）
-	
+
 	// 步骤1: 检查节点是否存在（所有消息都需要）
 	node, err := c.EdgeNodeRepo.GetEdgeNodeByID(c.NodeID)
 	if err != nil || node == nil {
@@ -171,8 +192,72 @@ func (c *Connection) handleMessage(msg *Message) {
 		c.handleSubmitPrintParams(msg)
 	case MsgTypeRequestUploadToken:
 		c.handleRequestUploadToken(msg)
+	case MsgTypeAck:
+		c.handleAck(msg)
 	default:
 		log.Printf("Unknown message type: %s from node %s", msg.Type, c.NodeID)
+	}
+}
+
+// handleAck 处理确认消息（已废弃，使用 handleAckDirect）
+func (c *Connection) handleAck(msg *Message) {
+	log.Printf("Warning: handleAck called via handleMessage (deprecated path) from node %s", c.NodeID)
+	// 这个路径已被 ReadPump 中的直接解析替代，不应该到达这里
+}
+
+// handleAckDirect 直接处理已解析的 ACK 消息
+func (c *Connection) handleAckDirect(ack *CommandAck) {
+	if ack.MsgID == "" {
+		log.Printf("Received ACK without MsgID from node %s", c.NodeID)
+		return
+	}
+
+	c.ackMutex.Lock()
+	defer c.ackMutex.Unlock()
+
+	if ch, exists := c.pendingAcks[ack.MsgID]; exists {
+		close(ch) // 关闭 channel 通知等待者
+		delete(c.pendingAcks, ack.MsgID)
+		log.Printf("Received ACK for message %s from node %s (command: %s, status: %s)",
+			ack.MsgID, c.NodeID, ack.CommandID, ack.Status)
+	} else {
+		log.Printf("Received ACK for unknown or timed-out message %s from node %s", ack.MsgID, c.NodeID)
+	}
+}
+
+// SendCommandWithAck 发送指令并等待确认
+func (c *Connection) SendCommandWithAck(cmd *Command, timeout time.Duration) error {
+	if cmd.MsgID == "" {
+		cmd.MsgID = uuid.New().String()
+	}
+
+	ackCh := make(chan struct{})
+
+	c.ackMutex.Lock()
+	c.pendingAcks[cmd.MsgID] = ackCh
+	c.ackMutex.Unlock()
+
+	// 无论成功与否，都要确保从 map 中移除（避免内存泄漏）
+	// 注意：如果成功收到 ACK，handleAck 会删除 map entry。
+	// 这里主要是处理超时或发送失败的情况。
+	// 但如果在 handleAck 删除前 delete，会导致 handleAck 找不到。
+	// 所以最好的方式是：如果 handleAck 还没处理，这里超时后删除。
+	defer func() {
+		c.ackMutex.Lock()
+		delete(c.pendingAcks, cmd.MsgID)
+		c.ackMutex.Unlock()
+	}()
+
+	log.Printf("Sending command %s (msg_id: %s) to node %s with ACK expectation", cmd.Type, cmd.MsgID, c.NodeID)
+	if err := c.SendCommand(cmd); err != nil {
+		return err
+	}
+
+	select {
+	case <-ackCh:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("timeout waiting for ACK for message %s", cmd.MsgID)
 	}
 }
 
@@ -181,7 +266,7 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 	log.Printf("Processing print params from node %s", c.NodeID)
 
 	var payload SubmitPrintParamsPayload
-	
+
 	// Check if msg.Data is already a map or needs unmarshalling
 	if dataMap, ok := msg.Data.(map[string]interface{}); ok {
 		// Convert map to struct manually or re-marshal/unmarshal
@@ -242,14 +327,14 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
-	
+
 	// 步骤2: 验证打印机是否属于该节点
 	if printer.EdgeNodeID != c.NodeID {
 		log.Printf("Printer %s does not belong to node %s", payload.PrinterID, c.NodeID)
 		c.sendError("printer_not_belong_to_node", "Printer does not belong to this node", payload.PrinterID)
 		return
 	}
-	
+
 	// 步骤3: 检查打印机是否被禁用
 	if !printer.Enabled {
 		log.Printf("Printer %s is disabled, rejecting print job submission from node %s", payload.PrinterID, c.NodeID)
@@ -259,16 +344,16 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 
 	// 创建打印任务
 	job := &models.PrintJob{
-		Name:         file.OriginalName,
-		Status:       "pending",
-		PrinterID:    payload.PrinterID,
-		UserID:       file.UploaderID,
-		UserName:     "Edge User", // TODO: 如果有用户信息，应该从某处获取
-		FilePath:     file.FilePath,
-		FileURL:      file.URL,
-		FileSize:     file.Size,
-		Copies:       1,
-		MaxRetries:   3,
+		Name:       file.OriginalName,
+		Status:     "pending",
+		PrinterID:  payload.PrinterID,
+		UserID:     file.UploaderID,
+		UserName:   getUserDisplayName(file.UploaderID), // 从用户ID获取显示名称
+		FilePath:   file.FilePath,
+		FileURL:    file.URL,
+		FileSize:   file.Size,
+		Copies:     1,
+		MaxRetries: 3,
 	}
 
 	// 设置 Options
@@ -303,7 +388,7 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 		log.Printf("Failed to create print job: %v", err)
 		return
 	}
-	
+
 	log.Printf("Print job %s created for file %s", job.ID, file.ID)
 
 	// 分发任务到打印机所属的 Edge Node
@@ -321,7 +406,7 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 // handleHeartbeat 处理心跳消息
 func (c *Connection) handleHeartbeat(msg *Message) {
 	log.Printf("Processing heartbeat from node %s", c.NodeID)
-	
+
 	// 更新 Edge Node 的最后心跳时间和状态
 	if err := c.EdgeNodeRepo.UpdateHeartbeat(c.NodeID); err != nil {
 		log.Printf("Failed to update heartbeat for node %s: %v", c.NodeID, err)
@@ -331,20 +416,20 @@ func (c *Connection) handleHeartbeat(msg *Message) {
 		log.Printf("Failed to update status for node %s: %v", c.NodeID, err)
 		return
 	}
-	
+
 	// 解析心跳数据（可选）
 	if msg.Data != nil {
 		var heartbeatData HeartbeatData
 		dataBytes, err := json.Marshal(msg.Data)
 		if err == nil {
 			if err := json.Unmarshal(dataBytes, &heartbeatData); err == nil {
-				log.Printf("Heartbeat data from node %s: CPU=%.2f%%, Memory=%.2f%%, Disk=%.2f%%", 
-					c.NodeID, heartbeatData.SystemInfo.CPUUsage, 
+				log.Printf("Heartbeat data from node %s: CPU=%.2f%%, Memory=%.2f%%, Disk=%.2f%%",
+					c.NodeID, heartbeatData.SystemInfo.CPUUsage,
 					heartbeatData.SystemInfo.MemoryUsage, heartbeatData.SystemInfo.DiskUsage)
 			}
 		}
 	}
-	
+
 	log.Printf("Successfully processed heartbeat from node %s", c.NodeID)
 }
 
@@ -415,7 +500,7 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	// 构造两个URL
 	// 1. API上传URL：用于Edge端程序化上传（POST请求）
 	apiUploadURL := fmt.Sprintf("/api/v1/files?token=%s", token)
-	
+
 	// 2. Web上传页面URL：用于生成二维码/链接给用户（GET请求）
 	webUploadURL := fmt.Sprintf("/upload?token=%s&node_id=%s&printer_id=%s", token, c.NodeID, payload.PrinterID)
 
@@ -425,8 +510,8 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 		"data": UploadTokenResponsePayload{
 			Token:     token,
 			ExpiresAt: expiresAt,
-			UploadURL: apiUploadURL,  // API上传端点
-			WebURL:    webUploadURL,  // Web上传页面
+			UploadURL: apiUploadURL, // API上传端点
+			WebURL:    webUploadURL, // Web上传页面
 			NodeID:    c.NodeID,
 			PrinterID: payload.PrinterID,
 		},
@@ -464,7 +549,7 @@ func (c *Connection) sendError(code, message, printerID string) {
 // handleJobUpdate 处理任务状态更新
 func (c *Connection) handleJobUpdate(msg *Message) {
 	log.Printf("Processing job update from node %s", c.NodeID)
-	
+
 	// 解析任务状态数据
 	var jobData JobUpdateData
 	dataBytes, err := json.Marshal(msg.Data)
@@ -472,29 +557,45 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 		log.Printf("Failed to marshal job update data from node %s: %v", c.NodeID, err)
 		return
 	}
-	
+
 	if err := json.Unmarshal(dataBytes, &jobData); err != nil {
 		log.Printf("Failed to parse job update data from node %s: %v", c.NodeID, err)
 		return
 	}
-	
+
 	var errMsg string
 	if jobData.ErrorMessage != nil {
 		errMsg = *jobData.ErrorMessage
 	}
 
-	log.Printf("Job update data: job_id=%s, status=%s, progress=%d, error=%s", 
+	log.Printf("Job update data: job_id=%s, status=%s, progress=%d, error=%s",
 		jobData.JobID, jobData.Status, jobData.Progress, errMsg)
+
+	// 终态保护：任务已完成或已失败时，不再接受后续状态覆盖。
+	// 这可避免Edge迟到上报覆盖云端人工取消（failed）结果。
+	existingJob, err := c.PrintJobRepo.GetPrintJobByID(jobData.JobID)
+	if err != nil {
+		log.Printf("Failed to get current job %s before update: %v", jobData.JobID, err)
+		return
+	}
+	if existingJob == nil {
+		log.Printf("Job %s not found when handling status update", jobData.JobID)
+		return
+	}
+	if existingJob.Status == "completed" || existingJob.Status == "failed" {
+		log.Printf("Ignoring late status update for terminal job %s (current=%s, incoming=%s)",
+			jobData.JobID, existingJob.Status, jobData.Status)
+		return
+	}
 
 	if err := c.PrintJobRepo.UpdateJobStatus(jobData.JobID, jobData.Status, jobData.Progress, errMsg); err != nil {
 		log.Printf("Failed to update job %s status: %v", jobData.JobID, err)
 		return
 	}
 
-	log.Printf("Successfully updated job %s status to %s (progress: %d%%)", 
+	log.Printf("Successfully updated job %s status to %s (progress: %d%%)",
 		jobData.JobID, jobData.Status, jobData.Progress)
 }
-
 
 // SendCommand 发送指令到 Edge Node
 func (c *Connection) SendCommand(cmd *Command) error {
@@ -510,4 +611,24 @@ func (c *Connection) SendCommand(cmd *Command) error {
 		close(c.Send)
 		return err
 	}
+}
+
+// getUserDisplayName 从用户ID获取显示名称
+// 如果无法获取用户名，返回默认值
+func getUserDisplayName(userID string) string {
+	if userID == "" {
+		return "Unknown User"
+	}
+
+	// 注意：这里需要注入 UserRepository 来查询用户名
+	// 为了避免循环依赖，暂时使用简单的显示方式
+	// 在实际使用中，应该在 ConnectionManager 中注入 UserRepository
+	// 并通过 Connection 访问
+
+	// 简单处理：如果是 UUID 格式，显示前8位
+	if len(userID) > 8 {
+		return "User-" + userID[:8]
+	}
+
+	return "User-" + userID
 }

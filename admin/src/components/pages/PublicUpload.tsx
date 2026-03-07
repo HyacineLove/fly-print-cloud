@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Upload, message, Button, Card, Typography, Alert, Spin, Result } from 'antd';
 import { InboxOutlined, FileOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
@@ -17,6 +17,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   missing_token: '缺少上传凭证',
   // 文件相关错误
   file_type_not_allowed: '不支持该文件类型，仅支持：PNG、JPG、BMP、GIF、TIFF、WEBP、PDF、DOC、DOCX',
+  FILE_TOO_MANY_PAGES: 'PDF文档页数超过限制（最多5页）',
+  FILE_TOO_LARGE: '文件大小超过限制',
+  FILE_INVALID_TYPE: '不支持的文件类型',
   // 节点相关错误
   node_not_found: '打印节点已被删除，请重新扫码',
   node_disabled: '打印节点已被禁用',
@@ -56,9 +59,7 @@ const PublicUpload: React.FC = () => {
   
   // 文件选择
   const [selectedFile, setSelectedFile] = useState<RcFile | null>(null);
-  
-  // 上传成功后倒计时
-  const [countdown, setCountdown] = useState(5);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 页面加载时验证token
   useEffect(() => {
@@ -76,20 +77,7 @@ const PublicUpload: React.FC = () => {
     verifyToken(tokenParam, nodeIdParam, printerIdParam);
   }, [searchParams]);
 
-  // 上传成功后倒计时
-  useEffect(() => {
-    if (pageState === 'success' && countdown > 0) {
-      const timer = setTimeout(() => {
-        setCountdown(countdown - 1);
-      }, 1000);
-      return () => clearTimeout(timer);
-    } else if (pageState === 'success' && countdown === 0) {
-      // 倒计时结束，尝试关闭页面
-      // 注意：微信和大多数移动浏览器不允许脚本关闭由用户打开的页面
-      window.close();
-      // 如果关闭失败，保持在成功页面，用户手动关闭
-    }
-  }, [pageState, countdown]);
+
 
   const verifyToken = async (tokenParam: string, nodeIdParam: string | null, printerIdParam: string | null) => {
     try {
@@ -132,16 +120,30 @@ const PublicUpload: React.FC = () => {
       if (response.code === 200) {
         setPageState('success');
       } else {
-        // response.message 是字符串类型
+        // 后端返回的错误信息
         const errorMsg = response.message || '上传失败';
         message.error(errorMsg);
         setErrorMessage(errorMsg);
         setPageState('error');
       }
     } catch (err: any) {
-      // 从错误对象中提取错误码
-      const errorCode = err.details?.error;
-      const errorMsg = ERROR_MESSAGES[errorCode] || err.message || '上传失败';
+      // 错误处理：优先使用后端返回的 message，然后尝试从 details 中获取
+      let errorMsg = '上传失败';
+      
+      // 1. 尝试从 details.message 获取后端返回的错误消息
+      if (err.details?.message) {
+        errorMsg = err.details.message;
+      }
+      // 2. 尝试从 details.error 获取错误码，并查找映射
+      else if (err.details?.error) {
+        const errorCode = err.details.error;
+        errorMsg = ERROR_MESSAGES[errorCode] || errorCode;
+      }
+      // 3. 使用 err.message 作为后备
+      else if (err.message) {
+        errorMsg = err.message;
+      }
+      
       message.error(errorMsg);
       setErrorMessage(errorMsg);
       setPageState('error');
@@ -150,7 +152,17 @@ const PublicUpload: React.FC = () => {
 
   // 重新选择文件
   const handleReselect = () => {
-    setSelectedFile(null);
+    fileInputRef.current?.click();
+  };
+
+  // 处理文件输入变化
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file as RcFile);
+      // 清空 input value，允许重新选择相同文件
+      e.target.value = '';
+    }
   };
 
   // 验证中页面
@@ -184,20 +196,9 @@ const PublicUpload: React.FC = () => {
         <Result
           status="success"
           title="上传成功！"
-          subTitle={
-            countdown > 0 
-              ? `文件已成功上传，${countdown} 秒后自动关闭`
-              : '文件已成功上传，请手动关闭此页面'
-          }
+          subTitle="文件已成功上传"
           icon={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
           style={{ maxWidth: 500 }}
-          extra={
-            countdown === 0 && (
-              <Button type="primary" onClick={() => window.close()}>
-                关闭页面
-              </Button>
-            )
-          }
         />
       </div>
     );
@@ -215,6 +216,15 @@ const PublicUpload: React.FC = () => {
           <Paragraph type="secondary" style={{ fontSize: '12px' }}>
             支持格式: {FILE_TYPE_LABEL}
           </Paragraph>
+
+          {/* 隐藏的文件输入 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_FILE_TYPES}
+            style={{ display: 'none' }}
+            onChange={handleFileInputChange}
+          />
 
           {!selectedFile ? (
             // 未选择文件 - 显示选择区域

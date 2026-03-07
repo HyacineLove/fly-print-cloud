@@ -1,153 +1,265 @@
-# Fly Print Cloud - 云打印管理系统
+# FlyPrint Cloud - 云端智能打印管理平台
 
 ## 系统概述
 
-Fly Print Cloud 是一个云打印管理后台系统，用于管理和监控分布式的打印资源。系统包含管理后台、API服务、边缘端连接器等核心组件，支持多Edge Node和多打印机的统一管理。
+FlyPrint Cloud 是一个云打印管理后台系统，用于管理和监控分布式的打印资源。系统包含管理后台、API服务、边缘端连接器等核心组件，支持多 Edge Node 和多打印机的统一管理。
+
+## 系统要求
+
+### 必需依赖
+
+| 依赖 | 最低版本 | 说明 |
+|------|----------|------|
+| Docker | 20.10+ | 容器运行时 |
+| Docker Compose | V2 或 1.29+ | 容器编排 |
+| Python | 3.8+ | 运行安装脚本 |
+
+### 硬件要求
+
+| 配置 | 最低要求 | 推荐配置 |
+|------|----------|----------|
+| CPU | 2 核 | 4 核 |
+| 内存 | 2 GB | 4 GB |
+| 磁盘 | 10 GB | 20 GB |
+
+### 端口占用
+
+| 端口 | 服务 | 说明 |
+|------|------|------|
+| 8180 | Nginx | 统一入口 (HTTP) |
+| 8090 | Keycloak | 可选，仅 keycloak 模式 |
+
+## 快速开始
+
+### 1. 安装 Docker
+
+**Windows / macOS:**
+- 下载并安装 [Docker Desktop](https://www.docker.com/products/docker-desktop)
+
+**Linux (Ubuntu/Debian):**
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+```
+
+### 2. 运行安装脚本
+
+```bash
+# 进入项目目录
+cd fly-print-cloud
+
+# 自动安装（使用默认配置）
+python install.py --auto
+
+# 或交互式安装（可自定义配置）
+python install.py
+```
+
+### 3. 访问服务
+
+安装完成后，访问以下地址：
+
+- **Admin Console**: http://localhost:8180
+- **API Health**: http://localhost:8180/api/v1/health
+
+**默认管理员账户:**
+- 用户名: `admin`
+- 密码: 安装时显示（随机生成或自定义）
+
+## 手动安装
+
+如果不想使用安装脚本，可以手动安装：
+
+```bash
+# 1. 复制环境变量模板
+cp .env.example .env
+
+# 2. 编辑配置（根据实际环境修改）
+vim .env
+
+# 3. 构建镜像
+docker compose build
+
+# 4. 启动服务
+docker compose up -d
+
+# 5. 查看日志
+docker compose logs -f
+```
 
 ## 系统架构
 
 ```
 fly-print-cloud/
-├── admin-console/          # 管理后台 (React + TypeScript)
-├── api-server/            # API服务 (Go + Gin/Echo)
-├── edge-connector/        # 边缘端连接器 (Go WebSocket)
-├── shared/                # 共享类型定义和工具
-├── docker-compose.yml     # 开发环境
-└── README.md             # 项目说明
+├── api/                    # Go 后端 API
+│   ├── cmd/server/         # 主程序入口
+│   ├── internal/           # 内部模块
+│   │   ├── auth/           # 认证服务
+│   │   ├── config/         # 配置管理
+│   │   ├── database/       # 数据库访问
+│   │   ├── handlers/       # HTTP 处理器
+│   │   ├── middleware/     # 中间件
+│   │   ├── models/         # 数据模型
+│   │   ├── security/       # 安全模块
+│   │   └── websocket/      # WebSocket
+│   └── Dockerfile
+├── admin/                  # React 前端
+│   ├── src/
+│   │   ├── components/     # 页面组件
+│   │   └── App.tsx         # 应用入口
+│   └── Dockerfile
+├── nginx/                  # Nginx 配置
+│   ├── nginx.conf
+│   └── conf.d/admin.conf
+├── docker-compose.yml      # Docker Compose 配置
+├── .env.example            # 环境变量模板
+├── install.py              # 安装脚本
+└── README.md               # 本文档
 ```
 
 ## 核心功能
 
-### 1. Admin Console (管理后台)
-- **Edge Node 管理**：注册、状态监控、连接管理、设备信息
-- **打印机管理**：注册、状态监控、配置管理、硬件信息
-- **打印任务管理**：创建、监控、队列管理、优先级控制
-- **打印历史**：任务记录、统计报表、审计日志
-- **系统监控**：实时状态、连接状态、健康检查、性能指标
-- **用户管理**：内置用户管理，支持本地登录
-- **权限控制**：基于角色的权限管理
+### Admin Console (管理后台)
+- **Dashboard**: 系统概览、打印任务趋势图
+- **Edge Nodes**: 边缘节点管理、在线状态监控
+- **Printers**: 打印机管理、状态查看
+- **Print Jobs**: 打印任务列表、状态追踪
+- **Users**: 用户管理 (builtin 模式)
+- **Settings**: 系统设置
+- **Public Upload**: 公共文件上传页面
 
-### 2. API Server (Headless API)
-- 打印机资源管理 API
-- 打印任务 API
-- 边缘端通信 API
-- 认证和授权 (Keycloak集成)
+### API 服务
 
-### 3. Edge Connector (边缘端连接)
-- WebSocket 连接管理
-- 状态上报接收
-- 任务下发
-- 心跳检测
+| 路由 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/auth/mode` | GET | 获取认证模式 |
+| `/auth/token` | POST | 获取 Token (builtin) |
+| `/auth/login` | GET | OAuth2 登录 |
+| `/auth/me` | GET | 当前用户信息 |
+| `/api/v1/admin/*` | - | 管理 API |
+| `/api/v1/edge/*` | - | Edge 节点 API |
+| `/api/v1/print-jobs` | POST | 第三方打印 API |
+| `/api/v1/files/*` | - | 文件上传/下载 |
 
-## 技术选型
+### WebSocket 通信
 
-### 后端
-- **语言**: Go
-- **Web框架**: Gin/Echo
-- **WebSocket**: Gorilla WebSocket
-- **数据库**: PostgreSQL + Redis
-- **消息队列**: Redis Streams
-- **认证**: 标准OAuth 2.0/OpenID Connect (支持Keycloak等)
+Edge 节点通过 WebSocket 与 Cloud 保持长连接：
 
-### 前端
-- **框架**: React + TypeScript
-- **UI组件**: Ant Design/Element Plus
-- **状态管理**: Redux/Zustand
-- **WebSocket**: 原生WebSocket API
+- **连接地址**: `ws://localhost:8180/api/v1/edge/ws?node_id={node_id}`
+- **认证方式**: Bearer Token (OAuth2)
+- **功能**: 心跳、打印任务分发、状态同步
 
-## 权限控制
+## 技术栈
 
-### 认证方式
-- **内置用户管理**: 支持用户名密码登录，适合简单部署
-- **OAuth 2.0**: 支持外部OAuth Provider (Keycloak、Auth0等)
-- **并行支持**: 两种认证方式可以同时使用
+| 组件 | 技术 |
+|------|------|
+| 后端 | Go 1.21, Gin, GORM |
+| 前端 | React 18, Ant Design, TypeScript |
+| 数据库 | PostgreSQL 15 |
+| 代理 | Nginx Alpine |
+| 认证 | JWT, OAuth2 |
+| 通信 | WebSocket (Gorilla) |
 
-### 内置用户管理
-- 用户名/密码登录
-- 支持用户创建、修改、删除
-- 密码加密存储
-- 登录历史记录
+## 认证模式
 
-### RBAC角色设计
-- **admin**: 所有权限
-- **operator**: 查看状态 + 创建任务
-- **viewer**: 只读权限
-- **edge-manager**: Edge Node管理权限
-- **print-manager**: 打印任务管理权限
+### Builtin 模式 (默认)
 
-## 部署架构
+内置轻量级认证服务，适用于：
+- 校园网/局域网部署
+- 快速测试环境
+- 无需外部依赖
 
-### 网络拓扑
-```
-公网/上级网络
-┌─────────────────────────────────────────────────────────────┐
-│                    Fly Print Cloud                         │
-│  ┌─────────────────┐    ┌─────────────────┐                │
-│  │   Admin Console │    │   API Server    │                │
-│  │   (React SPA)   │◄──►│   (Go HTTP)     │                │
-│  └─────────────────┘    └─────────────────┘                │
-│           │                       │                        │
-│           │                       ▼                        │
-│           │              ┌─────────────────┐                │
-│           │              │  Edge Connector │                │
-│           │              │  (Go WebSocket) │                │
-│           │              └─────────────────┘                │
-│           │                       │                        │
-│           │                       ▼                        │
-│           │              ┌─────────────────┐                │
-│           │              │   PostgreSQL    │                │
-│           │              │   + Redis       │                │
-│           │              └─────────────────┘                │
-└─────────────────────────────────────────────────────────────┘
-                                    │
-                                    │ WebSocket 长连接
-                                    ▼
-子网/局域网
-┌─────────────────────────────────────────────────────────────┐
-│                    Fly Print Edge                          │
-│  ┌─────────────────┐    ┌─────────────────┐                │
-│  │   Edge Service  │    │  Printer Driver │                │
-│  │  (Go WebSocket) │◄──►│   Interface     │                │
-│  └─────────────────┘    └─────────────────┘                │
-│           │                       │                        │
-│           │                       ▼                        │
-│           │              ┌─────────────────┐                │
-│           │              │   Printers      │                │
-│           │              │   (USB/Network) │                │
-│           │              └─────────────────┘                │
-└─────────────────────────────────────────────────────────────┘
+配置：
+```env
+OAUTH2_MODE=builtin
+OAUTH2_JWT_SIGNING_SECRET=your-random-secret
 ```
 
-### 通信特点
-- **上行**: Edge → Cloud (状态上报、心跳)
-- **下行**: Cloud → Edge (指令下发、任务推送)
-- **连接**: Edge主动建立WebSocket长连接
-- **实时性**: 支持实时指令下发和状态上报
+### Keycloak 模式
 
-## 快速开始
+外部 Keycloak 认证，适用于：
+- 生产环境部署
+- 需要 SSO 集成
+- 多租户场景
 
-### 环境要求
-- Go 1.21+
-- PostgreSQL 14+
-- Redis 6+
-- Node.js 18+
-- Docker & Docker Compose
+配置：
+```env
+OAUTH2_MODE=keycloak
+OAUTH2_CLIENT_ID=fly-print-admin-console
+OAUTH2_CLIENT_SECRET=your-client-secret
+OAUTH2_AUTH_URL=https://keycloak.example.com/realms/fly-print/...
+```
 
-### 本地开发
+### 角色权限
+- **fly-print-admin**: 所有权限
+- **fly-print-operator**: 查看状态 + 操作任务
+- **edge:***: Edge 节点相关权限
+- **print:submit**: 第三方打印提交权限
+
+## Edge 节点连接
+
+Edge 端需要配置以下信息连接 Cloud：
+
+```yaml
+cloud:
+  api_url: http://localhost:8180
+  websocket_url: ws://localhost:8180/api/v1/edge/ws
+  client_id: edge-node-1
+  client_secret: your-edge-secret
+```
+
+## 常用命令
+
 ```bash
-# 克隆项目
-git clone <repository-url>
-cd fly-print-cloud
+# 查看服务状态
+python install.py --status
+docker compose ps
 
-# 启动依赖服务
-docker-compose up -d
+# 查看日志
+docker compose logs -f
+docker compose logs -f api      # 只看 API 日志
 
-# 启动后端服务
-cd api-server
-go run main.go
+# 重启服务
+docker compose restart
 
-# 启动前端服务
-cd admin-console
-npm install
-npm run dev
+# 停止服务
+python install.py --stop
+docker compose down
+
+# 重新构建
+python install.py --rebuild
+docker compose build --no-cache && docker compose up -d
+
+# 清理数据（危险操作）
+docker compose down -v
 ```
+
+## 生产部署建议
+
+### 安全配置
+
+1. **修改默认密码**
+   ```env
+   DEFAULT_ADMIN_PASSWORD=your-strong-password
+   POSTGRES_PASSWORD=your-db-password
+   ```
+
+2. **生成随机密钥**
+   ```bash
+   openssl rand -hex 32
+   ```
+
+3. **启用 HTTPS**: 配置 SSL 证书，设置 `COOKIE_SECURE=true`
+
+## 故障排查
+
+| 问题 | 排查方法 |
+|------|----------|
+| 服务无法启动 | 检查端口占用: `netstat -tlnp \| grep 8180` |
+| 登录失败 | 检查认证模式: `curl http://localhost:8180/auth/mode` |
+| WebSocket 连接失败 | 检查防火墙规则，确认 Token 有效性 |
+
+## 许可证
+
+MIT License

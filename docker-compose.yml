@@ -10,6 +10,17 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - fly-print-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   api:
     build:
@@ -24,8 +35,13 @@ services:
       - FLY_PRINT_DATABASE_DBNAME=${POSTGRES_DB}
       - FLY_PRINT_DATABASE_USER=${POSTGRES_USER}
       - FLY_PRINT_DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+      - FLY_PRINT_SERVER_ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - FLY_PRINT_CREATE_DEFAULT_ADMIN=${CREATE_DEFAULT_ADMIN:-false}
       - FLY_PRINT_DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}
+      - FLY_PRINT_OAUTH2_MODE=${OAUTH2_MODE:-builtin}
+      - FLY_PRINT_OAUTH2_JWT_SIGNING_SECRET=${OAUTH2_JWT_SIGNING_SECRET:-fly-print-jwt-secret-dev-only}
+      - FLY_PRINT_OAUTH2_JWT_TOKEN_EXPIRY=${OAUTH2_JWT_TOKEN_EXPIRY:-3600}
+      - FLY_PRINT_OAUTH2_JWT_ISSUER=${OAUTH2_JWT_ISSUER:-fly-print-cloud}
       - FLY_PRINT_OAUTH2_CLIENT_ID=${OAUTH2_CLIENT_ID}
       - FLY_PRINT_OAUTH2_CLIENT_SECRET=${OAUTH2_CLIENT_SECRET}
       - FLY_PRINT_OAUTH2_AUTH_URL=${OAUTH2_AUTH_URL}
@@ -35,12 +51,24 @@ services:
       - FLY_PRINT_OAUTH2_LOGOUT_URL=${OAUTH2_LOGOUT_URL}
       - FLY_PRINT_OAUTH2_LOGOUT_REDIRECT_URI_PARAM=${OAUTH2_LOGOUT_REDIRECT_URI_PARAM:-post_logout_redirect_uri}
       - FLY_PRINT_ADMIN_CONSOLE_URL=${ADMIN_CONSOLE_URL}
+      - FLY_PRINT_SECURITY_FILE_ACCESS_SECRET=${FILE_ACCESS_SECRET}
+      - FLY_PRINT_SECURITY_UPLOAD_TOKEN_TTL=${UPLOAD_TOKEN_TTL:-300}
+      - FLY_PRINT_SECURITY_DOWNLOAD_TOKEN_TTL=${DOWNLOAD_TOKEN_TTL:-300}
+    ports:
+      - "8080:8080"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     volumes:
       - file_uploads:/root/uploads
     networks:
       - fly-print-network
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   admin-console-builder:
     build:
@@ -52,21 +80,34 @@ services:
     restart: "no"
     networks:
       - fly-print-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
 
   nginx:
     image: docker.m.daocloud.io/library/nginx:alpine
     container_name: fly-print-nginx
     ports:
-      - "8180:8000"  # 统一入口端口
+      - "80:80"
+      # - "443:443"  # Disable SSL port
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./nginx/conf.d:/etc/nginx/conf.d
+      # - ./nginx/ssl:/etc/nginx/ssl:ro  # Disable SSL volumes
       - admin_build:/usr/share/nginx/html
     depends_on:
       - api
       - admin-console-builder
     networks:
       - fly-print-network
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   postgres_data:

@@ -1,0 +1,125 @@
+basePath: /api
+definitions:
+  handlers.DatabaseHealth:
+    properties:
+      connected:
+        type: boolean
+      idle_connections:
+        type: integer
+      max_open_connections:
+        type: integer
+      open_connections:
+        type: integer
+      status:
+        type: string
+    type: object
+  handlers.HealthResponse:
+    properties:
+      database:
+        $ref: '#/definitions/handlers.DatabaseHealth'
+      service:
+        type: string
+      status:
+        type: string
+      system:
+        $ref: '#/definitions/handlers.SystemHealth'
+      timestamp:
+        type: string
+      uptime:
+        type: string
+      version:
+        type: string
+      websocket:
+        $ref: '#/definitions/handlers.WebSocketHealth'
+    type: object
+  handlers.SystemHealth:
+    properties:
+      status:
+        type: string
+    type: object
+  handlers.WebSocketHealth:
+    properties:
+      active_connections:
+        type: integer
+      status:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@flyprint.com
+    name: API Support
+  description: 云打印系统后端API服务，提供打印任务管理、边缘节点管理、OAuth2认证等功能
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Fly Print Cloud API
+  version: "1.0"
+paths:
+  /api/v1/health:
+    get:
+      consumes:
+      - application/json
+      description: 检查服务各组件的健康状态
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 详细健康状态
+          schema:
+            $ref: '#/definitions/handlers.HealthResponse'
+      summary: 详细健康检查
+      tags:
+      - 健康检查
+  /api/v1/users/profile:
+    get:
+      consumes:
+      - application/json
+      description: 获取当前登录用户的详细信息
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 用户信息
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: 未授权
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: 用户不存在
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 获取当前用户信息
+      tags:
+      - 用户管理
+  /health:
+    get:
+      consumes:
+      - application/json
+      description: 快速检查服务是否运行
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 服务正常
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 基础健康检查
+      tags:
+      - 健康检查
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
