@@ -1,9 +1,14 @@
 package utils
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 )
@@ -59,4 +64,79 @@ func ValidatePDFPageCountFromReader(reader io.ReadSeeker, maxPages int) (int, er
 	}
 
 	return pageCount, nil
+}
+
+type docxAppProperties struct {
+	Pages string `xml:"Pages"`
+}
+
+func ValidateDocumentPageCountFromReader(file io.ReaderAt, seeker io.ReadSeeker, fileSize int64, ext string, maxPages int) (int, error) {
+	normalizedExt := strings.ToLower(ext)
+	var pageCount int
+	var err error
+	switch normalizedExt {
+	case ".pdf":
+		pageCount, err = ValidatePDFPageCountFromReader(seeker, maxPages)
+	case ".docx":
+		pageCount, err = getDOCXPageCount(file, fileSize)
+	case ".doc":
+		pageCount, err = getDOCPageCount(seeker)
+	default:
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if pageCount > maxPages {
+		return pageCount, fmt.Errorf("document has %d pages, exceeds maximum of %d pages", pageCount, maxPages)
+	}
+	return pageCount, nil
+}
+
+func getDOCXPageCount(file io.ReaderAt, fileSize int64) (int, error) {
+	reader, err := zip.NewReader(file, fileSize)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read docx archive: %w", err)
+	}
+	for _, entry := range reader.File {
+		if entry.Name != "docProps/app.xml" {
+			continue
+		}
+		rc, err := entry.Open()
+		if err != nil {
+			return 0, fmt.Errorf("failed to open docx metadata: %w", err)
+		}
+		content, readErr := io.ReadAll(rc)
+		closeErr := rc.Close()
+		if readErr != nil {
+			return 0, fmt.Errorf("failed to read docx metadata: %w", readErr)
+		}
+		if closeErr != nil {
+			return 0, fmt.Errorf("failed to close docx metadata: %w", closeErr)
+		}
+		var app docxAppProperties
+		if err := xml.Unmarshal(content, &app); err != nil {
+			return 0, fmt.Errorf("failed to parse docx metadata: %w", err)
+		}
+		pages, err := strconv.Atoi(strings.TrimSpace(app.Pages))
+		if err != nil || pages <= 0 {
+			return 0, fmt.Errorf("invalid docx page metadata")
+		}
+		return pages, nil
+	}
+	return 0, fmt.Errorf("docx page metadata not found")
+}
+
+func getDOCPageCount(seeker io.ReadSeeker) (int, error) {
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("failed to seek doc file: %w", err)
+	}
+	content, err := io.ReadAll(seeker)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read doc file: %w", err)
+	}
+	if len(content) == 0 {
+		return 0, fmt.Errorf("empty doc file")
+	}
+	return bytes.Count(content, []byte{0x0c}) + 1, nil
 }

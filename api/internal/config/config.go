@@ -257,7 +257,8 @@ func setDefaults() {
 
 	// Storage 默认值
 	viper.SetDefault("storage.upload_dir", "./uploads")
-	viper.SetDefault("storage.max_size", 52428800) // 50MB
+	viper.SetDefault("storage.max_size", 10485760) // 10MB
+	viper.SetDefault("storage.max_document_pages", 5)
 
 	// Security 默认值
 	viper.SetDefault("security.file_access_secret", "fly-print-file-access-secret-dev-only")
