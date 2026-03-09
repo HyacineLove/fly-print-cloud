@@ -17,9 +17,12 @@ const ERROR_MESSAGES: Record<string, string> = {
   missing_token: '缺少上传凭证',
   // 文件相关错误
   file_type_not_allowed: '不支持该文件类型，仅支持：PNG、JPG、BMP、GIF、TIFF、WEBP、PDF、DOC、DOCX',
-  FILE_TOO_MANY_PAGES: 'PDF文档页数超过限制（最多5页）',
+  FILE_TOO_MANY_PAGES: '文档页数超过限制（最多5页）',
   FILE_TOO_LARGE: '文件大小超过限制',
   FILE_INVALID_TYPE: '不支持的文件类型',
+  '6003': '不支持的文件类型',
+  '6004': '文件大小超过10MB限制',
+  '6005': '文档页数超过限制（最多5页）',
   // 节点相关错误
   node_not_found: '打印节点已被删除，请重新扫码',
   node_disabled: '打印节点已被禁用',
@@ -115,6 +118,11 @@ const PublicUpload: React.FC = () => {
     setPageState('uploading');
     
     try {
+      const preflightResult = await apiService.preflightUpload(selectedFile, token);
+      if (preflightResult.code !== 200 || (preflightResult as any).valid === false) {
+        throw new Error(preflightResult.message || '预检失败');
+      }
+
       const response = await apiService.uploadFile(selectedFile, token, nodeId || undefined);
       
       if (response.code === 200) {
@@ -138,6 +146,10 @@ const PublicUpload: React.FC = () => {
       else if (err.details?.error) {
         const errorCode = err.details.error;
         errorMsg = ERROR_MESSAGES[errorCode] || errorCode;
+      }
+      else if (err.details?.code) {
+        const errorCode = String(err.details.code);
+        errorMsg = ERROR_MESSAGES[errorCode] || err.details.message || errorMsg;
       }
       // 3. 使用 err.message 作为后备
       else if (err.message) {

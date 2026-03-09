@@ -36,7 +36,7 @@ admin:
 # 存储配置
 storage:
   upload_dir: "./uploads"
-  max_size: 104857600  # 100MB (字节)
+  max_size: 10485760  # 10MB (字节)
   max_document_pages: 5  # PDF/DOCX 等文档的最大页数限制
 
 # 安全配置

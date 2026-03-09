@@ -343,6 +343,7 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 		{
 			// 轻量验证上传Token（不消耗一次性Token）
 			fileGroup.GET("/verify-upload-token", fileHandler.VerifyUploadToken)
+			fileGroup.POST("/preflight", middleware.OptionalOAuth2ResourceServer(), fileHandler.PreflightUpload)
 			// 上传：支持上传凭证或 OAuth2 认证
 			fileGroup.POST("", middleware.OptionalOAuth2ResourceServer(), fileHandler.Upload)
 			// 下载：支持下载凭证或 OAuth2 认证

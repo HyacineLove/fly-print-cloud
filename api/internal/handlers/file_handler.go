@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +19,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+)
+
+const (
+	uploadRuleMaxSizeBytes = 10 * 1024 * 1024
+	uploadRuleMaxPages     = 5
 )
 
 type FileHandler struct {
@@ -91,45 +98,20 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 	defer srcFile.Close()
 
-	// Read first 512 bytes
-	buffer := make([]byte, 512)
-	if _, err := srcFile.Read(buffer); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file content"})
-		return
-	}
-
-	// Detect content type
-	contentType := http.DetectContentType(buffer)
-
-	// Validate against allowed types using security whitelist
-	if !security.IsAllowedFileType(contentType, security.AllowedPrintFileTypes) {
-		// Special handling for Office documents (often detected as zip)
-		ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-		allowedExtensions := []string{".docx", ".doc", ".xlsx", ".xls", ".pdf", ".txt", ".ps"}
-		isAllowedExt := false
-		for _, allowedExt := range allowedExtensions {
-			if ext == allowedExt {
-				isAllowedExt = true
-				break
-			}
-		}
-
-		if !isAllowedExt {
+	if err := h.validateUploadRules(fileHeader, srcFile); err != nil {
+		if err == errUploadInvalidType {
 			BadRequestWithCode(c, ErrCodeFileInvalidType)
 			return
 		}
-	}
-
-	// Validate size - 先检查硬编码的安全上限(100MB)
-	const maxFileSizeHardLimit = 100 * 1024 * 1024 // 100MB硬编码安全上限
-	if fileHeader.Size > maxFileSizeHardLimit {
-		BadRequestWithCode(c, ErrCodeFileTooLarge)
-		return
-	}
-
-	// 再检查配置的大小限制
-	if fileHeader.Size > h.config.MaxSize {
-		BadRequestWithCode(c, ErrCodeFileTooLarge)
+		if err == errUploadTooLarge {
+			BadRequestWithCode(c, ErrCodeFileTooLarge)
+			return
+		}
+		if err == errUploadTooManyPages {
+			BadRequestWithCode(c, ErrCodeFileTooManyPages)
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate file"})
 		return
 	}
 
@@ -146,21 +128,6 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	if err := c.SaveUploadedFile(fileHeader, filePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
 		return
-	}
-
-	// 对 PDF 文件进行页数验证（在消耗Token之前）
-	if strings.ToLower(ext) == ".pdf" && h.config.MaxDocumentPages > 0 {
-		pageCount, err := utils.ValidatePDFPageCount(filePath, h.config.MaxDocumentPages)
-		if err != nil {
-			// 页数超限，删除已保存的文件
-			os.Remove(filePath)
-			log.Printf("PDF page count validation failed: %v (file: %s, pages: %d)", err, fileHeader.Filename, pageCount)
-			
-			// 返回标准错误响应
-			BadRequestWithCode(c, ErrCodeFileTooManyPages)
-			return
-		}
-		log.Printf("PDF page count validation passed: %d pages (file: %s)", pageCount, fileHeader.Filename)
 	}
 
 	// 第二阶段：所有验证通过后，真正验证并消耗Token
@@ -215,6 +182,51 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		"message": "success",
 		"data":    file,
 	})
+}
+
+var (
+	errUploadInvalidType  = fmt.Errorf("invalid file type")
+	errUploadTooLarge     = fmt.Errorf("file too large")
+	errUploadTooManyPages = fmt.Errorf("too many pages")
+)
+
+func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcFile multipart.File) error {
+	if fileHeader.Size > uploadRuleMaxSizeBytes {
+		return errUploadTooLarge
+	}
+	buffer := make([]byte, 512)
+	bytesRead, err := srcFile.Read(buffer)
+	if err != nil && err != io.EOF {
+		return err
+	}
+	contentType := http.DetectContentType(buffer[:bytesRead])
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	if !security.IsAllowedFileType(contentType, security.AllowedPrintFileTypes) {
+		allowedExtensions := []string{".docx", ".doc", ".xlsx", ".xls", ".pdf", ".txt", ".ps"}
+		isAllowedExt := false
+		for _, allowedExt := range allowedExtensions {
+			if ext == allowedExt {
+				isAllowedExt = true
+				break
+			}
+		}
+		if !isAllowedExt {
+			return errUploadInvalidType
+		}
+	}
+	if _, err := srcFile.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if ext != ".pdf" && ext != ".doc" && ext != ".docx" {
+		return nil
+	}
+	pageCount, err := utils.ValidateDocumentPageCountFromReader(srcFile, srcFile, fileHeader.Size, ext, uploadRuleMaxPages)
+	if err != nil {
+		log.Printf("document page validation failed: %v (file: %s)", err, fileHeader.Filename)
+		return errUploadTooManyPages
+	}
+	log.Printf("document page validation passed: %d pages (file: %s)", pageCount, fileHeader.Filename)
+	return nil
 }
 
 // Download 下载文件
@@ -342,5 +354,79 @@ func (h *FileHandler) VerifyUploadToken(c *gin.Context) {
 			"printer_id": payload.PrinterID,
 			"expires_at": payload.ExpiresAt,
 		},
+	})
+}
+
+func (h *FileHandler) PreflightUpload(c *gin.Context) {
+	token := c.Query("token")
+	if token != "" {
+		_, err := h.tokenManager.VerifyUploadTokenLightweight(token)
+		if err != nil {
+			log.Printf("Upload token preflight verification failed: %v", err)
+			errorCode := security.GetTokenErrorCode(err)
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":    401,
+				"error":   errorCode,
+				"message": err.Error(),
+				"valid":   false,
+			})
+			return
+		}
+	} else {
+		if _, exists := c.Get("external_id"); !exists {
+			if _, exists := c.Get("sub"); !exists {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"code":    401,
+					"error":   "unauthorized",
+					"message": "Upload token or OAuth2 authentication required",
+					"valid":   false,
+				})
+				return
+			}
+		}
+	}
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    ErrCodeBadRequest,
+			"message": "No file uploaded",
+			"valid":   false,
+		})
+		return
+	}
+	srcFile, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    ErrCodeInternalServerError,
+			"message": "Failed to open uploaded file",
+			"valid":   false,
+		})
+		return
+	}
+	defer srcFile.Close()
+	if err := h.validateUploadRules(fileHeader, srcFile); err != nil {
+		if err == errUploadInvalidType {
+			BadRequestWithCode(c, ErrCodeFileInvalidType)
+			return
+		}
+		if err == errUploadTooLarge {
+			BadRequestWithCode(c, ErrCodeFileTooLarge)
+			return
+		}
+		if err == errUploadTooManyPages {
+			BadRequestWithCode(c, ErrCodeFileTooManyPages)
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    ErrCodeInternalServerError,
+			"message": "Failed to validate file",
+			"valid":   false,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "Preflight validation passed",
+		"valid":   true,
 	})
 }

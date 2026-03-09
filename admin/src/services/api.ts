@@ -175,6 +175,42 @@ class ApiService {
     }
   }
 
+  async preflightUpload(file: File, uploadToken?: string): Promise<ApiResponse<any>> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      let url = `${this.baseURL}/files/preflight`;
+      if (uploadToken) {
+        url += `?token=${encodeURIComponent(uploadToken)}`;
+      }
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new ApiError({
+          code: response.status,
+          message: result.message || '请求失败',
+          details: result,
+        });
+      }
+
+      return result;
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+
+      throw new ApiError({
+        code: 500,
+        message: error instanceof Error ? error.message : '网络错误',
+      });
+    }
+  }
+
   // 文件下载 (返回 Blob)
   async downloadFile(url: string, token?: string): Promise<Blob> {
     const useToken = token || await this.getToken();

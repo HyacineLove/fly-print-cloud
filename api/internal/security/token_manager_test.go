@@ -17,6 +17,10 @@ func NewMockTokenUsageMarker() *MockTokenUsageMarker {
 	}
 }
 
+func (m *MockTokenUsageMarker) PreRegisterToken(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error {
+	return nil
+}
+
 func (m *MockTokenUsageMarker) MarkTokenAsUsed(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error {
 	if m.usedTokens[tokenHash] {
 		return errors.New("token has already been used")
