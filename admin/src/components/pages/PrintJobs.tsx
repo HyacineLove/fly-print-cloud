@@ -8,6 +8,7 @@ import {
   ClusterOutlined
 } from '@ant-design/icons';
 import type { Dayjs } from 'dayjs';
+import { buildApiUrl, buildAuthUrl } from '../../config';
 
 const { RangePicker } = DatePicker;
 
@@ -44,8 +45,6 @@ interface EdgeNode {
   display_name: string;
   status: string;
 }
-
-import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // Print Jobs 服务类
 class PrintJobsService {

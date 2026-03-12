@@ -13,6 +13,7 @@ import {
   SearchOutlined,
   ReloadOutlined
 } from '@ant-design/icons';
+import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // 边缘节点接口（适配后端数据模型）
 interface EdgeNode {
@@ -26,8 +27,6 @@ interface EdgeNode {
   printer_count: number;  // 后端返回的打印机数量字段
   key?: string;
 }
-
-import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // Edge Nodes 服务类
 class EdgeNodesService {

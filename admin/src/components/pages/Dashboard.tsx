@@ -10,6 +10,7 @@ import {
   UserOutlined
 } from '@ant-design/icons';
 import * as echarts from 'echarts';
+import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // Dashboard 数据接口
 interface DashboardStats {
@@ -43,8 +44,6 @@ interface PrintJob {
   page_count: number;
   key?: string;
 }
-
-import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // Dashboard 服务类
 class DashboardService {

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Form, Input, Button, Card, message, Typography, Spin } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
+import { buildAuthUrl } from '../../config';
 
 const { Title, Text } = Typography;
 
@@ -8,8 +9,6 @@ interface LoginForm {
   username: string;
   password: string;
 }
-
-import { buildAuthUrl } from '../../config';
 
 const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);

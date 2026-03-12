@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, message, Space, Tag, Popconfirm, Typography, Card } from 'antd';
 import { PlusOutlined, CopyOutlined, ReloadOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { buildApiUrl, buildAuthUrl } from '../../config';
 
 const { Paragraph } = Typography;
 
@@ -16,8 +17,6 @@ interface OAuth2Client {
   created_at: string;
   updated_at: string;
 }
-
-import { buildApiUrl, buildAuthUrl } from '../../config';
 
 const OAuth2Clients: React.FC = () => {
   const [clients, setClients] = useState<OAuth2Client[]>([]);

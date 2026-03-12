@@ -9,6 +9,7 @@ import {
   DeleteOutlined,
   EditOutlined
 } from '@ant-design/icons';
+import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // 打印机接口（适配后端数据模型）
 interface PrinterStatus {
@@ -33,8 +34,6 @@ interface EdgeNode {
   id: string;
   name: string;
 }
-
-import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // Printers 服务类
 class PrintersService {
