@@ -1,0 +1,9 @@
+# 独立部署用配置，compose 由环境变量注入，不打进镜像
+config.yaml
+# 上传目录与日志，运行时挂卷或由 compose 挂 volume
+uploads
+uploads/
+*.log
+# 避免将本地/敏感文件带入镜像
+.env
+.git

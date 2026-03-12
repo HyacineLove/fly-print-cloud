@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
-	"log"
 	"math/big"
 	"time"
 
@@ -317,7 +316,7 @@ func (db *DB) InitTables() error {
 	for _, migration := range migrations {
 		if _, err := db.Exec(migration); err != nil {
 			// 某些错误可以忽略（例如约束已存在）
-			log.Printf("Migration warning (可能已应用): %v", err)
+			logger.Warn("Migration warning (可能已应用)", zap.Error(err))
 		}
 	}
 
@@ -438,7 +437,7 @@ func (db *DB) InitTables() error {
 		return fmt.Errorf("failed to add deleted_at column to printers: %w", err)
 	}
 
-	log.Println("Database tables initialized successfully")
+	logger.Info("Database tables initialized successfully")
 	return nil
 }
 
@@ -452,15 +451,15 @@ func (db *DB) CreateDefaultAdmin() error {
 	}
 
 	if count > 0 {
-		log.Println("Admin user already exists, skipping creation")
+		logger.Info("Admin user already exists, skipping creation")
 		return nil
 	}
 
 	// 只在环境变量允许时创建默认管理员
 	createDefault := viper.GetString("create_default_admin")
 	if createDefault != "true" {
-		log.Println("No admin users found, but CREATE_DEFAULT_ADMIN is not set to 'true'")
-		log.Println("To create a default admin, set CREATE_DEFAULT_ADMIN=true and restart")
+		logger.Info("No admin users found, but CREATE_DEFAULT_ADMIN is not set to 'true'")
+		logger.Info("To create a default admin, set CREATE_DEFAULT_ADMIN=true and restart")
 		return nil
 	}
 
@@ -468,8 +467,8 @@ func (db *DB) CreateDefaultAdmin() error {
 	adminPassword := viper.GetString("default_admin_password")
 	if adminPassword == "" {
 		adminPassword = generateRandomPassword(16)
-		log.Printf("Generated random admin password: %s", adminPassword)
-		log.Println("IMPORTANT: Save this password immediately! It will not be shown again.")
+		logger.Info("Generated random admin password", zap.String("password", adminPassword))
+		logger.Warn("IMPORTANT: Save this password immediately! It will not be shown again.")
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
@@ -485,7 +484,7 @@ func (db *DB) CreateDefaultAdmin() error {
 		return fmt.Errorf("failed to create default admin: %w", err)
 	}
 
-	log.Println("Default admin user created successfully (username: admin)")
+	logger.Info("Default admin user created successfully", zap.String("username", "admin"))
 	if viper.GetString("default_admin_password") == "" {
 		logger.Warn("=====================================")
 		logger.Warn("IMPORTANT: ADMIN CREDENTIALS")
@@ -497,7 +496,7 @@ func (db *DB) CreateDefaultAdmin() error {
 		logger.Warn("Change it after first login for security!")
 		logger.Warn("=====================================")
 	} else {
-		log.Println("Using custom admin password from environment variable")
+		logger.Info("Using custom admin password from environment variable")
 	}
 	return nil
 }
@@ -512,7 +511,7 @@ func (db *DB) CreateDefaultOAuth2Client() error {
 	}
 
 	if count > 0 {
-		log.Println("OAuth2 clients already exist, skipping default client creation")
+		logger.Info("OAuth2 clients already exist, skipping default client creation")
 		return nil
 	}
 
@@ -536,15 +535,14 @@ func (db *DB) CreateDefaultOAuth2Client() error {
 		return fmt.Errorf("failed to create default oauth2 client: %w", err)
 	}
 
-	log.Println("==========================================")
-	log.Println("  DEFAULT EDGE OAuth2 CLIENT CREATED")
-	log.Println("==========================================")
-	log.Printf("  Client ID:     edge-default")
-	log.Printf("  Client Secret:  %s", rawSecret)
-	log.Println("==========================================")
-	log.Println("  SAVE THIS SECRET IMMEDIATELY!")
-	log.Println("  It will NOT be shown again!")
-	log.Println("==========================================")
+	logger.Warn("==========================================")
+	logger.Warn("  DEFAULT EDGE OAuth2 CLIENT CREATED")
+	logger.Warn("==========================================")
+	logger.Info("Default Edge OAuth2 client", zap.String("client_id", "edge-default"), zap.String("client_secret", rawSecret))
+	logger.Warn("==========================================")
+	logger.Warn("  SAVE THIS SECRET IMMEDIATELY!")
+	logger.Warn("  It will NOT be shown again!")
+	logger.Warn("==========================================")
 
 	return nil
 }
