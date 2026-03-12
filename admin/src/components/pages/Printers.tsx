@@ -9,6 +9,7 @@ import {
   DeleteOutlined,
   EditOutlined
 } from '@ant-design/icons';
+import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // 打印机接口（适配后端数据模型）
 interface PrinterStatus {
@@ -38,7 +39,7 @@ interface EdgeNode {
 class PrintersService {
   private async getToken(): Promise<string | null> {
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -54,7 +55,7 @@ class PrintersService {
   async getEdgeNodes(): Promise<EdgeNode[]> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/edge-nodes', {
+      const response = await fetch(buildApiUrl('/admin/edge-nodes'), {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
@@ -77,10 +78,10 @@ class PrintersService {
       
       // 同时获取打印机和边缘节点数据
       const [printersResponse, edgeNodesResponse] = await Promise.all([
-        fetch('/api/v1/admin/printers', {
+        fetch(buildApiUrl('/admin/printers'), {
           headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
         }),
-        fetch('/api/v1/admin/edge-nodes', {
+        fetch(buildApiUrl('/admin/edge-nodes'), {
           headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
         })
       ]);
@@ -110,7 +111,7 @@ class PrintersService {
   async getPrinters(): Promise<PrinterStatus[]> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/printers', {
+      const response = await fetch(buildApiUrl('/admin/printers'), {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
@@ -153,7 +154,7 @@ const Printers: React.FC = () => {
   // 获取token
   const getToken = async (): Promise<string | null> => {
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -175,7 +176,7 @@ const Printers: React.FC = () => {
         return;
       }
 
-      const response = await fetch(`/api/v1/admin/printers/${printerId}`, {
+      const response = await fetch(buildApiUrl(`/admin/printers/${printerId}`), {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -216,7 +217,7 @@ const Printers: React.FC = () => {
         return;
       }
 
-      const response = await fetch(`/api/v1/admin/printers/${editingPrinter.id}`, {
+      const response = await fetch(buildApiUrl(`/admin/printers/${editingPrinter.id}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -253,7 +254,7 @@ const Printers: React.FC = () => {
       }
 
       const newEnabled = !printer.enabled;
-      const response = await fetch(`/api/v1/admin/printers/${printer.id}`, {
+      const response = await fetch(buildApiUrl(`/admin/printers/${printer.id}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
