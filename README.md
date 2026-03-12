@@ -30,11 +30,39 @@ fly-print-cloud/
 
 ## 快速部署
 
-1. **依赖**：Docker + Docker Compose；可选 Python 3.8+（安装脚本）
+### 本地开发（localhost）
+
+1. **依赖**：Docker + Docker Compose
 2. **配置**：`cp .env.example .env`，按需修改（数据库、`HTTP_PORT`、认证、`DEFAULT_ADMIN_PASSWORD` 等）
 3. **启动**：`docker compose build && docker compose up -d`
 
-访问：**管理后台** `http://localhost:${HTTP_PORT}`（默认 8012），**健康检查** `http://localhost:${HTTP_PORT}/api/v1/health`。默认管理员用户名 `admin`，密码见 `.env` 中 `DEFAULT_ADMIN_PASSWORD`。
+访问：**管理后台** `http://localhost:${HTTP_PORT}`（默认 8012），**健康检查** `http://localhost:${HTTP_PORT}/api/v1/health`。
+
+### 局域网部署（使用 IP 访问）
+
+如需在局域网内其他设备访问，需要修改 `.env` 中的以下配置（假设本机 IP 为 `192.168.1.100`）：
+
+```bash
+# 1. 复制配置模板
+cp .env.example .env
+
+# 2. 修改以下配置项
+ADMIN_CONSOLE_URL=http://192.168.1.100:8012          # 原为 http://localhost:8012
+OAUTH2_REDIRECT_URI=http://192.168.1.100:8012/auth/callback  # 原为 http://localhost:8012/auth/callback
+ALLOWED_ORIGINS=http://localhost:8012,http://127.0.0.1:8012,http://192.168.1.100:8012,http://192.168.*.*,http://10.*.*.*
+```
+
+**注意**：
+- 将 `192.168.1.100` 替换为你**实际的本机 IP**（通过 `ipconfig` 或 `ip addr` 查看）
+- 如果不修改这些配置，从其他设备访问会出现 **CORS 错误** 或 **OAuth2 回调失败**
+
+**启动**：`docker compose build && docker compose up -d`
+
+**访问**：`http://192.168.1.100:8012`（使用实际 IP）
+
+---
+
+**默认账号**：用户名 `admin`，密码见 `.env` 中 `DEFAULT_ADMIN_PASSWORD`（默认 `admin123`）
 
 **交付与二次开发**：请阅读 **[HANDOFF.md](./HANDOFF.md)**，内含配置总览、模块文档索引、路径与认证约定、部署与注意事项。子模块详见 `api/README.md`、`admin/DEV_HANDOFF.md`、`nginx/README.md`。
 
