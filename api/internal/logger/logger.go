@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"os"
 
 	"go.uber.org/zap"
@@ -78,7 +79,8 @@ func Fatal(msg string, fields ...zap.Field) {
 	if Logger != nil {
 		Logger.Fatal(msg, fields...)
 	} else {
-		// 如果logger未初始化，使用标准库
+		// Logger 未初始化时，至少输出到 stderr，避免容器“无日志直接退出”
+		_, _ = fmt.Fprintf(os.Stderr, "FATAL: %s fields=%+v\n", msg, fields)
 		os.Exit(1)
 	}
 }
