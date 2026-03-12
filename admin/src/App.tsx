@@ -29,6 +29,7 @@ import OAuth2Clients from './components/pages/OAuth2Clients';
 import ErrorBoundary from './components/ErrorBoundary';
 import Loading from './components/Loading';
 import { handleError } from './utils/errorHandler';
+import { buildAuthUrl } from './config';
 
 const { Header, Sider, Content } = Layout;
 
@@ -53,7 +54,7 @@ const AdminApp: React.FC = () => {
   useEffect(() => {
     const getCurrentUser = async () => {
       try {
-        const response = await fetch('/auth/me');
+        const response = await fetch(buildAuthUrl('me'));
         
         // 检查 HTTP 状态码，如果是 401 未授权，直接跳转登录
         if (response.status === 401 || !response.ok) {
@@ -90,7 +91,7 @@ const AdminApp: React.FC = () => {
   // 处理登出
   const handleLogout = async () => {
     try {
-      await fetch('/auth/logout', { method: 'POST' });
+      await fetch(buildAuthUrl('logout'), { method: 'POST' });
     } catch (error) {
       console.error('登出失败:', error);
     } finally {

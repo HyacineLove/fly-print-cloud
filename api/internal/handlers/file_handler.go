@@ -3,7 +3,6 @@ package handlers
 import (
 	"fmt"
 	"io"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -12,6 +11,7 @@ import (
 
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/database"
+	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/security"
 	"fly-print-cloud/api/internal/utils"
@@ -19,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 const (
@@ -36,7 +37,7 @@ type FileHandler struct {
 func NewFileHandler(repo *database.FileRepository, cfg *config.StorageConfig, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager) *FileHandler {
 	// Ensure upload directory exists
 	if err := os.MkdirAll(cfg.UploadDir, 0755); err != nil {
-		fmt.Printf("Failed to create upload directory: %v\n", err)
+		logger.Error("Failed to create upload directory", zap.Error(err))
 	}
 	return &FileHandler{repo: repo, config: cfg, wsManager: wsManager, tokenManager: tokenManager}
 }
@@ -52,7 +53,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		// 第一阶段：使用轻量验证（不消耗Token），提前检查Token有效性
 		payload, err := h.tokenManager.VerifyUploadTokenLightweight(token)
 		if err != nil {
-			log.Printf("Upload token lightweight verification failed: %v", err)
+			logger.Warn("Upload token lightweight verification failed", zap.Error(err))
 			errorCode := security.GetTokenErrorCode(err)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    401,
@@ -64,7 +65,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		// 暂存信息，稍后验证通过再使用
 		nodeID = payload.NodeID
 		uploaderID = payload.NodeID // 使用节点ID作为上传者标识
-		log.Printf("File upload pre-authorized for node %s, printer %s", payload.NodeID, payload.PrinterID)
+		logger.Debug("File upload pre-authorized for node", zap.String("node_id", payload.NodeID), zap.String("printer_id", payload.PrinterID))
 	} else {
 		// 使用 OAuth2 验证（可选认证模式下由中间件处理）
 		if val, exists := c.Get("external_id"); exists {
@@ -136,7 +137,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		if err != nil {
 			// Token验证失败，删除已保存的文件
 			os.Remove(filePath)
-			log.Printf("Upload token validation failed: %v", err)
+			logger.Warn("Upload token validation failed", zap.Error(err))
 			errorCode := security.GetTokenErrorCode(err)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    401,
@@ -145,7 +146,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 			})
 			return
 		}
-		log.Printf("File upload fully authorized via token for node %s, printer %s", payload.NodeID, payload.PrinterID)
+		logger.Debug("File upload fully authorized via token", zap.String("node_id", payload.NodeID), zap.String("printer_id", payload.PrinterID))
 	}
 
 	// Create DB record
@@ -222,10 +223,10 @@ func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcF
 	}
 	pageCount, err := utils.ValidateDocumentPageCountFromReader(srcFile, srcFile, fileHeader.Size, ext, uploadRuleMaxPages)
 	if err != nil {
-		log.Printf("document page validation failed: %v (file: %s)", err, fileHeader.Filename)
+		logger.Debug("document page validation failed", zap.Error(err), zap.String("file", fileHeader.Filename))
 		return errUploadTooManyPages
 	}
-	log.Printf("document page validation passed: %d pages (file: %s)", pageCount, fileHeader.Filename)
+	logger.Debug("document page validation passed", zap.Int("pages", pageCount), zap.String("file", fileHeader.Filename))
 	return nil
 }
 
@@ -240,7 +241,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 		// 使用凭证验证
 		payload, err := h.tokenManager.ValidateDownloadToken(token, id, "")
 		if err != nil {
-			log.Printf("Download token validation failed for file %s: %v", id, err)
+			logger.Warn("Download token validation failed for file", zap.String("file_id", id), zap.Error(err))
 			errorCode := security.GetTokenErrorCode(err)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    401,
@@ -249,7 +250,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 			})
 			return
 		}
-		log.Printf("File download authorized via token for file %s, job %s, node %s", payload.FileID, payload.JobID, payload.NodeID)
+		logger.Debug("File download authorized via token", zap.String("file_id", payload.FileID), zap.String("job_id", payload.JobID), zap.String("node_id", payload.NodeID))
 	} else {
 		// 使用 OAuth2 验证
 		// 检查是否有认证信息
@@ -333,7 +334,7 @@ func (h *FileHandler) VerifyUploadToken(c *gin.Context) {
 	// 使用轻量验证方法（不标记为已使用）
 	payload, err := h.tokenManager.VerifyUploadTokenLightweight(token)
 	if err != nil {
-		log.Printf("Upload token verification failed: %v", err)
+		logger.Warn("Upload token verification failed", zap.Error(err))
 		errorCode := security.GetTokenErrorCode(err)
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"code":    401,
@@ -362,7 +363,7 @@ func (h *FileHandler) PreflightUpload(c *gin.Context) {
 	if token != "" {
 		_, err := h.tokenManager.VerifyUploadTokenLightweight(token)
 		if err != nil {
-			log.Printf("Upload token preflight verification failed: %v", err)
+			logger.Warn("Upload token preflight verification failed", zap.Error(err))
 			errorCode := security.GetTokenErrorCode(err)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    401,

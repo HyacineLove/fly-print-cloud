@@ -1,13 +1,13 @@
 package handlers
 
 import (
-	"log"
-
 	"fly-print-cloud/api/internal/database"
+	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 // UserHandler 用户管理处理器
@@ -80,7 +80,7 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 	// 查询用户列表
 	users, total, err := h.userRepo.ListUsers(offset, pageSize)
 	if err != nil {
-		log.Printf("Failed to list users: %v", err)
+		logger.Error("Failed to list users", zap.Error(err))
 		InternalErrorResponse(c, "获取用户列表失败")
 		return
 	}
@@ -100,7 +100,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	// 检查用户名是否已存在
 	exists, err := h.userRepo.UsernameExists(req.Username)
 	if err != nil {
-		log.Printf("Failed to check username existence: %v", err)
+		logger.Error("Failed to check username existence", zap.Error(err))
 		InternalErrorResponse(c, "检查用户名失败")
 		return
 	}
@@ -112,7 +112,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	// 检查邮箱是否已存在
 	exists, err = h.userRepo.EmailExists(req.Email)
 	if err != nil {
-		log.Printf("Failed to check email existence: %v", err)
+		logger.Error("Failed to check email existence", zap.Error(err))
 		InternalErrorResponse(c, "检查邮箱失败")
 		return
 	}
@@ -132,12 +132,12 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	}
 
 	if err := h.userRepo.CreateUser(user); err != nil {
-		log.Printf("Failed to create user: %v", err)
+		logger.Error("Failed to create user", zap.Error(err))
 		InternalErrorResponse(c, "创建用户失败")
 		return
 	}
 
-	log.Printf("User %s created successfully by admin", user.Username)
+	logger.Info("User created successfully by admin", zap.String("username", user.Username))
 	// 直接返回用户信息（敏感字段已过滤）
 	CreatedResponse(c, user)
 }
@@ -184,7 +184,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	// 检查用户名是否已被其他用户使用
 	exists, err := h.userRepo.UsernameExists(req.Username, userID)
 	if err != nil {
-		log.Printf("Failed to check username existence: %v", err)
+		logger.Error("Failed to check username existence", zap.Error(err))
 		InternalErrorResponse(c, "检查用户名失败")
 		return
 	}
@@ -196,7 +196,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	// 检查邮箱是否已被其他用户使用
 	exists, err = h.userRepo.EmailExists(req.Email, userID)
 	if err != nil {
-		log.Printf("Failed to check email existence: %v", err)
+		logger.Error("Failed to check email existence", zap.Error(err))
 		InternalErrorResponse(c, "检查邮箱失败")
 		return
 	}
@@ -212,7 +212,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	user.Status = req.Status
 
 	if err := h.userRepo.UpdateUser(user); err != nil {
-		log.Printf("Failed to update user %s: %v", userID, err)
+		logger.Error("Failed to update user", zap.String("user_id", userID), zap.Error(err))
 		InternalErrorResponse(c, "更新用户失败")
 		return
 	}
@@ -224,7 +224,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		Role:     user.Role,
 	}
 
-	log.Printf("User %s updated successfully", user.Username)
+	logger.Info("User updated successfully", zap.String("username", user.Username))
 	SuccessResponse(c, userInfo)
 }
 
@@ -258,12 +258,12 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 
 	// 删除用户（软删除）
 	if err := h.userRepo.DeleteUser(userID); err != nil {
-		log.Printf("Failed to delete user %s: %v", userID, err)
+		logger.Error("Failed to delete user", zap.String("user_id", userID), zap.Error(err))
 		InternalErrorResponse(c, "删除用户失败")
 		return
 	}
 
-	log.Printf("User %s deleted successfully", user.Username)
+	logger.Info("User deleted successfully", zap.String("username", user.Username))
 	SuccessResponse(c, gin.H{"message": "用户删除成功"})
 }
 
@@ -290,11 +290,11 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 
 	// 更新密码
 	if err := h.userRepo.UpdatePassword(userID, req.NewPassword); err != nil {
-		log.Printf("Failed to change password for user %s: %v", userID, err)
+		logger.Error("Failed to change password for user", zap.String("user_id", userID), zap.Error(err))
 		InternalErrorResponse(c, "修改密码失败")
 		return
 	}
 
-	log.Printf("Password changed successfully for user %s", userID)
+	logger.Info("Password changed successfully for user", zap.String("user_id", userID))
 	SuccessResponse(c, gin.H{"message": "密码修改成功"})
 }

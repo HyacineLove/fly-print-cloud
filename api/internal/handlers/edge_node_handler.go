@@ -1,15 +1,16 @@
 package handlers
 
 import (
-	"log"
 	"time"
 
 	"fly-print-cloud/api/internal/database"
+	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/websocket"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 // EdgeNodeHandler Edge Node 管理处理器
@@ -121,7 +122,7 @@ func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 	}
 
 	if err := h.edgeNodeRepo.CreateEdgeNode(node); err != nil {
-		log.Printf("Failed to register edge node: %v", err)
+		logger.Error("Failed to register edge node", zap.Error(err))
 		InternalErrorResponse(c, "注册 Edge Node 失败")
 		return
 	}
@@ -150,7 +151,7 @@ func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 		UpdatedAt:         node.UpdatedAt,
 	}
 
-	log.Printf("Edge Node %s registered successfully", node.Name)
+	logger.Info("Edge Node registered successfully", zap.String("node_name", node.Name))
 	CreatedResponse(c, nodeInfo)
 }
 
@@ -337,7 +338,7 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 	node.Latency = req.Latency
 
 	if err := h.edgeNodeRepo.UpdateEdgeNode(node); err != nil {
-		log.Printf("Failed to update edge node %s: %v", nodeID, err)
+		logger.Error("Failed to update edge node", zap.String("node_id", nodeID), zap.Error(err))
 		InternalErrorResponse(c, "更新 Edge Node 失败")
 		return
 	}
@@ -345,9 +346,9 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 	// 当节点从启用变为禁用时，撤销该节点的所有上传Token
 	if oldEnabled && !node.Enabled && h.tokenUsageRepo != nil {
 		if revoked, err := h.tokenUsageRepo.RevokeTokensByNodeAndType("upload", node.ID); err != nil {
-			log.Printf("Warning: failed to revoke upload tokens for disabled node %s: %v", node.ID, err)
+			logger.Warn("Failed to revoke upload tokens for disabled node", zap.String("node_id", node.ID), zap.Error(err))
 		} else if revoked > 0 {
-			log.Printf("Revoked %d upload tokens for disabled node %s", revoked, node.ID)
+			logger.Info("Revoked upload tokens for disabled node", zap.Int64("revoked", revoked), zap.String("node_id", node.ID))
 		}
 	}
 
@@ -377,7 +378,7 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 		UpdatedAt:         node.UpdatedAt,
 	}
 
-	log.Printf("Edge Node %s updated successfully", node.Name)
+	logger.Info("Edge Node updated successfully", zap.String("node_name", node.Name))
 	SuccessResponse(c, nodeInfo)
 }
 
@@ -399,7 +400,7 @@ func (h *EdgeNodeHandler) DeleteEdgeNode(c *gin.Context) {
 	// 开始事务
 	tx, err := h.db.BeginTx()
 	if err != nil {
-		log.Printf("Failed to begin transaction for deleting node %s: %v", nodeID, err)
+		logger.Error("Failed to begin transaction for deleting node", zap.String("node_id", nodeID), zap.Error(err))
 		InternalErrorResponse(c, "开始事务失败")
 		return
 	}
@@ -409,7 +410,7 @@ func (h *EdgeNodeHandler) DeleteEdgeNode(c *gin.Context) {
 	defer func() {
 		if !committed {
 			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				log.Printf("Failed to rollback transaction: %v", rollbackErr)
+				logger.Error("Failed to rollback transaction", zap.Error(rollbackErr))
 			}
 		}
 	}()
@@ -418,23 +419,23 @@ func (h *EdgeNodeHandler) DeleteEdgeNode(c *gin.Context) {
 	// 由于节点是软删除，数据库的 ON DELETE CASCADE 不会触发，需要手动删除打印机
 	if h.printerRepo != nil {
 		if err := h.printerRepo.DeletePrintersByEdgeNodeTx(tx, nodeID); err != nil {
-			log.Printf("Failed to delete printers for node %s: %v", nodeID, err)
+			logger.Error("Failed to delete printers for node", zap.String("node_id", nodeID), zap.Error(err))
 			InternalErrorResponse(c, "删除打印机失败")
 			return
 		}
-		log.Printf("Successfully deleted all printers for node %s", nodeID)
+		logger.Info("Successfully deleted all printers for node", zap.String("node_id", nodeID))
 	}
 
 	// 2. 删除节点（软删除）
 	if err := h.edgeNodeRepo.DeleteEdgeNodeTx(tx, nodeID); err != nil {
-		log.Printf("Failed to delete edge node %s: %v", nodeID, err)
+		logger.Error("Failed to delete edge node", zap.String("node_id", nodeID), zap.Error(err))
 		InternalErrorResponse(c, "删除 Edge Node 失败")
 		return
 	}
 
 	// 提交事务
 	if err := tx.Commit(); err != nil {
-		log.Printf("Failed to commit transaction for deleting node %s: %v", nodeID, err)
+		logger.Error("Failed to commit transaction for deleting node", zap.String("node_id", nodeID), zap.Error(err))
 		InternalErrorResponse(c, "提交事务失败")
 		return
 	}
@@ -445,13 +446,13 @@ func (h *EdgeNodeHandler) DeleteEdgeNode(c *gin.Context) {
 	if h.wsManager != nil {
 		if err := h.wsManager.DisconnectNode(nodeID); err != nil {
 			if err.Error() != "edge node not connected" {
-				log.Printf("Warning: failed to disconnect WebSocket for deleted node %s: %v", nodeID, err)
+				logger.Warn("Failed to disconnect WebSocket for deleted node", zap.String("node_id", nodeID), zap.Error(err))
 			}
 		} else {
-			log.Printf("WebSocket connection closed for deleted node %s", nodeID)
+			logger.Info("WebSocket connection closed for deleted node", zap.String("node_id", nodeID))
 		}
 	}
 
-	log.Printf("Edge Node %s deleted successfully", nodeID)
+	logger.Info("Edge Node deleted successfully", zap.String("node_id", nodeID))
 	SuccessResponse(c, gin.H{"message": "Edge Node 删除成功"})
 }
