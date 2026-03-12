@@ -2,15 +2,16 @@ package handlers
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"fly-print-cloud/api/internal/database"
+	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/websocket"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 type PrinterHandler struct {
@@ -161,7 +162,7 @@ func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 		// 按Edge Node筛选
 		printers, err = h.printerRepo.ListPrintersByEdgeNode(edgeNodeID)
 		if err != nil {
-			log.Printf("Failed to list printers by edge node: %v", err)
+			logger.Error("Failed to list printers by edge node", zap.Error(err))
 			InternalErrorResponse(c, "获取打印机列表失败")
 			return
 		}
@@ -170,7 +171,7 @@ func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 		// 获取所有打印机
 		printers, total, err = h.printerRepo.ListPrinters(page, pageSize)
 		if err != nil {
-			log.Printf("Failed to list printers: %v", err)
+			logger.Error("Failed to list printers", zap.Error(err))
 			InternalErrorResponse(c, "获取打印机列表失败")
 			return
 		}
@@ -219,7 +220,7 @@ func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 		if _, exists := edgeNodeStatusMap[printer.EdgeNodeID]; !exists {
 			edgeNode, err := h.edgeNodeRepo.GetEdgeNodeByID(printer.EdgeNodeID)
 			if err != nil {
-				log.Printf("Failed to get edge node %s: %v", printer.EdgeNodeID, err)
+				logger.Error("Failed to get edge node", zap.String("edge_node_id", printer.EdgeNodeID), zap.Error(err))
 				edgeNodeStatusMap[printer.EdgeNodeID] = false // 默认为禁用
 			} else {
 				edgeNodeStatusMap[printer.EdgeNodeID] = edgeNode.Enabled
@@ -263,7 +264,7 @@ func (h *PrinterHandler) GetPrinter(c *gin.Context) {
 	// 获取Edge Node状态
 	edgeNode, err := h.edgeNodeRepo.GetEdgeNodeByID(printer.EdgeNodeID)
 	if err != nil {
-		log.Printf("Failed to get edge node %s: %v", printer.EdgeNodeID, err)
+		logger.Error("Failed to get edge node", zap.String("edge_node_id", printer.EdgeNodeID), zap.Error(err))
 		// 如果无法获取Edge Node状态，假设为禁用
 		printerWithStatus := NewPrinterWithStatus(printer, false)
 		SuccessResponse(c, printerWithStatus)
@@ -304,9 +305,9 @@ func (h *PrinterHandler) UpdatePrinter(c *gin.Context) {
 		// 当打印机从启用变为禁用时，撤销该节点上此打印机的所有上传Token
 		if oldEnabled && !printer.Enabled && h.tokenUsageRepo != nil {
 			if revoked, err := h.tokenUsageRepo.RevokeTokensByNodeAndResource("upload", printer.EdgeNodeID, printer.ID); err != nil {
-				log.Printf("Warning: failed to revoke upload tokens for disabled printer %s on node %s: %v", printer.ID, printer.EdgeNodeID, err)
+				logger.Warn("Failed to revoke upload tokens for disabled printer on node", zap.String("printer_id", printer.ID), zap.String("node_id", printer.EdgeNodeID), zap.Error(err))
 			} else if revoked > 0 {
-				log.Printf("Revoked %d upload tokens for disabled printer %s on node %s", revoked, printer.ID, printer.EdgeNodeID)
+				logger.Info("Revoked upload tokens for disabled printer on node", zap.Int64("revoked", revoked), zap.String("printer_id", printer.ID), zap.String("node_id", printer.EdgeNodeID))
 			}
 		}
 	} else {
@@ -341,7 +342,7 @@ func (h *PrinterHandler) UpdatePrinter(c *gin.Context) {
 	}
 
 	if err := h.printerRepo.UpdatePrinter(printer); err != nil {
-		log.Printf("Failed to update printer %s: %v", printerID, err)
+		logger.Error("Failed to update printer", zap.String("printer_id", printerID), zap.Error(err))
 		InternalErrorResponse(c, "更新打印机失败")
 		return
 	}
@@ -350,7 +351,7 @@ func (h *PrinterHandler) UpdatePrinter(c *gin.Context) {
 	// 打印机启用/禁用状态变更不再通过 WebSocket 通知 Edge 端
 	// Edge 端请求时会通过 API 错误码感知打印机状态
 
-	log.Printf("Printer %s updated successfully", printer.Name)
+	logger.Info("Printer updated successfully", zap.String("printer_name", printer.Name))
 	SuccessResponse(c, printer)
 }
 
@@ -373,7 +374,7 @@ func (h *PrinterHandler) DeletePrinter(c *gin.Context) {
 	if h.printJobRepo != nil {
 		activeCount, err := h.printJobRepo.CountActiveJobsByPrinter(printerID)
 		if err != nil {
-			log.Printf("Failed to count active jobs for printer %s: %v", printerID, err)
+			logger.Error("Failed to count active jobs for printer", zap.String("printer_id", printerID), zap.Error(err))
 			InternalErrorResponse(c, "检查活动任务失败")
 			return
 		}
@@ -385,7 +386,7 @@ func (h *PrinterHandler) DeletePrinter(c *gin.Context) {
 
 	// 删除打印机
 	if err := h.printerRepo.DeletePrinter(printerID); err != nil {
-		log.Printf("Failed to delete printer %s: %v", printerID, err)
+		logger.Error("Failed to delete printer", zap.String("printer_id", printerID), zap.Error(err))
 		InternalErrorResponse(c, "删除打印机失败")
 		return
 	}
@@ -394,7 +395,7 @@ func (h *PrinterHandler) DeletePrinter(c *gin.Context) {
 	// 打印机删除不再通过 WebSocket 通知 Edge 端
 	// Edge 端请求时会收到 printer_not_found 错误，然后触发重新注册
 
-	log.Printf("Printer %s deleted successfully", printerID)
+	logger.Info("Printer deleted successfully", zap.String("printer_id", printerID))
 	SuccessResponse(c, gin.H{"message": "打印机删除成功"})
 }
 
@@ -444,12 +445,12 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 		existingPrinter.Capabilities = req.Capabilities
 
 		if err := h.printerRepo.UpdatePrinter(existingPrinter); err != nil {
-			log.Printf("Failed to update existing printer %s: %v", existingPrinter.ID, err)
+			logger.Error("Failed to update existing printer", zap.String("printer_id", existingPrinter.ID), zap.Error(err))
 			InternalErrorResponse(c, "更新打印机失败")
 			return
 		}
 		printer = existingPrinter
-		log.Printf("Printer %s updated by edge node %s (ID: %s)", printer.Name, edgeNodeID, printer.ID)
+		logger.Info("Printer updated by edge node", zap.String("printer_name", printer.Name), zap.String("edge_node_id", edgeNodeID), zap.String("printer_id", printer.ID))
 	} else {
 		// 打印机不存在，创建新记录
 		isNew = true
@@ -471,11 +472,11 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 		}
 
 		if err := h.printerRepo.CreatePrinter(printer); err != nil {
-			log.Printf("Failed to create printer by edge node %s: %v", edgeNodeID, err)
+			logger.Error("Failed to create printer by edge node", zap.String("edge_node_id", edgeNodeID), zap.Error(err))
 			InternalErrorResponse(c, "注册打印机失败")
 			return
 		}
-		log.Printf("Printer %s registered by edge node %s (ID: %s)", printer.Name, edgeNodeID, printer.ID)
+		logger.Info("Printer registered by edge node", zap.String("printer_name", printer.Name), zap.String("edge_node_id", edgeNodeID), zap.String("printer_id", printer.ID))
 	}
 
 	// 返回响应，包含打印机ID和是否为新注册
@@ -582,7 +583,7 @@ func (h *PrinterHandler) EdgeBatchUpdatePrinterStatus(c *gin.Context) {
 		printer.QueueLength = item.QueueLength
 
 		if err := h.printerRepo.UpdatePrinter(printer); err != nil {
-			log.Printf("Failed to update printer %s status: %v", item.PrinterID, err)
+			logger.Error("Failed to update printer status", zap.String("printer_id", item.PrinterID), zap.Error(err))
 			failed++
 			errors = append(errors, PrinterStatusError{
 				PrinterID: item.PrinterID,
@@ -594,7 +595,7 @@ func (h *PrinterHandler) EdgeBatchUpdatePrinterStatus(c *gin.Context) {
 		updated++
 	}
 
-	log.Printf("Batch status update from edge node %s: %d updated, %d failed", edgeNodeID, updated, failed)
+	logger.Info("Batch status update from edge node", zap.String("edge_node_id", edgeNodeID), zap.Int("updated", updated), zap.Int("failed", failed))
 	SuccessResponse(c, gin.H{
 		"updated": updated,
 		"failed":  failed,

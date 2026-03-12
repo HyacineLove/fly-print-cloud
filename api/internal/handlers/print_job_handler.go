@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -10,10 +9,12 @@ import (
 	"time"
 
 	"fly-print-cloud/api/internal/database"
+	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/websocket"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 type PrintJobHandler struct {
@@ -200,14 +201,14 @@ func (h *PrintJobHandler) CreatePrintJob(c *gin.Context) {
 	// 分发任务到Edge Node
 	err = h.wsManager.DispatchPrintJob(printer.EdgeNodeID, job, printer.Name)
 	if err != nil {
-		log.Printf("Failed to dispatch print job %s to node %s: %v", job.ID, printer.EdgeNodeID, err)
+		logger.Error("Failed to dispatch print job to node", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID), zap.Error(err))
 		// 任务已创建，但分发失败，保持pending状态
 	} else {
-		log.Printf("Print job %s dispatched to node %s", job.ID, printer.EdgeNodeID)
+		logger.Info("Print job dispatched to node", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID))
 		// 更新任务状态为已分发
 		job.Status = "dispatched"
 		if updateErr := h.printJobRepo.UpdatePrintJob(job); updateErr != nil {
-			log.Printf("Failed to update job status to dispatched: %v", updateErr)
+			logger.Error("Failed to update job status to dispatched", zap.Error(updateErr))
 		}
 	}
 
@@ -462,7 +463,7 @@ func (h *PrintJobHandler) DeletePrintJob(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Print job %s deleted by admin", id)
+	logger.Info("Print job deleted by admin", zap.String("job_id", id))
 	SuccessResponse(c, gin.H{"message": "打印任务已删除"})
 }
 
@@ -504,6 +505,6 @@ func (h *PrintJobHandler) CancelPrintJob(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Print job %s cancelled by user", id)
+	logger.Info("Print job cancelled by user", zap.String("job_id", id))
 	SuccessResponse(c, gin.H{"message": "打印任务已取消", "job": job})
 }

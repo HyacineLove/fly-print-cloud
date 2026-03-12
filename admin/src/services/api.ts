@@ -1,5 +1,6 @@
 // API 基础服务
 import { ErrorHandler } from '../utils/errorHandler';
+import { buildApiUrl, buildAuthUrl } from '../config';
 
 export interface ApiResponse<T = any> {
   code: number;
@@ -26,7 +27,6 @@ export class ApiError extends Error {
 }
 
 class ApiService {
-  private baseURL = '/api/v1';
   private token: string | null = null;
 
   // 设置认证 token
@@ -41,7 +41,7 @@ class ApiService {
     }
 
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -73,7 +73,7 @@ class ApiService {
     };
 
     try {
-      const response = await fetch(`${this.baseURL}${endpoint}`, config);
+      const response = await fetch(buildApiUrl(endpoint), config);
       const result = await response.json();
 
       if (!response.ok) {
@@ -131,7 +131,7 @@ class ApiService {
     try {
       // 如果提供了上传凭证，使用 token 查询参数，不需要 OAuth2 认证
       if (uploadToken) {
-        let url = `${this.baseURL}/files?token=${encodeURIComponent(uploadToken)}`;
+        let url = buildApiUrl(`/files?token=${encodeURIComponent(uploadToken)}`);
         if (nodeId) {
           url += `&node_id=${encodeURIComponent(nodeId)}`;
         }
@@ -180,7 +180,7 @@ class ApiService {
     formData.append('file', file);
 
     try {
-      let url = `${this.baseURL}/files/preflight`;
+      let url = buildApiUrl('/files/preflight');
       if (uploadToken) {
         url += `?token=${encodeURIComponent(uploadToken)}`;
       }

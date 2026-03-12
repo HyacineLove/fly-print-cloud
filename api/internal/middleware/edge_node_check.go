@@ -1,11 +1,13 @@
 package middleware
 
 import (
-	"log"
 	"net/http"
 
 	"fly-print-cloud/api/internal/database"
+	"fly-print-cloud/api/internal/logger"
+
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // EdgeNodeEnabledCheck 检查 Edge 节点是否被禁用
@@ -23,7 +25,7 @@ func EdgeNodeEnabledCheck(edgeNodeRepo *database.EdgeNodeRepository) gin.Handler
 		// 查询节点状态
 		node, err := edgeNodeRepo.GetEdgeNodeByID(nodeID)
 		if err != nil {
-			log.Printf("EdgeNodeEnabledCheck: node %s not found: %v", nodeID, err)
+			logger.Warn("EdgeNodeEnabledCheck: node not found", zap.String("node_id", nodeID), zap.Error(err))
 			c.JSON(http.StatusNotFound, gin.H{
 				"code":    http.StatusNotFound,
 				"error":   "node_not_found",
@@ -35,7 +37,7 @@ func EdgeNodeEnabledCheck(edgeNodeRepo *database.EdgeNodeRepository) gin.Handler
 
 		// 检查节点是否被禁用
 		if !node.Enabled {
-			log.Printf("EdgeNodeEnabledCheck: node %s is disabled, rejecting request", nodeID)
+			logger.Warn("EdgeNodeEnabledCheck: node is disabled, rejecting request", zap.String("node_id", nodeID))
 			c.JSON(http.StatusForbidden, gin.H{
 				"code":    http.StatusForbidden,
 				"error":   "node_disabled",

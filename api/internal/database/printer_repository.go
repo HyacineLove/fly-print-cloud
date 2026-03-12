@@ -3,10 +3,13 @@ package database
 import (
 	"database/sql"
 	"encoding/json"
-	"fly-print-cloud/api/internal/models"
 	"fmt"
-	"log"
 	"time"
+
+	"fly-print-cloud/api/internal/logger"
+	"fly-print-cloud/api/internal/models"
+
+	"go.uber.org/zap"
 )
 
 type PrinterRepository struct {
@@ -427,7 +430,7 @@ func (r *PrinterRepository) DeletePrintersByEdgeNode(edgeNodeID string) error {
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	log.Printf("Deleted %d printers for edge node %s", rowsAffected, edgeNodeID)
+	logger.Info("Deleted printers for edge node", zap.Int64("count", rowsAffected), zap.String("edge_node_id", edgeNodeID))
 	return nil
 }
 
@@ -440,6 +443,6 @@ func (r *PrinterRepository) DeletePrintersByEdgeNodeTx(tx *Tx, edgeNodeID string
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	log.Printf("Deleted %d printers for edge node %s in transaction", rowsAffected, edgeNodeID)
+	logger.Info("Deleted printers for edge node in transaction", zap.Int64("count", rowsAffected), zap.String("edge_node_id", edgeNodeID))
 	return nil
 }

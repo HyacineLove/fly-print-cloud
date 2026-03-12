@@ -3,16 +3,17 @@ package websocket
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"fly-print-cloud/api/internal/database"
+	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/security"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 )
 
 const (
@@ -82,29 +83,29 @@ func (c *Connection) ReadPump() {
 	for {
 		_, messageBytes, err := c.Conn.ReadMessage()
 		if err != nil {
-			log.Printf("WebSocket read error for node %s: %v", c.NodeID, err)
+			logger.Error("WebSocket read error", zap.String("node_id", c.NodeID), zap.Error(err))
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket unexpected close error for node %s: %v", c.NodeID, err)
+				logger.Warn("WebSocket unexpected close error", zap.String("node_id", c.NodeID), zap.Error(err))
 			}
 			break
 		}
 
-		log.Printf("WebSocket received raw message from node %s: %s", c.NodeID, string(messageBytes))
+		logger.Debug("WebSocket received raw message", zap.String("node_id", c.NodeID), zap.String("message", string(messageBytes)))
 
 		// 先解析消息类型
 		var msg Message
 		if err := json.Unmarshal(messageBytes, &msg); err != nil {
-			log.Printf("Failed to parse message from node %s: %v", c.NodeID, err)
+			logger.Error("Failed to parse message from node", zap.String("node_id", c.NodeID), zap.Error(err))
 			continue
 		}
 
-		log.Printf("WebSocket parsed message from node %s: type=%s", c.NodeID, msg.Type)
+		logger.Debug("WebSocket parsed message from node", zap.String("node_id", c.NodeID), zap.String("type", msg.Type))
 
 		// ACK 消息特殊处理：msg_id 在顶层而非 data 中
 		if msg.Type == MsgTypeAck {
 			var ack CommandAck
 			if err := json.Unmarshal(messageBytes, &ack); err != nil {
-				log.Printf("Failed to parse ACK message from node %s: %v", c.NodeID, err)
+				logger.Error("Failed to parse ACK message from node", zap.String("node_id", c.NodeID), zap.Error(err))
 				continue
 			}
 			c.handleAckDirect(&ack)
@@ -160,7 +161,7 @@ func (c *Connection) WritePump() {
 
 // handleMessage 处理接收到的消息
 func (c *Connection) handleMessage(msg *Message) {
-	log.Printf("Received message from node %s: type=%s", c.NodeID, msg.Type)
+	logger.Debug("Received message from node", zap.String("node_id", c.NodeID), zap.String("type", msg.Type))
 
 	// 标准验证顺序（所有消息统一处理）：
 	// 1. 节点存在性检查（所有消息都需要，包括 heartbeat 和 job_update）
@@ -169,7 +170,7 @@ func (c *Connection) handleMessage(msg *Message) {
 	// 步骤1: 检查节点是否存在（所有消息都需要）
 	node, err := c.EdgeNodeRepo.GetEdgeNodeByID(c.NodeID)
 	if err != nil || node == nil {
-		log.Printf("Message rejected: node %s not found, message type: %s", c.NodeID, msg.Type)
+		logger.Warn("Message rejected: node not found", zap.String("node_id", c.NodeID), zap.String("message_type", msg.Type))
 		c.sendError("node_not_found", "Edge node not found", "")
 		return
 	}
@@ -177,7 +178,7 @@ func (c *Connection) handleMessage(msg *Message) {
 	// 步骤2: 检查节点是否启用（heartbeat 和 job_update 放行）
 	if msg.Type != MsgTypeHeartbeat && msg.Type != MsgTypeJobUpdate {
 		if !node.Enabled {
-			log.Printf("Message rejected: node %s is disabled, message type: %s", c.NodeID, msg.Type)
+			logger.Warn("Message rejected: node is disabled", zap.String("node_id", c.NodeID), zap.String("message_type", msg.Type))
 			c.sendError("node_disabled", "Edge node has been disabled by administrator", "")
 			return
 		}
@@ -195,20 +196,20 @@ func (c *Connection) handleMessage(msg *Message) {
 	case MsgTypeAck:
 		c.handleAck(msg)
 	default:
-		log.Printf("Unknown message type: %s from node %s", msg.Type, c.NodeID)
+		logger.Warn("Unknown message type from node", zap.String("type", msg.Type), zap.String("node_id", c.NodeID))
 	}
 }
 
 // handleAck 处理确认消息（已废弃，使用 handleAckDirect）
 func (c *Connection) handleAck(msg *Message) {
-	log.Printf("Warning: handleAck called via handleMessage (deprecated path) from node %s", c.NodeID)
+	logger.Warn("handleAck called via handleMessage (deprecated path)", zap.String("node_id", c.NodeID))
 	// 这个路径已被 ReadPump 中的直接解析替代，不应该到达这里
 }
 
 // handleAckDirect 直接处理已解析的 ACK 消息
 func (c *Connection) handleAckDirect(ack *CommandAck) {
 	if ack.MsgID == "" {
-		log.Printf("Received ACK without MsgID from node %s", c.NodeID)
+		logger.Warn("Received ACK without MsgID from node", zap.String("node_id", c.NodeID))
 		return
 	}
 
@@ -218,10 +219,9 @@ func (c *Connection) handleAckDirect(ack *CommandAck) {
 	if ch, exists := c.pendingAcks[ack.MsgID]; exists {
 		close(ch) // 关闭 channel 通知等待者
 		delete(c.pendingAcks, ack.MsgID)
-		log.Printf("Received ACK for message %s from node %s (command: %s, status: %s)",
-			ack.MsgID, c.NodeID, ack.CommandID, ack.Status)
+		logger.Debug("Received ACK for message from node", zap.String("msg_id", ack.MsgID), zap.String("node_id", c.NodeID), zap.String("command_id", ack.CommandID), zap.String("status", ack.Status))
 	} else {
-		log.Printf("Received ACK for unknown or timed-out message %s from node %s", ack.MsgID, c.NodeID)
+		logger.Warn("Received ACK for unknown or timed-out message", zap.String("msg_id", ack.MsgID), zap.String("node_id", c.NodeID))
 	}
 }
 
@@ -248,7 +248,7 @@ func (c *Connection) SendCommandWithAck(cmd *Command, timeout time.Duration) err
 		c.ackMutex.Unlock()
 	}()
 
-	log.Printf("Sending command %s (msg_id: %s) to node %s with ACK expectation", cmd.Type, cmd.MsgID, c.NodeID)
+	logger.Debug("Sending command to node with ACK expectation", zap.String("command_type", cmd.Type), zap.String("msg_id", cmd.MsgID), zap.String("node_id", c.NodeID))
 	if err := c.SendCommand(cmd); err != nil {
 		return err
 	}
@@ -263,7 +263,7 @@ func (c *Connection) SendCommandWithAck(cmd *Command, timeout time.Duration) err
 
 // handleSubmitPrintParams 处理提交打印参数消息
 func (c *Connection) handleSubmitPrintParams(msg *Message) {
-	log.Printf("Processing print params from node %s", c.NodeID)
+	logger.Debug("Processing print params from node", zap.String("node_id", c.NodeID))
 
 	var payload SubmitPrintParamsPayload
 
@@ -272,40 +272,40 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 		// Convert map to struct manually or re-marshal/unmarshal
 		dataBytes, err := json.Marshal(dataMap)
 		if err != nil {
-			log.Printf("Failed to marshal submit print params map from node %s: %v", c.NodeID, err)
+			logger.Error("Failed to marshal submit print params map from node", zap.String("node_id", c.NodeID), zap.Error(err))
 			return
 		}
 		if err := json.Unmarshal(dataBytes, &payload); err != nil {
-			log.Printf("Failed to unmarshal submit print params map from node %s: %v", c.NodeID, err)
+			logger.Error("Failed to unmarshal submit print params map from node", zap.String("node_id", c.NodeID), zap.Error(err))
 			return
 		}
 	} else {
 		// Try to marshal whatever it is (e.g. string) and unmarshal
 		dataBytes, err := json.Marshal(msg.Data)
 		if err != nil {
-			log.Printf("Failed to marshal submit print params data from node %s: %v", c.NodeID, err)
+			logger.Error("Failed to marshal submit print params data from node", zap.String("node_id", c.NodeID), zap.Error(err))
 			return
 		}
 		if err := json.Unmarshal(dataBytes, &payload); err != nil {
-			log.Printf("Failed to parse submit print params data from node %s: %v", c.NodeID, err)
+			logger.Error("Failed to parse submit print params data from node", zap.String("node_id", c.NodeID), zap.Error(err))
 			return
 		}
 	}
 
 	// 验证必要字段
 	if payload.FileID == "" || payload.PrinterID == "" {
-		log.Printf("Missing required fields (file_id or printer_id) in submit print params from node %s", c.NodeID)
+		logger.Warn("Missing required fields in submit print params from node", zap.String("node_id", c.NodeID))
 		return
 	}
 
 	// 获取文件信息
 	file, err := c.FileRepo.GetByID(payload.FileID)
 	if err != nil {
-		log.Printf("Failed to get file %s: %v", payload.FileID, err)
+		logger.Error("Failed to get file", zap.String("file_id", payload.FileID), zap.Error(err))
 		return
 	}
 	if file == nil {
-		log.Printf("File %s not found", payload.FileID)
+		logger.Warn("File not found", zap.String("file_id", payload.FileID))
 		return
 	}
 
@@ -318,26 +318,26 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 	// 步骤1: 检查打印机是否存在
 	printer, err := c.PrinterRepo.GetPrinterByID(payload.PrinterID)
 	if err != nil {
-		log.Printf("Failed to get printer %s: %v", payload.PrinterID, err)
+		logger.Error("Failed to get printer", zap.String("printer_id", payload.PrinterID), zap.Error(err))
 		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
 	if printer == nil {
-		log.Printf("Printer %s not found", payload.PrinterID)
+		logger.Warn("Printer not found", zap.String("printer_id", payload.PrinterID))
 		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
 
 	// 步骤2: 验证打印机是否属于该节点
 	if printer.EdgeNodeID != c.NodeID {
-		log.Printf("Printer %s does not belong to node %s", payload.PrinterID, c.NodeID)
+		logger.Warn("Printer does not belong to node", zap.String("printer_id", payload.PrinterID), zap.String("node_id", c.NodeID))
 		c.sendError("printer_not_belong_to_node", "Printer does not belong to this node", payload.PrinterID)
 		return
 	}
 
 	// 步骤3: 检查打印机是否被禁用
 	if !printer.Enabled {
-		log.Printf("Printer %s is disabled, rejecting print job submission from node %s", payload.PrinterID, c.NodeID)
+		logger.Warn("Printer disabled, rejecting print job submission", zap.String("printer_id", payload.PrinterID), zap.String("node_id", c.NodeID))
 		c.sendError("printer_disabled", "Printer has been disabled by administrator", payload.PrinterID)
 		return
 	}
@@ -385,35 +385,35 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 
 	// 保存任务
 	if err := c.PrintJobRepo.CreatePrintJob(job); err != nil {
-		log.Printf("Failed to create print job: %v", err)
+		logger.Error("Failed to create print job", zap.Error(err))
 		return
 	}
 
-	log.Printf("Print job %s created for file %s", job.ID, file.ID)
+	logger.Info("Print job created for file", zap.String("job_id", job.ID), zap.String("file_id", file.ID))
 
 	// 分发任务到打印机所属的 Edge Node
 	if err := c.Manager.DispatchPrintJob(printer.EdgeNodeID, job, printer.Name); err != nil {
-		log.Printf("Failed to dispatch print job %s to node %s: %v", job.ID, printer.EdgeNodeID, err)
+		logger.Error("Failed to dispatch print job to node", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID), zap.Error(err))
 	} else {
-		log.Printf("Print job %s dispatched to node %s", job.ID, printer.EdgeNodeID)
+		logger.Info("Print job dispatched to node", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID))
 		job.Status = "dispatched"
 		if updateErr := c.PrintJobRepo.UpdatePrintJob(job); updateErr != nil {
-			log.Printf("Failed to update job status to dispatched: %v", updateErr)
+			logger.Error("Failed to update job status to dispatched", zap.Error(updateErr))
 		}
 	}
 }
 
 // handleHeartbeat 处理心跳消息
 func (c *Connection) handleHeartbeat(msg *Message) {
-	log.Printf("Processing heartbeat from node %s", c.NodeID)
+	logger.Debug("Processing heartbeat from node", zap.String("node_id", c.NodeID))
 
 	// 更新 Edge Node 的最后心跳时间和状态
 	if err := c.EdgeNodeRepo.UpdateHeartbeat(c.NodeID); err != nil {
-		log.Printf("Failed to update heartbeat for node %s: %v", c.NodeID, err)
+		logger.Error("Failed to update heartbeat for node", zap.String("node_id", c.NodeID), zap.Error(err))
 		return
 	}
 	if err := c.EdgeNodeRepo.UpdateStatus(c.NodeID, "online"); err != nil {
-		log.Printf("Failed to update status for node %s: %v", c.NodeID, err)
+		logger.Error("Failed to update status for node", zap.String("node_id", c.NodeID), zap.Error(err))
 		return
 	}
 
@@ -423,19 +423,21 @@ func (c *Connection) handleHeartbeat(msg *Message) {
 		dataBytes, err := json.Marshal(msg.Data)
 		if err == nil {
 			if err := json.Unmarshal(dataBytes, &heartbeatData); err == nil {
-				log.Printf("Heartbeat data from node %s: CPU=%.2f%%, Memory=%.2f%%, Disk=%.2f%%",
-					c.NodeID, heartbeatData.SystemInfo.CPUUsage,
-					heartbeatData.SystemInfo.MemoryUsage, heartbeatData.SystemInfo.DiskUsage)
+				logger.Debug("Heartbeat data from node",
+					zap.String("node_id", c.NodeID),
+					zap.Float64("cpu_usage", heartbeatData.SystemInfo.CPUUsage),
+					zap.Float64("memory_usage", heartbeatData.SystemInfo.MemoryUsage),
+					zap.Float64("disk_usage", heartbeatData.SystemInfo.DiskUsage))
 			}
 		}
 	}
 
-	log.Printf("Successfully processed heartbeat from node %s", c.NodeID)
+	logger.Debug("Successfully processed heartbeat from node", zap.String("node_id", c.NodeID))
 }
 
 // handleRequestUploadToken 处理请求上传凭证消息
 func (c *Connection) handleRequestUploadToken(msg *Message) {
-	log.Printf("Processing upload token request from node %s", c.NodeID)
+	logger.Debug("Processing upload token request from node", zap.String("node_id", c.NodeID))
 
 	// 标准验证顺序：节点存在性 → 节点启用 → 打印机存在性 → 打印机归属 → 打印机启用
 	// 注意：节点存在性和启用已由 handleMessage 通用拦截器处理
@@ -444,20 +446,20 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	var payload RequestUploadTokenPayload
 	dataBytes, err := json.Marshal(msg.Data)
 	if err != nil {
-		log.Printf("Failed to marshal upload token request data from node %s: %v", c.NodeID, err)
+		logger.Error("Failed to marshal upload token request data from node", zap.String("node_id", c.NodeID), zap.Error(err))
 		c.sendError("invalid_request", "Failed to parse request data", "")
 		return
 	}
 
 	if err := json.Unmarshal(dataBytes, &payload); err != nil {
-		log.Printf("Failed to parse upload token request data from node %s: %v", c.NodeID, err)
+		logger.Error("Failed to parse upload token request data from node", zap.String("node_id", c.NodeID), zap.Error(err))
 		c.sendError("invalid_request", "Failed to parse request data", "")
 		return
 	}
 
 	// 验证 printer_id 必填
 	if payload.PrinterID == "" {
-		log.Printf("Missing printer_id in upload token request from node %s", c.NodeID)
+		logger.Warn("Missing printer_id in upload token request from node", zap.String("node_id", c.NodeID))
 		c.sendError("invalid_request", "printer_id is required", "")
 		return
 	}
@@ -465,26 +467,26 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	// 步骤3: 检查打印机是否存在
 	printer, err := c.PrinterRepo.GetPrinterByID(payload.PrinterID)
 	if err != nil {
-		log.Printf("Failed to get printer %s: %v", payload.PrinterID, err)
+		logger.Error("Failed to get printer", zap.String("printer_id", payload.PrinterID), zap.Error(err))
 		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
 	if printer == nil {
-		log.Printf("Printer %s not found", payload.PrinterID)
+		logger.Warn("Printer not found", zap.String("printer_id", payload.PrinterID))
 		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
 		return
 	}
 
 	// 步骤4: 验证打印机是否属于该节点
 	if printer.EdgeNodeID != c.NodeID {
-		log.Printf("Printer %s does not belong to node %s", payload.PrinterID, c.NodeID)
+		logger.Warn("Printer does not belong to node", zap.String("printer_id", payload.PrinterID), zap.String("node_id", c.NodeID))
 		c.sendError("printer_not_belong_to_node", "Printer does not belong to this node", payload.PrinterID)
 		return
 	}
 
 	// 步骤5: 检查打印机是否被禁用
 	if !printer.Enabled {
-		log.Printf("Printer %s is disabled, rejecting upload token request from node %s", payload.PrinterID, c.NodeID)
+		logger.Warn("Printer disabled, rejecting upload token request", zap.String("printer_id", payload.PrinterID), zap.String("node_id", c.NodeID))
 		c.sendError("printer_disabled", "Printer has been disabled by administrator", payload.PrinterID)
 		return
 	}
@@ -492,12 +494,12 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	// 生成上传凭证
 	token, expiresAt, err := c.TokenManager.GenerateUploadToken(c.NodeID, payload.PrinterID)
 	if err != nil {
-		log.Printf("Failed to generate upload token for node %s: %v", c.NodeID, err)
+		logger.Error("Failed to generate upload token for node", zap.String("node_id", c.NodeID), zap.Error(err))
 		c.sendError("token_generation_failed", "Failed to generate upload token", "")
 		return
 	}
 
-	// 构造两个URL
+	// 构造两个URL（相对于 API 根路径，不包含网关前缀）
 	// 1. API上传URL：用于Edge端程序化上传（POST请求）
 	apiUploadURL := fmt.Sprintf("/api/v1/files?token=%s", token)
 
@@ -519,12 +521,12 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
-		log.Printf("Failed to marshal upload token response: %v", err)
+		logger.Error("Failed to marshal upload token response", zap.Error(err))
 		return
 	}
 
 	c.Send <- responseBytes
-	log.Printf("Upload token generated for node %s, printer %s - API: %s, Web: %s", c.NodeID, payload.PrinterID, apiUploadURL, webUploadURL)
+	logger.Info("Upload token generated", zap.String("node_id", c.NodeID), zap.String("printer_id", payload.PrinterID), zap.String("api_url", apiUploadURL), zap.String("web_url", webUploadURL))
 }
 
 // sendError 发送错误消息到 Edge 节点
@@ -548,18 +550,18 @@ func (c *Connection) sendError(code, message, printerID string) {
 
 // handleJobUpdate 处理任务状态更新
 func (c *Connection) handleJobUpdate(msg *Message) {
-	log.Printf("Processing job update from node %s", c.NodeID)
+	logger.Debug("Processing job update from node", zap.String("node_id", c.NodeID))
 
 	// 解析任务状态数据
 	var jobData JobUpdateData
 	dataBytes, err := json.Marshal(msg.Data)
 	if err != nil {
-		log.Printf("Failed to marshal job update data from node %s: %v", c.NodeID, err)
+		logger.Error("Failed to marshal job update data from node", zap.String("node_id", c.NodeID), zap.Error(err))
 		return
 	}
 
 	if err := json.Unmarshal(dataBytes, &jobData); err != nil {
-		log.Printf("Failed to parse job update data from node %s: %v", c.NodeID, err)
+		logger.Error("Failed to parse job update data from node", zap.String("node_id", c.NodeID), zap.Error(err))
 		return
 	}
 
@@ -568,33 +570,30 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 		errMsg = *jobData.ErrorMessage
 	}
 
-	log.Printf("Job update data: job_id=%s, status=%s, progress=%d, error=%s",
-		jobData.JobID, jobData.Status, jobData.Progress, errMsg)
+	logger.Debug("Job update data", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status), zap.Int("progress", jobData.Progress), zap.String("error", errMsg))
 
 	// 终态保护：任务已完成或已失败时，不再接受后续状态覆盖。
 	// 这可避免Edge迟到上报覆盖云端人工取消（failed）结果。
 	existingJob, err := c.PrintJobRepo.GetPrintJobByID(jobData.JobID)
 	if err != nil {
-		log.Printf("Failed to get current job %s before update: %v", jobData.JobID, err)
+		logger.Error("Failed to get current job before update", zap.String("job_id", jobData.JobID), zap.Error(err))
 		return
 	}
 	if existingJob == nil {
-		log.Printf("Job %s not found when handling status update", jobData.JobID)
+		logger.Warn("Job not found when handling status update", zap.String("job_id", jobData.JobID))
 		return
 	}
 	if existingJob.Status == "completed" || existingJob.Status == "failed" {
-		log.Printf("Ignoring late status update for terminal job %s (current=%s, incoming=%s)",
-			jobData.JobID, existingJob.Status, jobData.Status)
+		logger.Debug("Ignoring late status update for terminal job", zap.String("job_id", jobData.JobID), zap.String("current_status", existingJob.Status), zap.String("incoming_status", jobData.Status))
 		return
 	}
 
 	if err := c.PrintJobRepo.UpdateJobStatus(jobData.JobID, jobData.Status, jobData.Progress, errMsg); err != nil {
-		log.Printf("Failed to update job %s status: %v", jobData.JobID, err)
+		logger.Error("Failed to update job status", zap.String("job_id", jobData.JobID), zap.Error(err))
 		return
 	}
 
-	log.Printf("Successfully updated job %s status to %s (progress: %d%%)",
-		jobData.JobID, jobData.Status, jobData.Progress)
+	logger.Info("Successfully updated job status", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status), zap.Int("progress", jobData.Progress))
 }
 
 // SendCommand 发送指令到 Edge Node

@@ -17,6 +17,8 @@ interface OAuth2Client {
   updated_at: string;
 }
 
+import { buildApiUrl, buildAuthUrl } from '../../config';
+
 const OAuth2Clients: React.FC = () => {
   const [clients, setClients] = useState<OAuth2Client[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,14 +32,14 @@ const OAuth2Clients: React.FC = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        const response = await fetch('/auth/me');
+        const response = await fetch(buildAuthUrl('me'));
         const result = await response.json();
         if (result.code === 200 && result.data.access_token) {
           const accessToken = result.data.access_token;
           setToken(accessToken);
           
           // 获取客户端列表
-          const clientsResponse = await fetch('/api/v1/admin/oauth2-clients', {
+          const clientsResponse = await fetch(buildApiUrl('/admin/oauth2-clients'), {
             headers: { 'Authorization': `Bearer ${accessToken}` },
           });
           const clientsResult = await clientsResponse.json();
@@ -58,7 +60,7 @@ const OAuth2Clients: React.FC = () => {
     if (!token) return;
     setLoading(true);
     try {
-      const response = await fetch('/api/v1/admin/oauth2-clients', {
+      const response = await fetch(buildApiUrl('/admin/oauth2-clients'), {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       const result = await response.json();
@@ -77,7 +79,7 @@ const OAuth2Clients: React.FC = () => {
   const handleCreate = async (values: any) => {
     if (!token) return;
     try {
-      const response = await fetch('/api/v1/admin/oauth2-clients', {
+      const response = await fetch(buildApiUrl('/admin/oauth2-clients'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -108,7 +110,7 @@ const OAuth2Clients: React.FC = () => {
   const handleUpdate = async (values: any) => {
     if (!editingClient || !token) return;
     try {
-      const response = await fetch(`/api/v1/admin/oauth2-clients/${editingClient.id}`, {
+      const response = await fetch(buildApiUrl(`/admin/oauth2-clients/${editingClient.id}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -139,7 +141,7 @@ const OAuth2Clients: React.FC = () => {
   const handleResetSecret = async (client: OAuth2Client) => {
     if (!token) return;
     try {
-      const response = await fetch(`/api/v1/admin/oauth2-clients/${client.id}/secret`, {
+      const response = await fetch(buildApiUrl(`/admin/oauth2-clients/${client.id}/secret`), {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -160,7 +162,7 @@ const OAuth2Clients: React.FC = () => {
   const handleDelete = async (client: OAuth2Client) => {
     if (!token) return;
     try {
-      const response = await fetch(`/api/v1/admin/oauth2-clients/${client.id}`, {
+      const response = await fetch(buildApiUrl(`/admin/oauth2-clients/${client.id}`), {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`,

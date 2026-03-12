@@ -27,11 +27,13 @@ interface EdgeNode {
   key?: string;
 }
 
+import { buildApiUrl, buildAuthUrl } from '../../config';
+
 // Edge Nodes 服务类
 class EdgeNodesService {
   private async getToken(): Promise<string | null> {
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -53,7 +55,7 @@ class EdgeNodesService {
       const token = await this.getToken();
       
       // 构建 URL 查询参数
-      let url = '/api/v1/admin/edge-nodes?page=1&page_size=100';
+      let url = buildApiUrl('/admin/edge-nodes?page=1&page_size=100');
       if (params?.search) {
         url += `&search=${encodeURIComponent(params.search)}`;
       }
@@ -90,7 +92,7 @@ class EdgeNodesService {
   async updateEdgeNode(id: string, name: string): Promise<boolean> {
     try {
       const token = await this.getToken();
-      const response = await fetch(`/api/v1/admin/edge-nodes/${id}`, {
+      const response = await fetch(buildApiUrl(`/admin/edge-nodes/${id}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -117,7 +119,7 @@ class EdgeNodesService {
         return false;
       }
 
-      const response = await fetch(`/api/v1/admin/edge-nodes/${id}`, {
+      const response = await fetch(buildApiUrl(`/admin/edge-nodes/${id}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -136,7 +138,7 @@ class EdgeNodesService {
   async deleteEdgeNode(id: string): Promise<boolean> {
     try {
       const token = await this.getToken();
-      const response = await fetch(`/api/v1/admin/edge-nodes/${id}`, {
+      const response = await fetch(buildApiUrl(`/admin/edge-nodes/${id}`), {
         method: 'DELETE',
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),

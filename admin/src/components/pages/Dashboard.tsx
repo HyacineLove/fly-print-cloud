@@ -44,11 +44,13 @@ interface PrintJob {
   key?: string;
 }
 
+import { buildApiUrl, buildAuthUrl } from '../../config';
+
 // Dashboard 服务类
 class DashboardService {
   private async getToken(): Promise<string | null> {
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -66,37 +68,43 @@ class DashboardService {
       const token = await this.getToken();
       
       // 并行获取各种统计数据
-      const [printersResponse, edgeNodesResponse, printJobsResponse] = await Promise.all([
-        fetch('/api/v1/admin/printers', {
+      // 注意：打印任务统计不能用 jobs.length（接口默认分页/limit），必须用 pagination.total
+      // completedJobs 也同理：用 status=completed 的 total 来统计
+      const [printersResponse, edgeNodesResponse, printJobsTotalResponse, printJobsCompletedResponse] = await Promise.all([
+        fetch(buildApiUrl('/admin/printers'), {
           headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
         }),
-        fetch('/api/v1/admin/edge-nodes', {
+        fetch(buildApiUrl('/admin/edge-nodes'), {
           headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
         }),
-        fetch('/api/v1/admin/print-jobs', {
+        fetch(buildApiUrl('/admin/print-jobs?page=1&page_size=1'), {
+          headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
+        }),
+        fetch(buildApiUrl('/admin/print-jobs?page=1&page_size=1&status=completed'), {
           headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
         })
       ]);
       
       const printersResult = printersResponse.ok ? await printersResponse.json() : null;
       const edgeNodesResult = edgeNodesResponse.ok ? await edgeNodesResponse.json() : null;
-      const printJobsResult = printJobsResponse.ok ? await printJobsResponse.json() : null;
+      const printJobsTotalResult = printJobsTotalResponse.ok ? await printJobsTotalResponse.json() : null;
+      const printJobsCompletedResult = printJobsCompletedResponse.ok ? await printJobsCompletedResponse.json() : null;
       
       const printers = printersResult?.data?.items || [];
       const edgeNodes = edgeNodesResult?.data?.items || [];
-      const printJobs = printJobsResult?.jobs || [];
+      const totalPrintJobs = printJobsTotalResult?.pagination?.total ?? (printJobsTotalResult?.jobs?.length || 0);
+      const completedJobs = printJobsCompletedResult?.pagination?.total ?? (printJobsCompletedResult?.jobs?.length || 0);
       
       // 计算统计数据
       const onlinePrinters = printers.filter((p: any) => p.status === 'ready' || p.status === 'printing').length;
       const onlineEdgeNodes = edgeNodes.filter((e: any) => e.status === 'online').length;
-      const completedJobs = printJobs.filter((j: any) => j.status === 'completed').length;
       
       return {
         totalPrinters: printers.length,
         onlinePrinters,
         totalEdgeNodes: edgeNodes.length,
         onlineEdgeNodes,
-        totalPrintJobs: printJobs.length,
+        totalPrintJobs,
         completedJobs,
         totalUsers: 0, // 暂时没有用户统计API
         activeUsers: 0,
@@ -110,7 +118,7 @@ class DashboardService {
   async getPrinters(): Promise<PrinterStatus[]> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/printers', {
+      const response = await fetch(buildApiUrl('/admin/printers'), {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
@@ -131,7 +139,7 @@ class DashboardService {
   async getPrintJobs(): Promise<{ jobs: PrintJob[]; total: number }> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/print-jobs?page=1&page_size=5', {
+      const response = await fetch(buildApiUrl('/admin/print-jobs?page=1&page_size=5'), {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
@@ -155,7 +163,7 @@ class DashboardService {
   async getPrintJobTrends(): Promise<{ dates: string[]; completed: number[]; failed: number[] }> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/dashboard/trends', {
+      const response = await fetch(buildApiUrl('/admin/dashboard/trends'), {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },

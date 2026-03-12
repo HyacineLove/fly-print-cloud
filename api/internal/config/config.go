@@ -116,7 +116,26 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config error: %w", err)
 	}
 
+	// 环境变量 FLY_PRINT_SERVER_ALLOWED_ORIGINS 为单字符串（或逗号分隔），Viper 不会自动转为 []string
+	if raw := viper.Get("server.allowed_origins"); raw != nil {
+		if v, ok := raw.(string); ok && v != "" {
+			config.Server.AllowedOrigins = splitTrim(v, ",")
+		}
+	}
+
 	return &config, nil
+}
+
+// splitTrim 按 sep 分割并去除每段首尾空格
+func splitTrim(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // Validate 验证配置有效性
@@ -234,6 +253,7 @@ func setDefaults() {
 		"https://kiosk.fly-print.local",
 		"http://localhost:3000",
 		"http://localhost:8080",
+		"http://localhost:8012", // 与 .env.example 默认 HTTP_PORT 一致，便于一键启动
 	})
 
 	// OAuth2 默认值

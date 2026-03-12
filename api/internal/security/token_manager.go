@@ -6,10 +6,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"time"
+
+	"fly-print-cloud/api/internal/logger"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -114,10 +117,10 @@ func (tm *TokenManager) GenerateUploadToken(nodeID, printerID string) (string, t
 		}); ok {
 			revokedCount, err := tokenRepo.RevokeTokensByNodeAndResource(TokenTypeUpload, nodeID, printerID)
 			if err != nil {
-				log.Printf("Warning: Failed to revoke old upload tokens for node %s, printer %s: %v", nodeID, printerID, err)
+				logger.Warn("Failed to revoke old upload tokens for node and printer", zap.String("node_id", nodeID), zap.String("printer_id", printerID), zap.Error(err))
 				// 不中断流程，继续生成新Token
 			} else if revokedCount > 0 {
-				log.Printf("Revoked %d old upload tokens for node %s, printer %s", revokedCount, nodeID, printerID)
+				logger.Debug("Revoked old upload tokens for node and printer", zap.Int64("count", revokedCount), zap.String("node_id", nodeID), zap.String("printer_id", printerID))
 			}
 		}
 	}
@@ -143,7 +146,7 @@ func (tm *TokenManager) GenerateUploadToken(nodeID, printerID string) (string, t
 			tokenHash := generateTokenHash(token)
 			err := preRegRepo.PreRegisterToken(tokenHash, TokenTypeUpload, nodeID, printerID, "", time.Unix(expiresAt, 0))
 			if err != nil {
-				log.Printf("Warning: Failed to pre-register upload token: %v", err)
+				logger.Warn("Failed to pre-register upload token", zap.Error(err))
 				// 不阻断流程，继续返回token
 			}
 		}
@@ -164,10 +167,10 @@ func (tm *TokenManager) GenerateDownloadToken(fileID, jobID, nodeID string) (str
 		}); ok {
 			revokedCount, err := tokenRepo.RevokeTokensByNodeAndResource(TokenTypeDownload, nodeID, fileID)
 			if err != nil {
-				log.Printf("Warning: Failed to revoke old download tokens for node %s, file %s: %v", nodeID, fileID, err)
+				logger.Warn("Failed to revoke old download tokens for node and file", zap.String("node_id", nodeID), zap.String("file_id", fileID), zap.Error(err))
 				// 不中断流程，继续生成新Token
 			} else if revokedCount > 0 {
-				log.Printf("Revoked %d old download tokens for node %s, file %s", revokedCount, nodeID, fileID)
+				logger.Debug("Revoked old download tokens for node and file", zap.Int64("count", revokedCount), zap.String("node_id", nodeID), zap.String("file_id", fileID))
 			}
 		}
 	}
@@ -193,7 +196,7 @@ func (tm *TokenManager) GenerateDownloadToken(fileID, jobID, nodeID string) (str
 			tokenHash := generateTokenHash(token)
 			err := preRegRepo.PreRegisterToken(tokenHash, TokenTypeDownload, nodeID, fileID, jobID, time.Unix(expiresAt, 0))
 			if err != nil {
-				log.Printf("Warning: Failed to pre-register download token: %v", err)
+				logger.Warn("Failed to pre-register download token", zap.Error(err))
 				// 不阻断流程，继续返回token
 			}
 		}

@@ -9,17 +9,19 @@ interface LoginForm {
   password: string;
 }
 
+import { buildAuthUrl } from '../../config';
+
 const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [checkingMode, setCheckingMode] = useState(true);
 
   // 检查认证模式，keycloak 模式直接跳转到 OAuth2 登录
   useEffect(() => {
-    fetch('/auth/mode')
+    fetch(buildAuthUrl('mode'))
       .then(r => r.json())
       .then(data => {
         if (data.mode === 'keycloak') {
-          window.location.href = '/auth/login';
+          window.location.href = buildAuthUrl('login');
         } else {
           setCheckingMode(false);
         }
@@ -35,7 +37,7 @@ const Login: React.FC = () => {
       formData.append('username', values.username);
       formData.append('password', values.password);
 
-      const response = await fetch('/auth/token', {
+      const response = await fetch(buildAuthUrl('token'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',

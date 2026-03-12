@@ -54,8 +54,6 @@ services:
       - FLY_PRINT_SECURITY_FILE_ACCESS_SECRET=${FILE_ACCESS_SECRET}
       - FLY_PRINT_SECURITY_UPLOAD_TOKEN_TTL=${UPLOAD_TOKEN_TTL:-300}
       - FLY_PRINT_SECURITY_DOWNLOAD_TOKEN_TTL=${DOWNLOAD_TOKEN_TTL:-300}
-    ports:
-      - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,6 +72,10 @@ services:
     build:
       context: ./admin
       dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_BASE_PATH=${REACT_APP_API_BASE_PATH:-}
+        - REACT_APP_AUTH_BASE_PATH=${REACT_APP_AUTH_BASE_PATH:-}
+        - REACT_APP_API_URL=${REACT_APP_API_URL:-}
     container_name: fly-print-admin-builder
     volumes:
       - admin_build:/app/build
@@ -90,7 +92,7 @@ services:
     image: docker.m.daocloud.io/library/nginx:alpine
     container_name: fly-print-nginx
     ports:
-      - "80:80"
+      - "${HTTP_PORT:-8012}:80"
       # - "443:443"  # Disable SSL port
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf

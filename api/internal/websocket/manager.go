@@ -3,12 +3,14 @@ package websocket
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/security"
+
+	"go.uber.org/zap"
 )
 
 // ConnectionManager 管理所有 WebSocket 连接
@@ -55,34 +57,34 @@ func (m *ConnectionManager) registerConnection(conn *Connection) {
 
 	// 如果已有连接，先关闭旧连接
 	if existingConn, exists := m.connections[conn.NodeID]; exists {
-		log.Printf("Replacing existing connection for node %s", conn.NodeID)
+		logger.Info("Replacing existing connection for node", zap.String("node_id", conn.NodeID))
 		close(existingConn.Send)
 	}
 
 	m.connections[conn.NodeID] = conn
-	log.Printf("Edge Node %s connected, total connections: %d", conn.NodeID, len(m.connections))
+	logger.Info("Edge Node connected", zap.String("node_id", conn.NodeID), zap.Int("total_connections", len(m.connections)))
 
 	// 启动离线任务补偿（Reconciliation）
 	go func() {
 		// 等待连接稳定
 		time.Sleep(500 * time.Millisecond)
 
-		log.Printf("Checking pending jobs for re-connected node %s", conn.NodeID)
+		logger.Debug("Checking pending jobs for re-connected node", zap.String("node_id", conn.NodeID))
 		jobs, err := conn.PrintJobRepo.GetPendingOrDispatchedJobsByEdgeNodeID(conn.NodeID)
 		if err != nil {
-			log.Printf("Failed to fetch pending jobs for node %s: %v", conn.NodeID, err)
+			logger.Error("Failed to fetch pending jobs for node", zap.String("node_id", conn.NodeID), zap.Error(err))
 			return
 		}
 
 		if len(jobs) > 0 {
-			log.Printf("Found %d pending/dispatched jobs for node %s, re-dispatching...", len(jobs), conn.NodeID)
+			logger.Info("Found pending/dispatched jobs for node, re-dispatching", zap.Int("count", len(jobs)), zap.String("node_id", conn.NodeID))
 			for _, job := range jobs {
 				// 重新分发任务
 				// 注意：job.PrinterName 已由查询填充
 				if err := m.DispatchPrintJob(conn.NodeID, job, job.PrinterName); err != nil {
-					log.Printf("Failed to re-dispatch job %s: %v", job.ID, err)
+					logger.Error("Failed to re-dispatch job", zap.String("job_id", job.ID), zap.Error(err))
 				} else {
-					log.Printf("Successfully re-dispatched job %s", job.ID)
+					logger.Info("Successfully re-dispatched job", zap.String("job_id", job.ID))
 				}
 				// 避免瞬间流量突发
 				time.Sleep(100 * time.Millisecond)
@@ -101,9 +103,9 @@ func (m *ConnectionManager) unregisterConnection(conn *Connection) {
 		// 避免新连接注册后，旧连接注销导致新连接被误删
 		if currentConn == conn {
 			delete(m.connections, conn.NodeID)
-			log.Printf("Edge Node %s disconnected, total connections: %d", conn.NodeID, len(m.connections))
+			logger.Info("Edge Node disconnected", zap.String("node_id", conn.NodeID), zap.Int("total_connections", len(m.connections)))
 		} else {
-			log.Printf("Ignored unregister request for replaced connection of node %s", conn.NodeID)
+			logger.Debug("Ignored unregister request for replaced connection of node", zap.String("node_id", conn.NodeID))
 		}
 
 		// 安全关闭channel，避免重复关闭
@@ -125,7 +127,7 @@ func (m *ConnectionManager) broadcastMessage(message []byte) {
 		select {
 		case conn.Send <- message:
 		default:
-			log.Printf("Failed to send broadcast message to node %s, closing connection", nodeID)
+			logger.Warn("Failed to send broadcast message to node, closing connection", zap.String("node_id", nodeID))
 			close(conn.Send)
 			delete(m.connections, nodeID)
 		}
@@ -205,7 +207,7 @@ func (m *ConnectionManager) DisconnectNode(nodeID string) error {
 	close(conn.Send)
 	conn.Conn.Close()
 
-	log.Printf("Forcefully disconnected Edge Node %s (node deleted), total connections: %d", nodeID, len(m.connections))
+	logger.Info("Forcefully disconnected Edge Node (node deleted)", zap.String("node_id", nodeID), zap.Int("total_connections", len(m.connections)))
 	return nil
 }
 
@@ -219,7 +221,7 @@ func (m *ConnectionManager) GetConnectionCount() int {
 
 // DispatchPreviewFile 发送预览文件命令
 func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string) error {
-	log.Printf("Preparing to dispatch preview file to node %s: %s (%s)", nodeID, fileName, fileID)
+	logger.Debug("Preparing to dispatch preview file to node", zap.String("node_id", nodeID), zap.String("file_name", fileName), zap.String("file_id", fileID))
 
 	payload := PreviewFilePayload{
 		FileID:   fileID,
@@ -240,11 +242,11 @@ func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, 
 			// 生成预览专用 token，使用 "preview" 作为 jobID
 			token, expiresAt, err := m.TokenManager.GenerateDownloadToken(extractedFileID, "preview", nodeID)
 			if err != nil {
-				log.Printf("Failed to generate download token for preview: %v", err)
+				logger.Error("Failed to generate download token for preview", zap.Error(err))
 			} else {
 				payload.FileAccessToken = token
 				payload.FileAccessTokenExpiresAt = &expiresAt
-				log.Printf("Generated preview download token, expires at %s", expiresAt.Format(time.RFC3339))
+				logger.Debug("Generated preview download token", zap.Time("expires_at", expiresAt))
 			}
 		}
 	}
@@ -258,11 +260,11 @@ func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, 
 
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("Failed to marshal preview message: %v", err)
+		logger.Error("Failed to marshal preview message", zap.Error(err))
 		return err
 	}
 
-	log.Printf("Sending preview message to node %s, payload size: %d", nodeID, len(msgBytes))
+	logger.Debug("Sending preview message to node", zap.String("node_id", nodeID), zap.Int("payload_size", len(msgBytes)))
 	return m.SendToNode(nodeID, msgBytes)
 }
 
@@ -295,11 +297,11 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 		if fileID != "" {
 			token, expiresAt, err := m.TokenManager.GenerateDownloadToken(fileID, job.ID, nodeID)
 			if err != nil {
-				log.Printf("Failed to generate download token for job %s: %v", job.ID, err)
+				logger.Error("Failed to generate download token for job", zap.String("job_id", job.ID), zap.Error(err))
 			} else {
 				printJobData.FileAccessToken = token
 				printJobData.FileAccessTokenExpiresAt = &expiresAt
-				log.Printf("Generated download token for job %s, expires at %s", job.ID, expiresAt.Format(time.RFC3339))
+				logger.Debug("Generated download token for job", zap.String("job_id", job.ID), zap.Time("expires_at", expiresAt))
 			}
 		}
 	}
@@ -327,7 +329,7 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 	err := conn.SendCommandWithAck(&command, 10*time.Second)
 	if err != nil {
 		// ACK超时或失败，将任务状态回滚到pending，以便重试机制重新分发
-		log.Printf("Failed to receive ACK for print job %s from node %s: %v, rolling back status to pending", job.ID, nodeID, err)
+		logger.Warn("Failed to receive ACK for print job from node, rolling back status to pending", zap.String("job_id", job.ID), zap.String("node_id", nodeID), zap.Error(err))
 
 		// 回滚任务状态
 		job.Status = "pending"
@@ -335,7 +337,7 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 
 		// 更新任务到数据库（使用Connection中的PrintJobRepo）
 		if updateErr := conn.PrintJobRepo.UpdatePrintJob(job); updateErr != nil {
-			log.Printf("Failed to rollback job status to pending for job %s: %v", job.ID, updateErr)
+			logger.Error("Failed to rollback job status to pending", zap.String("job_id", job.ID), zap.Error(updateErr))
 		}
 	}
 
@@ -364,7 +366,7 @@ func (m *ConnectionManager) DispatchNodeEnabledChange(nodeID string, enabled boo
 
 // DispatchCancelJob 发送取消打印任务通知
 func (m *ConnectionManager) DispatchCancelJob(nodeID string, jobID string) error {
-	log.Printf("Sending cancel job command to node %s for job %s", nodeID, jobID)
+	logger.Info("Sending cancel job command to node", zap.String("node_id", nodeID), zap.String("job_id", jobID))
 
 	cmd := Command{
 		Type:      "cancel_job",

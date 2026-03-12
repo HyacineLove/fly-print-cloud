@@ -45,11 +45,13 @@ interface EdgeNode {
   status: string;
 }
 
+import { buildApiUrl, buildAuthUrl } from '../../config';
+
 // Print Jobs 服务类
 class PrintJobsService {
   async getToken(): Promise<string | null> {
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -72,7 +74,7 @@ class PrintJobsService {
   ): Promise<{ jobs: PrintJob[]; total: number; page: number; pageSize: number }> {
     try {
       const token = await this.getToken();
-      let url = `/api/v1/admin/print-jobs?page=${page}&pageSize=${pageSize}`;
+      let url = buildApiUrl(`/admin/print-jobs?page=${page}&pageSize=${pageSize}`);
       if (status) {
         url += `&status=${status}`;
       }
@@ -118,7 +120,7 @@ class PrintJobsService {
   async getEdgeNodes(): Promise<EdgeNode[]> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/edge-nodes', {
+      const response = await fetch(buildApiUrl('/admin/edge-nodes'), {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
@@ -136,7 +138,7 @@ class PrintJobsService {
 
   async cancelPrintJob(jobId: string): Promise<void> {
     const token = await this.getToken();
-    const response = await fetch(`/api/v1/admin/print-jobs/${jobId}/cancel`, {
+    const response = await fetch(buildApiUrl(`/admin/print-jobs/${jobId}/cancel`), {
       method: 'POST',
       headers: {
         ...(token && { 'Authorization': `Bearer ${token}` }),
