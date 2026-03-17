@@ -203,7 +203,7 @@ func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcF
 	contentType := http.DetectContentType(buffer[:bytesRead])
 	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 	if !security.IsAllowedFileType(contentType, security.AllowedPrintFileTypes) {
-		allowedExtensions := []string{".docx", ".doc", ".xlsx", ".xls", ".pdf", ".txt", ".ps"}
+		allowedExtensions := []string{".docx", ".doc", ".pdf"}
 		isAllowedExt := false
 		for _, allowedExt := range allowedExtensions {
 			if ext == allowedExt {

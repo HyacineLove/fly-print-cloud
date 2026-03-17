@@ -187,15 +187,11 @@ func IsAllowedFileType(contentType string, allowedTypes []string) bool {
 // AllowedPrintFileTypes 允许的打印文件类型
 var AllowedPrintFileTypes = []string{
 	"application/pdf",
-	"application/vnd.ms-excel",
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	"application/msword",
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	"text/plain",
 	"image/jpeg",
 	"image/png",
 	"image/gif",
 	"image/bmp",
 	"image/tiff",
-	"application/postscript", // .ps files
 }
