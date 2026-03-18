@@ -1,279 +1,210 @@
 # Codebase Structure
 
-**Analysis Date:** 2025-03-17
+**Analysis Date:** 2026-03-18
 
 ## Directory Layout
 
 ```
 fly-print-cloud/
-├── api/                          # Go Backend API
-│   ├── cmd/
-│   │   └── server/
-│   │       └── main.go           # Application entry point
-│   ├── internal/
-│   │   ├── auth/                 # Authentication services
-│   │   ├── config/               # Configuration management
-│   │   ├── database/             # Database repositories
-│   │   ├── handlers/             # HTTP request handlers
-│   │   ├── logger/               # Structured logging
-│   │   ├── middleware/           # HTTP middleware
-│   │   ├── models/               # Domain models
-│   │   ├── security/             # Security utilities
-│   │   ├── utils/                # Utility functions
-│   │   └── websocket/            # WebSocket handling
-│   ├── docs/                     # Swagger-generated docs
-│   ├── go.mod                    # Go module definition
-│   ├── go.sum                    # Go dependency checksums
-│   ├── Dockerfile                # API container build
-│   └── config.example.yaml       # Configuration template
+├── api/                          # Go backend API
+│   ├── cmd/server/              # Application entry point
+│   │   └── main.go              # Server bootstrap
+│   ├── internal/                # Private application code
+│   │   ├── auth/                # Authentication services
+│   │   ├── config/              # Configuration management
+│   │   ├── database/            # Repository layer
+│   │   ├── handlers/            # HTTP handlers
+│   │   ├── logger/              # Logging utilities
+│   │   ├── middleware/          # HTTP middleware
+│   │   ├── models/              # Domain models
+│   │   ├── security/            # Security utilities
+│   │   ├── utils/               # General utilities
+│   │   └── websocket/           # WebSocket handling
+│   ├── docs/                    # Swagger documentation
+│   ├── Dockerfile               # API container image
+│   ├── go.mod                   # Go module definition
+│   └── go.sum                   # Dependency checksums
 │
-├── admin/                        # React Admin Console
+├── admin/                        # React admin console
 │   ├── src/
-│   │   ├── components/
-│   │   │   ├── pages/            # Page components
-│   │   │   ├── ErrorBoundary.tsx # Error handling
-│   │   │   └── Loading.tsx       # Loading states
-│   │   ├── services/             # API client
-│   │   ├── utils/                # Utilities
-│   │   ├── App.tsx               # Root component
-│   │   ├── config.ts             # App configuration
-│   │   └── index.tsx             # Entry point
-│   ├── public/
-│   │   └── index.html            # HTML template
-│   ├── package.json              # NPM dependencies
-│   ├── tsconfig.json             # TypeScript config
-│   └── Dockerfile                # Admin build container
+│   │   ├── components/          # React components
+│   │   │   ├── pages/           # Page components
+│   │   │   ├── ErrorBoundary.tsx
+│   │   │   └── Loading.tsx
+│   │   ├── services/            # API client
+│   │   ├── utils/               # Utilities
+│   │   ├── App.tsx              # Main app component
+│   │   ├── config.ts            # Frontend configuration
+│   │   └── index.tsx            # Entry point
+│   ├── package.json             # NPM dependencies
+│   ├── tsconfig.json            # TypeScript config
+│   └── Dockerfile               # Admin build container
 │
-├── nginx/                        # Reverse Proxy
-│   ├── nginx.conf                # Main Nginx config
-│   ├── conf.d/
-│   │   └── admin.conf            # Site configuration
-│   └── ssl/                      # SSL certificate scripts
+├── nginx/                        # Nginx configuration
+│   ├── conf.d/                  # Site configurations
+│   │   └── admin.conf           # Main site config
+│   ├── ssl/                     # SSL certificates (if enabled)
+│   └── nginx.conf               # Main nginx config
 │
-├── docker-compose.yml            # Full stack orchestration
-├── .env.example                  # Environment template
-├── .gitignore                    # Git ignore rules
-└── README.md                     # Project documentation
+├── docker-compose.yml           # Service orchestration
+├── .env.example                 # Environment template
+├── .env                         # Local environment (gitignored)
+└── .planning/                   # Planning documents
+    └── codebase/                # Architecture docs
 ```
 
 ## Directory Purposes
 
-### `api/` - Backend API
-- **Purpose:** Core cloud printing service
-- **Language:** Go 1.25
-- **Framework:** Gin Web Framework
-- **Key files:**
-  - `api/cmd/server/main.go` - Application bootstrap
-  - `api/internal/handlers/` - HTTP handlers (14 files)
-  - `api/internal/database/` - Data access layer (7 files)
+**`api/cmd/server/`:**
+- Purpose: Application entry point
+- Contains: `main.go` - server initialization and dependency injection
+- Key files: `api/cmd/server/main.go`
 
-### `api/internal/handlers/` - HTTP Handlers
-- **Purpose:** Process HTTP requests, delegate to services
-- **Contains:** 14 handler files for different domains
-- **Key files:**
-  - `user_handler.go` - User CRUD
-  - `edge_node_handler.go` - Edge node management
-  - `printer_handler.go` - Printer operations
-  - `print_job_handler.go` - Job lifecycle
-  - `oauth2_handler.go` - Authentication flows
-  - `file_handler.go` - File operations
-  - `response.go` - Response helpers
-  - `common.go` - Shared utilities (pagination)
+**`api/internal/handlers/`:**
+- Purpose: HTTP request handlers
+- Contains: One handler per domain entity
+- Key files:
+  - `api/internal/handlers/printer_handler.go` (604 lines)
+  - `api/internal/handlers/print_job_handler.go`
+  - `api/internal/handlers/edge_node_handler.go`
+  - `api/internal/handlers/oauth2_handler.go`
+  - `api/internal/handlers/file_handler.go`
 
-### `api/internal/database/` - Data Access Layer
-- **Purpose:** Database operations, SQL queries
-- **Contains:** Repository pattern implementations
-- **Key files:**
-  - `database.go` - Connection management, schema initialization
-  - `user_repository.go` - User queries
-  - `edge_node_repository.go` - Edge node queries
-  - `printer_repository.go` - Printer queries
-  - `print_job_repository.go` - Job queries
-  - `file_repository.go` - File metadata queries
-  - `token_usage_repository.go` - Token tracking
+**`api/internal/database/`:**
+- Purpose: Data access layer
+- Contains: Repository implementations for each entity
+- Key files:
+  - `api/internal/database/database.go` (559 lines) - DB connection and schema
+  - `api/internal/database/printer_repository.go` (448 lines)
+  - `api/internal/database/print_job_repository.go`
+  - `api/internal/database/edge_node_repository.go`
 
-### `api/internal/models/` - Domain Models
-- **Purpose:** Business entity definitions
-- **Key files:**
-  - `models.go` - Core entities (User, Printer, PrintJob, EdgeNode, PrinterCapabilities)
-  - `file.go` - File-related models
-  - `oauth2_client.go` - OAuth2 client model
+**`api/internal/models/`:**
+- Purpose: Domain entity definitions
+- Contains: Structs for database entities
+- Key files: `api/internal/models/models.go` (136 lines)
 
-### `api/internal/middleware/` - HTTP Middleware
-- **Purpose:** Cross-cutting HTTP concerns
-- **Key files:**
-  - `oauth2.go` - OAuth2 validation (364 lines)
-  - `common.go` - CORS, logging, security headers
-  - `edge_node_check.go` - Edge node state validation
-  - `printer_check.go` - Printer state validation
+**`api/internal/websocket/`:**
+- Purpose: Real-time communication
+- Contains: Connection management and message handling
+- Key files:
+  - `api/internal/websocket/manager.go` (407 lines)
+  - `api/internal/websocket/connection.go`
+  - `api/internal/websocket/handler.go`
 
-### `api/internal/websocket/` - Real-time Communication
-- **Purpose:** WebSocket server for edge node connections
-- **Key files:**
-  - `manager.go` - Connection registry (407 lines)
-  - `handler.go` - HTTP upgrade handling
-  - `connection.go` - Individual connection management
-  - `message.go` - Protocol message types
-  - `errors.go` - WebSocket errors
+**`api/internal/middleware/`:**
+- Purpose: Cross-cutting HTTP concerns
+- Contains: Auth, CORS, security headers
+- Key files: `api/internal/middleware/oauth2.go`, `common.go`
 
-### `api/internal/security/` - Security Utilities
-- **Purpose:** Token management, validation
-- **Key files:**
-  - `token_manager.go` - One-time token generation/validation
-  - `validation.go` - Input validation helpers
+**`admin/src/components/pages/`:**
+- Purpose: Admin console page components
+- Contains: One component per page/route
+- Key files:
+  - `admin/src/components/pages/Dashboard.tsx`
+  - `admin/src/components/pages/Printers.tsx`
+  - `admin/src/components/pages/PrintJobs.tsx`
+  - `admin/src/components/pages/EdgeNodes.tsx`
 
-### `api/internal/config/` - Configuration
-- **Purpose:** App configuration with Viper
-- **Key file:** `config.go` - Config structs, loading, validation (298 lines)
-
-### `admin/` - Admin Console (React)
-- **Purpose:** Management UI
-- **Framework:** React 18 + TypeScript + Ant Design 5
-- **Build Tool:** Create React App (react-scripts 5)
-
-### `admin/src/components/pages/` - Page Components
-- **Purpose:** Main application pages
-- **Contains:** 10 page components
-- **Files:**
-  - `Dashboard.tsx` - Analytics dashboard
-  - `EdgeNodes.tsx` - Edge node management
-  - `Printers.tsx` - Printer management
-  - `PrintJobs.tsx` - Job monitoring
-  - `Users.tsx` - User administration
-  - `OAuth2Clients.tsx` - OAuth2 client management
-  - `Settings.tsx` - System settings
-  - `PublicUpload.tsx` - Public file upload
-  - `Login.tsx` - Login page
-
-### `admin/src/services/` - API Client
-- **Purpose:** HTTP client for API communication
-- **Key file:** `api.ts` - Axios-like fetch wrapper with auth
-
-### `nginx/` - Reverse Proxy
-- **Purpose:** Static file serving, API proxying, WebSocket support
-- **Key files:**
-  - `nginx.conf` - Main configuration (34 lines)
-  - `conf.d/admin.conf` - Site config with routes (67 lines)
+**`nginx/conf.d/`:**
+- Purpose: Nginx site configuration
+- Contains: Reverse proxy rules for API and WebSocket
+- Key files: `nginx/conf.d/admin.conf`
 
 ## Key File Locations
 
-### Entry Points
-- **Backend:** `api/cmd/server/main.go`
-- **Frontend:** `admin/src/index.tsx`
-- **WebSocket Handler:** `api/internal/websocket/handler.go`
+**Entry Points:**
+- `api/cmd/server/main.go` - Go API server
+- `admin/src/index.tsx` - React application
 
-### Configuration
-- **Backend Config:** `api/internal/config/config.go`
-- **Config Template:** `api/config.example.yaml`
-- **Frontend Config:** `admin/src/config.ts`
-- **Docker Compose:** `docker-compose.yml`
-- **Env Template:** `.env.example`
+**Configuration:**
+- `api/internal/config/config.go` - Go config (Viper-based)
+- `admin/src/config.ts` - Frontend config (env-based)
+- `docker-compose.yml` - Service orchestration
+- `nginx/nginx.conf` - Web server config
 
-### Core Logic
-- **Main Router:** `api/cmd/server/main.go` (lines 213-353 in setupRoutes)
-- **Database Schema:** `api/internal/database/database.go` (lines 90-441)
-- **Auth Middleware:** `api/internal/middleware/oauth2.go`
+**Core Logic:**
+- `api/internal/handlers/*.go` - API endpoints
+- `api/internal/websocket/manager.go` - Real-time communication
+- `api/internal/security/token_manager.go` - Token generation
 
-### Testing
-- No test files detected in the codebase
-- **Test locations:** Not applicable
+**Testing:**
+- No test files detected in current codebase
 
 ## Naming Conventions
 
-### Go Backend
+**Go Files:**
+- Pattern: `snake_case.go` for implementation files
+- Pattern: `*_test.go` for test files (not present)
+- Example: `printer_handler.go`, `printer_repository.go`
 
-**Files:**
-- `*_handler.go` - HTTP request handlers
-- `*_repository.go` - Database repositories
-- `*_service.go` - Business logic services
-- `*_test.go` - Test files (convention, none present)
+**TypeScript/TSX Files:**
+- Pattern: `PascalCase.tsx` for components
+- Pattern: `camelCase.ts` for utilities
+- Example: `Printers.tsx`, `api.ts`, `config.ts`
 
-**Types:**
-- `PascalCase` for exported types: `UserHandler`, `PrintJobRepository`
-- Constructor pattern: `NewUserHandler()`, `NewPrintJobRepository()`
-
-**Variables:**
-- `camelCase` for local variables
-- Abbreviations allowed: `db`, `cfg`, `repo`
-
-**Functions:**
-- `PascalCase` for exported: `CreateUser()`, `GetPrinterByID()`
-- `camelCase` for internal: `parsePaginationParams()`
-- Handler methods: `(h *Handler) MethodName()`
-- Repository methods: `(r *Repository) MethodName()`
-
-### React Frontend
-
-**Files:**
-- `PascalCase.tsx` for components: `Dashboard.tsx`, `UserManagement.tsx`
-- `camelCase.ts` for utilities: `api.ts`, `errorHandler.ts`
-
-**Components:**
-- Function components with hooks
-- Props interfaces defined inline
-- Default exports for pages
-
-**Variables:**
-- `camelCase` for variables and functions
-- `SCREAMING_SNAKE_CASE` for constants
+**Directories:**
+- Pattern: `snake_case` for Go packages
+- Example: `edge_node_handler.go` is in `handlers/` package
 
 ## Where to Add New Code
 
-### New API Endpoint
-1. **Handler:** Add method to existing handler in `api/internal/handlers/`
-2. **Routes:** Register in `api/cmd/server/main.go` `setupRoutes()` function
-3. **Model:** Add to `api/internal/models/` if new entity
-4. **Repository:** Add to `api/internal/database/` if database operation needed
+**New API Endpoint:**
+1. Add handler method to appropriate `api/internal/handlers/*_handler.go`
+2. Register route in `api/cmd/server/main.go` (setupRoutes function)
+3. Add model to `api/internal/models/` if new entity
+4. Add repository methods to `api/internal/database/*_repository.go`
 
-### New Entity (Full CRUD)
-1. **Model:** Create `api/internal/models/{entity}.go`
-2. **Repository:** Create `api/internal/database/{entity}_repository.go`
-3. **Handler:** Create `api/internal/handlers/{entity}_handler.go`
-4. **Routes:** Register in `api/cmd/server/main.go`
-5. **Migration:** Add table creation in `api/internal/database/database.go` `InitTables()`
+**New Repository:**
+1. Create `api/internal/database/<entity>_repository.go`
+2. Follow pattern: struct wrapping `*DB`, constructor `New<Entity>Repository`
+3. Implement CRUD methods returning concrete types
+4. Wire up in `api/cmd/server/main.go`
 
-### New WebSocket Message Type
-1. **Protocol:** Add to `api/internal/websocket/message.go`
-2. **Handler:** Add case in `api/internal/websocket/connection.go` `readLoop()`
-3. **Dispatcher:** Add method in `api/internal/websocket/manager.go`
+**New Frontend Page:**
+1. Create `admin/src/components/pages/<PageName>.tsx`
+2. Add route in `admin/src/App.tsx`
+3. Add menu item in `AdminApp` component
+4. Add API calls to `admin/src/services/api.ts` if needed
 
-### New Admin Page
-1. **Component:** Create `admin/src/components/pages/{PageName}.tsx`
-2. **Route:** Add to `admin/src/App.tsx` routes
-3. **Menu:** Add to menu items in `AdminApp` component
-4. **API:** Add endpoint calls in `admin/src/services/api.ts` if needed
-
-### New Middleware
-1. **Implementation:** Create in `api/internal/middleware/`
-2. **Registration:** Add to `api/cmd/server/main.go` middleware chain
-
-### Background Task
-1. **Implementation:** Add function in `api/cmd/server/main.go`
-2. **Startup:** Call with `go start{TaskName}Task(...)` in `main()`
+**New Middleware:**
+1. Create middleware function in `api/internal/middleware/`
+2. Follow Gin middleware signature: `func() gin.HandlerFunc`
+3. Apply in `api/cmd/server/main.go` route setup
 
 ## Special Directories
 
-### `api/internal/`
-- **Purpose:** Private application code (Go convention)
-- **Access:** Cannot be imported by external packages
-- **Contains:** All business logic
+**`api/internal/`:**
+- Purpose: Private application code (Go convention)
+- Importable only within `fly-print-cloud/api` module
+- Not exposed to external packages
 
-### `api/docs/`
-- **Purpose:** Swagger-generated API documentation
-- **Generated:** Yes (via swaggo)
-- **Committed:** Yes
+**`api/docs/`:**
+- Purpose: Swagger/OpenAPI documentation
+- Generated by swaggo (auto-generated, do not edit manually)
+- Committed: Yes (for API documentation availability)
 
-### `admin/build/` (generated)
-- **Purpose:** Production build output
-- **Generated:** Yes (via `npm run build`)
-- **Committed:** No (in .gitignore)
-- **Served:** By Nginx from volume mount
+**`nginx/ssl/`:**
+- Purpose: SSL certificates (currently disabled)
+- Generated: No (manual placement)
+- Committed: No (gitignored)
 
-### `nginx/ssl/`
-- **Purpose:** SSL certificate generation scripts
-- **Contains:** `generate_certs.sh`, `generate_certs.ps1`
-- **Note:** SSL currently disabled in docker-compose
+**`.planning/codebase/`:**
+- Purpose: Architecture documentation
+- Generated: No (manual)
+- Committed: Yes
+
+## File Size Reference
+
+Largest files (indicating complexity):
+1. `api/cmd/server/main.go` - 532 lines (bootstrap)
+2. `api/internal/database/database.go` - 559 lines (schema + migrations)
+3. `api/internal/handlers/printer_handler.go` - 604 lines
+4. `api/internal/websocket/manager.go` - 407 lines
+5. `api/internal/config/config.go` - 298 lines
+6. `admin/src/App.tsx` - 280 lines
+7. `admin/src/services/api.ts` - 238 lines
 
 ---
 
-*Structure analysis: 2025-03-17*
+*Structure analysis: 2026-03-18*

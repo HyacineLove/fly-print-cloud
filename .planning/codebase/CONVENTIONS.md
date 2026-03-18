@@ -1,140 +1,210 @@
 # Coding Conventions
 
-**Analysis Date:** 2026-03-17
+**Analysis Date:** 2025-03-18
 
-## Overview
+## Project Structure
 
-This codebase consists of a Go backend API (`api/`) and a React TypeScript frontend admin panel (`admin/`). Both follow distinct conventions appropriate to their ecosystems.
+This codebase contains two distinct projects:
+- **Frontend Admin (`admin/`)**: React + TypeScript SPA
+- **Backend API (`api/`)**: Go REST API service
 
----
+## Frontend Conventions (React/TypeScript)
 
-## Go Backend Conventions
-
-### File Organization
-
-**Package Structure:**
-- `cmd/server/` - Application entry point (`main.go`)
-- `internal/handlers/` - HTTP request handlers (Gin framework)
-- `internal/database/` - Repository pattern data access layer
-- `internal/models/` - Domain models/structs
-- `internal/middleware/` - HTTP middleware (auth, CORS, logging)
-- `internal/config/` - Configuration management (Viper-based)
-- `internal/auth/` - Authentication services
-- `internal/security/` - Security utilities (token management, validation)
-- `internal/logger/` - Structured logging (Zap)
-- `internal/websocket/` - WebSocket connection management
-- `internal/utils/` - Shared utilities (document validators)
-
-### Naming Conventions
+### Naming Patterns
 
 **Files:**
-- Snake_case for multi-word files: `user_handler.go`, `print_job_repository.go`
-- Singular nouns preferred: `handler.go` not `handlers.go` (except package level)
+- Components: PascalCase (e.g., `Dashboard.tsx`, `ErrorBoundary.tsx`)
+- Utilities: camelCase (e.g., `errorHandler.ts`, `config.ts`)
+- Services: camelCase (e.g., `api.ts`)
 
-**Types/Structs:**
-- PascalCase for exported types: `UserHandler`, `PrintJobRepository`
-- Acronyms in uppercase: `OAuth2Config`, `APIResponse`
+**Functions/Variables:**
+- Functions: camelCase (e.g., `handleError`, `buildApiUrl`)
+- Variables: camelCase (e.g., `apiService`, `dashboardService`)
+- React hooks: camelCase with `use` prefix (e.g., `useState`, `useEffect`)
 
-```go
-// From api/internal/handlers/user_handler.go
-type UserHandler struct {
-    userRepo *database.UserRepository
-}
+**Types/Interfaces:**
+- Interfaces: PascalCase (e.g., `User`, `ApiResponse`, `ErrorType`)
+- Enums: PascalCase (e.g., `ErrorType`)
+- Type aliases: PascalCase (e.g., `LoadingProps`)
 
-// From api/internal/models/models.go
-type PrintJob struct {
-    ID         string    `json:"id"`
-    Status     string    `json:"status"`
-}
-```
-
-**Functions:**
-- PascalCase for exported functions: `NewUserHandler()`, `GetUserByID()`
-- camelCase for unexported functions: `splitTrim()`, `matchWildcard()`
-- Constructor pattern: `NewXxx()` for creating instances
-- Getter pattern: `GetXxxByYyy()` for retrieval methods
-
-**Variables:**
-- camelCase for local variables: `userRepo`, `tokenManager`
-- ALL_CAPS for constants (only error codes currently): `ErrCodeUserNotFound`
+**CSS:**
+- Inline styles used exclusively via Ant Design components
+- No CSS/SCSS files detected in codebase
 
 ### Code Style
 
-**Imports Organization:**
-1. Standard library imports
-2. Internal project imports (with module path)
-3. Third-party imports (grouped by purpose)
+**Formatting:**
+- No Prettier configuration detected
+- Uses Create React App defaults
+- 2-space indentation observed in source files
 
-```go
-// From api/cmd/server/main.go
-import (
-    "context"
-    "fmt"
-    "net/http"
-    
-    "fly-print-cloud/api/internal/auth"
-    "fly-print-cloud/api/internal/config"
-    "fly-print-cloud/api/internal/database"
-    
-    "github.com/gin-gonic/gin"
-    "go.uber.org/zap"
-)
-```
-
-**Struct Tags:**
-- JSON tags use snake_case: `json:"created_at"`
-- Mapstructure tags for config: `mapstructure:"allowed_origins"`
-- Omit empty fields: `json:"deleted_at,omitempty"`
-
-**Error Handling:**
-- Wrapped errors with context: `fmt.Errorf("failed to create user: %w", err)`
-- Repository pattern returns `(*Model, error)` or `error`
-- Specific error types for domain errors (see `api/internal/handlers/errors.go`)
-
-```go
-// From api/internal/database/user_repository.go
-func (r *UserRepository) GetUserByID(id string) (*models.User, error) {
-    user := &models.User{}
-    err := r.db.QueryRow(query, id).Scan(...)
-    if err != nil {
-        if err == sql.ErrNoRows {
-            return nil, fmt.Errorf("user not found")
-        }
-        return nil, fmt.Errorf("failed to get user: %w", err)
-    }
-    return user, nil
+**Linting:**
+- ESLint configured via `admin/package.json`:
+```json
+"eslintConfig": {
+  "extends": [
+    "react-app",
+    "react-app/jest"
+  ]
 }
 ```
 
-### Error Code System
+**TypeScript Configuration (`admin/tsconfig.json`):**
+- Target: ES5
+- Strict mode: **OFF** (`"strict": false`)
+- Module: ESNext
+- JSX: react-jsx
 
-**File:** `api/internal/handlers/errors.go`
+### Import Organization
 
-Error codes are organized by domain:
-- `1000-1999`: General errors (BadRequest, Unauthorized, etc.)
-- `2000-2099`: User-related errors
-- `3000-3099`: Edge Node errors
-- `4000-4099`: Printer errors
-- `5000-5099`: Print Job errors
-- `6000-6099`: File errors
-- `7000-7099`: OAuth2 errors
+**Order (observed pattern):**
+1. React imports
+2. Third-party libraries (antd, react-router-dom)
+3. Icons (@ant-design/icons)
+4. Internal components
+5. Utilities/services
+6. Type imports
 
-```go
-const (
-    ErrCodeBadRequest     = 1000
-    ErrCodeUserNotFound   = 2000
-    ErrCodeEdgeNodeOffline = 3005
-)
+**Example from `admin/src/App.tsx`:**
+```typescript
+import React, { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { Layout, Menu } from 'antd';
+import { DashboardOutlined } from '@ant-design/icons';
+import Dashboard from './components/pages/Dashboard';
+import { handleError } from './utils/errorHandler';
 ```
 
-### Response Patterns
+### Error Handling
 
-**File:** `api/internal/handlers/response.go`
+**Frontend Pattern (`admin/src/utils/errorHandler.ts`):**
+- Centralized `ErrorHandler` class with static methods
+- Error types defined as enum: `NETWORK`, `AUTH`, `VALIDATION`, `SERVER`, `UNKNOWN`
+- HTTP status code mapping to user-friendly messages (Chinese)
+- Uses Ant Design `message` component for notifications
 
-Standardized API responses:
+```typescript
+// Usage pattern
+import { handleError, showSuccess } from '../utils/errorHandler';
 
+try {
+  await apiService.post('/endpoint', data);
+  showSuccess('操作成功');
+} catch (error) {
+  handleError(error);
+}
+```
+
+**Error Boundary Pattern (`admin/src/components/ErrorBoundary.tsx`):**
+- Class-based React Error Boundary
+- Displays fallback UI for runtime errors
+- Shows error details in development mode only
+
+### Logging
+
+**Frontend:**
+- Uses `console.error` for error logging
+- No structured logging framework detected
+- Ant Design message API for user-facing messages
+
+### Comments
+
+**Language:**
+- Mixed Chinese and English comments
+- Chinese comments dominate in business logic
+- English used for technical explanations
+
+**Style:**
+- JSDoc/TSDoc used sparingly
+- Section comments with `//` separators
+- TODO comments present (e.g., in ErrorBoundary)
+
+### Component Design
+
+**React Components:**
+- Functional components with hooks (primary pattern)
+- Class components only for Error Boundaries
+- Props interface naming: `{ComponentName}Props`
+
+**Example pattern:**
+```typescript
+interface LoadingProps extends SpinProps {
+  fullscreen?: boolean;
+  tip?: string;
+}
+
+const Loading: React.FC<LoadingProps> = ({ fullscreen = false, tip = '加载中...' }) => {
+  // implementation
+};
+```
+
+### API Service Pattern
+
+**Singleton Pattern (`admin/src/services/api.ts`):**
+- Single `ApiService` class instance exported
+- JWT token management built-in
+- Generic request methods: `get`, `post`, `put`, `delete`
+- Custom `ApiError` class for typed errors
+
+## Backend Conventions (Go)
+
+### Naming Patterns
+
+**Files:**
+- snake_case for multi-word files (e.g., `user_handler.go`, `token_manager.go`)
+
+**Types/Structs:**
+- PascalCase with descriptive names (e.g., `EdgeNode`, `PrintJob`)
+- Interface names: descriptive nouns
+
+**Functions:**
+- PascalCase for exported functions
+- camelCase for unexported (private) functions
+- Constructor pattern: `New{Type}` (e.g., `NewTokenManager`)
+
+**Variables:**
+- camelCase for local variables
+- Descriptive, full words preferred
+
+### Package Organization
+
+**Structure:**
+```
+api/
+  cmd/server/        # Application entry point
+  internal/
+    auth/           # Authentication services
+    config/         # Configuration management
+    database/       # Database repositories
+    handlers/       # HTTP handlers
+    logger/         # Logging utilities
+    middleware/     # HTTP middleware
+    models/         # Data models
+    security/       # Security utilities
+    utils/          # General utilities
+    websocket/      # WebSocket handlers
+```
+
+### Error Handling
+
+**Error Codes (`api/internal/handlers/errors.go`):**
+- Numeric error codes organized by domain:
+  - 1000-1999: General errors
+  - 2000-2099: User errors
+  - 3000-3099: Edge Node errors
+  - 4000-4099: Printer errors
+  - 5000-5099: Print Job errors
+  - 6000-6099: File errors
+  - 7000-7099: OAuth2 errors
+
+**Response Pattern (`api/internal/handlers/response.go`):**
 ```go
-// Success response
+type Response struct {
+    Code    int         `json:"code"`
+    Message string      `json:"message"`
+    Data    interface{} `json:"data,omitempty"`
+}
+
 func SuccessResponse(c *gin.Context, data interface{}) {
     c.JSON(http.StatusOK, Response{
         Code:    http.StatusOK,
@@ -142,30 +212,51 @@ func SuccessResponse(c *gin.Context, data interface{}) {
         Data:    data,
     })
 }
-
-// Error response
-func ErrorResponse(c *gin.Context, code int, message string) {
-    c.JSON(code, Response{
-        Code:    code,
-        Message: message,
-    })
-}
 ```
 
-**Pagination Pattern:**
-```go
-// From api/internal/handlers/common.go
-func ParsePaginationParams(c *gin.Context) (page, pageSize, offset int)
+### Logging
 
-// Response includes pagination metadata
-PaginatedSuccessResponse(c, items, total, page, pageSize)
+**Framework:** Uber Zap (`go.uber.org/zap`)
+
+**Pattern (`api/internal/logger/logger.go`):**
+- Global `Logger` and `Sugar` instances
+- Structured logging with fields
+- Helper functions: `Info`, `Error`, `Warn`, `Debug`, `Fatal`
+
+```go
+logger.Info("Starting application",
+    zap.String("name", cfg.App.Name),
+    zap.String("version", cfg.App.Version),
+)
+```
+
+### Model Definition
+
+**Pattern (`api/internal/models/models.go`):**
+- JSON tags for all fields
+- Pointer types for nullable fields (`*string`, `*float64`)
+- Snake_case JSON keys
+- Timestamps: `CreatedAt`, `UpdatedAt`
+- Soft delete: `DeletedAt *time.Time`
+
+```go
+type Printer struct {
+    ID           string   `json:"id"`
+    Name         string   `json:"name"`
+    Status       string   `json:"status"`
+    IPAddress    *string  `json:"ip_address"`  // Nullable
+    CreatedAt    time.Time `json:"created_at"`
+}
 ```
 
 ### Handler Pattern
 
-**Constructor Injection:**
+**Structure:**
+- Handler struct with dependencies injected
+- Constructor function returning pointer
+- Methods receive `*gin.Context`
+
 ```go
-// From api/internal/handlers/user_handler.go
 type UserHandler struct {
     userRepo *database.UserRepository
 }
@@ -173,241 +264,56 @@ type UserHandler struct {
 func NewUserHandler(userRepo *database.UserRepository) *UserHandler {
     return &UserHandler{userRepo: userRepo}
 }
-```
 
-**Request/Response Structs:**
-```go
-type CreateUserRequest struct {
-    Username string `json:"username" binding:"required,min=3,max=50"`
-    Email    string `json:"email" binding:"required,email"`
+func (h *UserHandler) ListUsers(c *gin.Context) {
+    // handler logic
 }
 ```
 
-### Repository Pattern
+### Middleware Pattern
 
-**File:** `api/internal/database/*.go`
-
-```go
-type UserRepository struct {
-    db *DB
-}
-
-func NewUserRepository(db *DB) *UserRepository
-func (r *UserRepository) CreateUser(user *models.User) error
-func (r *UserRepository) GetUserByID(id string) (*models.User, error)
-```
-
-### Logging
-
-**Framework:** Uber Zap (`go.uber.org/zap`)
-
-**File:** `api/internal/logger/logger.go`
-
-```go
-// Structured logging with fields
-logger.Info("User created", zap.String("username", user.Username))
-logger.Error("Database query failed", zap.Error(err), zap.String("query", query))
-```
+**Structure (`api/internal/middleware/common.go`):**
+- Functions return `gin.HandlerFunc`
+- Configuration passed as parameters
+- Chained via `c.Next()`
 
 ### Comments
 
-- Chinese comments for business logic
-- English for technical documentation
-- Swagger annotations for API documentation:
+**Language:**
+- Primarily Chinese comments
+- English for technical documentation (Swagger comments)
+- Package-level comments in Chinese
 
-```go
-// @Summary 获取当前用户信息
-// @Description 获取当前登录用户的详细信息
-// @Tags 用户管理
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} map[string]interface{}
-// @Router /api/v1/users/profile [get]
-```
+**Style:**
+- Section headers with descriptive comments
+- Inline comments explain business logic
 
----
-
-## TypeScript/React Frontend Conventions
-
-### File Organization
-
-**Admin Panel Structure:**
-- `src/components/pages/` - Page components (Dashboard, Users, etc.)
-- `src/components/` - Shared components (ErrorBoundary, Loading)
-- `src/services/` - API service layer (`api.ts`)
-- `src/utils/` - Utilities (errorHandler.ts)
-- `src/config.ts` - Configuration and URL builders
-
-### Naming Conventions
-
-**Files:**
-- PascalCase for components: `Dashboard.tsx`, `ErrorBoundary.tsx`
-- camelCase for utilities/services: `errorHandler.ts`, `api.ts`
-
-**Components:**
-- PascalCase for component names and their props interfaces
-
-```typescript
-// From admin/src/components/ErrorBoundary.tsx
-interface Props {
-  children: ReactNode;
-  fallback?: ReactNode;
-}
-
-interface State {
-  hasError: boolean;
-  error?: Error;
-}
-
-class ErrorBoundary extends Component<Props, State>
-```
-
-**Interfaces:**
-```typescript
-// From admin/src/components/pages/Dashboard.tsx
-interface DashboardStats {
-  totalPrinters: number;
-  onlinePrinters: number;
-}
-
-interface PrinterStatus {
-  id: string;
-  name: string;
-  status: 'ready' | 'printing' | 'error' | 'offline';
-}
-```
-
-### Code Style
-
-**Imports:**
-1. React imports
-2. Third-party libraries (antd, echarts)
-3. Local imports (relative paths)
-
-```typescript
-import React, { useState, useEffect } from 'react';
-import { Row, Col, Card } from 'antd';
-import * as echarts from 'echarts';
-import { buildApiUrl } from '../../config';
-```
-
-**TypeScript Configuration:**
-- Target: ES5
-- Strict mode: **disabled** (`"strict": false` in tsconfig.json)
-- Module: ESNext
-- JSX: react-jsx
-
-**Functional Components:**
-```typescript
-const Dashboard: React.FC = () => {
-  const [stats, setStats] = useState<DashboardStats>({...});
-  
-  useEffect(() => {
-    // Effect logic
-  }, []);
-  
-  return (...);
-};
-```
-
-### Error Handling
-
-**File:** `admin/src/utils/errorHandler.ts`
-
-Error types enum:
-```typescript
-export enum ErrorType {
-  NETWORK = 'NETWORK',
-  AUTH = 'AUTH',
-  VALIDATION = 'VALIDATION',
-  SERVER = 'SERVER',
-  UNKNOWN = 'UNKNOWN',
-}
-```
-
-Static utility class pattern:
-```typescript
-export class ErrorHandler {
-  static handleApiError(error: any, customMessage?: string): void
-  static showSuccess(content: string): void
-  static confirm(title: string, content?: string): Promise<boolean>
-}
-```
-
-### API Service Pattern
-
-**File:** `admin/src/services/api.ts`
-
-Singleton pattern with token management:
-```typescript
-class ApiService {
-  private token: string | null = null;
-  
-  async get<T>(endpoint: string): Promise<ApiResponse<T>>
-  async post<T>(endpoint: string, data?: any): Promise<ApiResponse<T>>
-  async uploadFile(file: File, uploadToken?: string): Promise<ApiResponse<any>>
-}
-
-export const apiService = new ApiService();
-```
-
-### Styling
-
-- Inline styles with TypeScript objects (no CSS modules or styled-components)
-- Ant Design components with style props
-
-```tsx
-<div style={{ 
-  display: 'flex', 
-  justifyContent: 'center',
-  minHeight: '100vh' 
-}}>
-```
-
----
-
-## Common Patterns
-
-### Dependency Injection
-
-**Go:** Constructor injection for repositories and handlers
-**React:** Context not used; props drilling or service singletons
+## Cross-Cutting Patterns
 
 ### Configuration
 
-**Go:** Viper-based YAML config with environment variable override
-**React:** Environment variables with `REACT_APP_` prefix
+**Frontend:**
+- Environment variables with `REACT_APP_` prefix
+- `config.ts` for URL building utilities
+- Runtime environment detection
 
-### Security
+**Backend:**
+- Viper for configuration management (`api/internal/config/config.go`)
+- YAML configuration files
+- Environment variable overrides
 
-- Passwords hashed with bcrypt (Go)
-- JWT tokens for authentication
-- CORS whitelist with wildcard pattern support
-- Input validation with `go-playground/validator`
+### Authentication
 
----
+**Frontend:**
+- JWT token stored in cookies
+- OAuth2 integration (Keycloak or builtin)
+- Token refresh via `/auth/me` endpoint
 
-## Where to Add New Code
-
-**New API Endpoint:**
-1. Add handler method to appropriate handler file in `api/internal/handlers/`
-2. Register route in `api/cmd/server/main.go` `setupRoutes()`
-3. Add Swagger annotations
-
-**New Database Entity:**
-1. Add model to `api/internal/models/models.go` or new file
-2. Create repository in `api/internal/database/`
-3. Initialize in `main.go`
-
-**New Admin Page:**
-1. Create component in `admin/src/components/pages/`
-2. Add route in `admin/src/App.tsx`
-3. Add menu item if needed
-
-**New API Service Method:**
-1. Add method to `admin/src/services/api.ts` ApiService class
+**Backend:**
+- OAuth2 Resource Server pattern
+- Scope-based access control (`admin:*`, `print:submit`, `edge:*`)
+- JWT validation middleware
 
 ---
 
-*Convention analysis: 2026-03-17*
+*Convention analysis: 2025-03-18*

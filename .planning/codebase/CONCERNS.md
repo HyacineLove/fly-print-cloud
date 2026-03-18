@@ -1,232 +1,233 @@
 # Codebase Concerns
 
-**Analysis Date:** 2025-03-17
+**Analysis Date:** 2025-03-18
 
 ## Tech Debt
 
-### Hardcoded Values
-- **File upload constraints**: Hardcoded constants in `api/internal/handlers/file_handler.go` lines 25-28:
-  - `uploadRuleMaxSizeBytes = 10 * 1024 * 1024` (10MB limit)
-  - `uploadRuleMaxPages = 5` (5 page limit)
-  - These should be configurable via `config.StorageConfig` but are hardcoded
+### JWT Token Signature Verification Bypass
+- **Issue:** JWT tokens are parsed without signature verification in `parseJWTToken()` function
+- **File:** `api/internal/middleware/oauth2.go` (lines 118-181)
+- **Code:** Uses `jwt.WithoutClaimsValidation()` and `parser.ParseUnverified()`
+- **Impact:** Client Credentials Flow tokens are accepted without cryptographic verification, enabling token forgery
+- **Fix approach:** Add proper JWT signature verification using JWKS endpoint or shared secret
 
-- **WebSocket timeout values**: Hardcoded in `api/internal/websocket/manager.go`:
-  - Line 70: `time.Sleep(500 * time.Millisecond)` - connection stabilization delay
-  - Line 90: `time.Sleep(100 * time.Millisecond)` - job dispatch throttling
-  - Line 329: `10*time.Second` - ACK timeout for print job dispatch
-  - Line 199: `time.Sleep(100 * time.Millisecond)` - disconnect notification delay
+### Type Assertion Error Handling Gaps
+- **Issue:** Multiple type assertions without proper ok-check patterns
+- **Files:**
+  - `api/internal/websocket/connection.go` (lines 271-293, msg.Data type assertions)
+  - `api/internal/middleware/oauth2.go` (lines 134-145, claims extraction)
+- **Impact:** Panic on malformed input instead of graceful error handling
+- **Fix approach:** Use `value, ok := interface.(Type)` pattern consistently with proper error returns
 
-- **Database connection pool**: Hardcoded in `api/internal/database/database.go` lines 37-39:
-  - `SetMaxOpenConns(25)`
-  - `SetMaxIdleConns(5)`
-  - `SetConnMaxLifetime(5 * time.Minute)`
+### Database Connection String in DSN
+- **Issue:** Password visible in connection string returned by `GetDSN()`
+- **File:** `api/internal/config/config.go` (lines 290-293)
+- **Impact:** Credentials may be logged if DSN is printed for debugging
+- **Fix approach:** Use connection string with environment variables or secrets manager
 
-- **Edge node offline timeout**: Hardcoded 3 minutes in multiple locations:
-  - `api/internal/handlers/edge_node_handler.go` line 198
-  - Used in `CheckAndUpdateOfflineNodes(3)` calls
-
-- **Token TTL defaults**: Hardcoded in `api/internal/security/token_manager.go` line 25:
-  - `DefaultTokenTTL = 180` (3 minutes)
-
-### Error String Matching
-- **Fragile error checking**: In `api/internal/security/token_manager.go` lines 270-275 and 361-367:
-  - Error messages compared by string: `err.Error() == "token has already been used"`
-  - Error messages compared by string: `err.Error() == "token has been revoked"`
-  - Should use typed errors or error codes instead
-
-### SQL String Building
-- **Dynamic SQL construction**: In multiple repository files:
-  - `api/internal/database/edge_node_repository.go` lines 285-317: Dynamic ORDER BY and LIMIT clauses built with string concatenation
-  - `api/internal/database/print_job_repository.go` lines 104-155: Dynamic WHERE clause building with fmt.Sprintf
-  - While parameterized queries are used for values, the structure is still dynamically built
-
-### TODO Comment
-- **Missing error logging**: In `admin/src/components/ErrorBoundary.tsx` line 44:
-  - `// TODO: 可以在这里发送错误日志到服务器`
-  - Error boundary logs to console but never sends to server
+### Hardcoded Default Secrets
+- **Issue:** Default secrets present in code for development convenience
+- **Files:**
+  - `api/internal/config/config.go` (line 261, 284: default JWT and file access secrets)
+  - `api/internal/security/token_manager.go` (line 28: DefaultSecret constant)
+- **Impact:** Production deployments may accidentally use weak default secrets
+- **Fix approach:** Enforce mandatory secrets in production (validation already present, but defaults still in code)
 
 ## Known Issues
 
-### Console/Debug Logging in Production
-- **Excessive console logging**: Multiple `console.log` and `console.error` calls in admin React code:
-  - `admin/src/components/pages/EdgeNodes.tsx`: Lines 76, 81, 84, 87 (debug logging with emojis)
-  - `admin/src/components/pages/*.tsx`: Multiple components log errors to console
-  - These should be removed or use a proper logging service in production
+### WebSocket Connection ACK Timeout Handling
+- **Issue:** ACK timeout for print job dispatch rolls back status but race condition possible
+- **File:** `api/internal/websocket/manager.go` (lines 327-344)
+- **Symptoms:** Job status may be inconsistent if ACK arrives after timeout but before rollback
+- **Trigger:** Network latency > 10 seconds during print job dispatch
+- **Workaround:** Automatic retry mechanism exists but may cause duplicate job dispatch
 
-- **Backend fmt.Printf usage**: In `api/internal/handlers/file_handler.go` line 177:
-  - `fmt.Printf("Failed to dispatch preview to node %s: %v\n", nodeID, err)`
-  - Should use structured logger (zap) like other parts of codebase
+### File Upload Token Race Condition
+- **Issue:** Two-phase token validation in file upload allows TOCTOU attack window
+- **File:** `api/internal/handlers/file_handler.go` (lines 46-150)
+- **Symptoms:** Token validated twice - lightweight check before file save, full validation after
+- **Impact:** Malicious user could potentially replay token between phases
+- **Fix approach:** Single atomic token validation or use single-use token bucket
 
-- **OAuth2 handler fmt.Printf**: In `api/internal/handlers/oauth2_handler.go` lines 244, 259:
-  - User sync errors printed with fmt.Printf instead of logger
+### Database Query N+1 Pattern
+- **Issue:** Printer listing queries edge node status individually for each printer
+- **File:** `api/internal/handlers/printer_handler.go` (lines 217-229)
+- **Impact:** O(n) database queries for n printers, performance degradation at scale
+- **Fix approach:** Use JOIN query or batch fetch edge node statuses
 
-### JWT Token Parsing Without Verification
-- **Security concern**: In `api/internal/middleware/oauth2.go` line 120-121:
-  - `parser := jwt.NewParser(jwt.WithoutClaimsValidation())`
-  - Token signature not verified when parsing JWT
-  - Relies on Keycloak UserInfo endpoint for actual validation
-  - Comment acknowledges this: "解析 JWT token（跳过签名验证）"
+### Memory Store Rate Limiter
+- **Issue:** Rate limiter uses in-memory store without persistence
+- **File:** `api/cmd/server/main.go` (lines 166-168)
+- **Impact:** Rate limits reset on server restart, not shared across replicas
+- **Fix approach:** Use Redis-backed store for distributed rate limiting
 
-### Missing Context Cancellation
-- **HTTP client without timeout**: In `api/internal/middleware/oauth2.go` line 200:
-  - `http.DefaultClient.Do(req)` uses default client without timeout
-  - Could hang indefinitely if UserInfo endpoint is unresponsive
+## Security Considerations
 
-### Potential Resource Leak
-- **File handle in file handler**: In `api/internal/handlers/file_handler.go`:
-  - Line 100: `defer srcFile.Close()` inside Upload handler
-  - If `c.FormFile("file")` succeeds but `fileHeader.Open()` fails, the original form file may not be closed
-  - Actually uses `srcFile` which is from `fileHeader.Open()`, but error handling at line 96-99 doesn't close
+### CORS Wildcard Origins in Development
+- **Risk:** Development configuration allows broad private network CORS origins
+- **File:** `.env.example` (line 93)
+- **Current mitigation:** Only affects development mode, production requires explicit configuration
+- **Recommendations:** Add CORS origin validation warnings in deployment checklist
 
-### Incomplete Error Handling
-- **Silent failures**: In `api/internal/database/database.go` lines 316-320:
-  - Migration errors logged as warnings but don't stop execution
-  - Could lead to inconsistent database state
+### File Upload Path Traversal
+- **Risk:** File upload uses original filename without full sanitization
+- **File:** `api/internal/handlers/file_handler.go` (line 120)
+- **Current mitigation:** `security.SanitizeFilename()` function exists but implementation not verified
+- **Recommendations:** Audit `SanitizeFilename` implementation for path traversal protection
 
-## Security Concerns
+### SQL Injection via Dynamic Queries
+- **Risk:** Raw SQL construction in database migrations
+- **File:** `api/internal/database/database.go` (lines 307-321, migrations)
+- **Current mitigation:** Migrations are hardcoded, not user-input
+- **Recommendations:** Use parameterized queries consistently
 
-### Default Secrets in Code
-- **Development-only secrets**: In `api/internal/config/config.go`:
-  - Line 261: `viper.SetDefault("oauth2.jwt_signing_secret", "fly-print-jwt-secret-dev-only")`
-  - Line 284: `viper.SetDefault("security.file_access_secret", "fly-print-file-access-secret-dev-only")`
-  - While validation exists in `Validate()` method, defaults are weak
+### Missing Request Body Size Limits
+- **Risk:** No explicit request body size limit on non-file endpoints
+- **Impact:** Potential DoS via large JSON payloads
+- **Recommendations:** Add middleware to limit request body size for all routes
 
-### Token Manager Default Secret
-- **Fallback to insecure default**: In `api/internal/security/token_manager.go` lines 90-92:
-  - `if secret == "" { secret = DefaultSecret }`
-  - `DefaultSecret = "fly-print-file-access-secret-dev-only"`
-  - Should fail closed rather than fallback to weak default
+## Performance Bottlenecks
 
-### SQL Injection Risk (Low)
-- **Dynamic ORDER BY**: In `api/internal/database/edge_node_repository.go` lines 280-297:
-  - `orderClause` built from user input (`sortBy` parameter)
-  - While validated against whitelist, still risky pattern
-  - Similar pattern in `ListEdgeNodes` query building
+### Synchronous Database Operations
+- **Problem:** All database operations are synchronous, blocking goroutines
+- **Files:** All repository files in `api/internal/database/`
+- **Cause:** Uses standard `database/sql` without context cancellation support
+- **Improvement path:** Add context support to all DB operations for timeout/cancellation
 
-### Missing Input Sanitization
-- **MAC address not validated**: In `api/internal/handlers/edge_node_handler.go`:
-  - MAC address stored from request without format validation
-  - Should validate against pattern like `^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$`
+### WebSocket Broadcast Lock Contention
+- **Problem:** Broadcast operations hold read lock while iterating all connections
+- **File:** `api/internal/websocket/manager.go` (lines 122-135)
+- **Cause:** `broadcastMessage()` locks mutex during full iteration
+- **Improvement path:** Use lock-free channels or sharded connection maps
 
-- **Filename sanitization limited**: In `api/internal/security/validation.go` lines 164-175:
-  - `SanitizeFilename` only removes dangerous chars but doesn't prevent path traversal completely
-  - Should also validate against known safe patterns
-
-### CORS Configuration
-- **Overly permissive defaults**: In `api/internal/config/config.go` lines 251-257:
-  - Multiple localhost origins allowed by default
-  - Includes `http://localhost:8012` for development convenience
-  - Could be exploited in development environments
-
-## Performance Issues
-
-### Database Query Inefficiency
-- **N+1 query pattern**: In `api/internal/handlers/edge_node_handler.go` lines 210-214:
-  - `printerRepo.CountPrintersByEdgeNode(node.ID)` called in loop for each node
-  - Should use JOIN or batch count query
-  - Similar pattern in lines 259-262
-
-- **Pagination without cursor**: In `api/internal/database/print_job_repository.go`:
-  - Standard OFFSET/LIMIT pagination used
-  - Performance degrades with large offsets
-  - Should consider keyset pagination for large tables
-
-### Memory Usage
-- **File upload to memory**: In `api/internal/handlers/file_handler.go`:
-  - `c.SaveUploadedFile()` likely buffers entire file
-  - No streaming upload support
-  - Could exhaust memory with concurrent large uploads
-
-### WebSocket Message Broadcasting
-- **No message queue**: In `api/internal/websocket/manager.go` line 122-135:
-  - `broadcastMessage` iterates all connections synchronously
-  - Slow consumer could block broadcast to other nodes
-  - No backpressure handling
+### File Upload Validation Reads Entire File
+- **Problem:** Page count validation reads entire PDF into memory
+- **File:** `api/internal/utils/document_validator.go` (lines 54-67)
+- **Cause:** `pdfcpu` library may buffer large files
+- **Improvement path:** Stream validation or size limits before validation
 
 ## Fragile Areas
 
-### Race Conditions
-- **Token revocation race**: In `api/internal/security/token_manager.go`:
-  - Lines 112-126: Old tokens revoked before new token generated
-  - Lines 162-176: Similar race for download tokens
-  - If revoke succeeds but generation fails, node has no valid tokens
+### WebSocket Connection Lifecycle Management
+- **Files:**
+  - `api/internal/websocket/connection.go` (lines 70-117, ReadPump/WritePump)
+  - `api/internal/websocket/manager.go` (lines 54-118, register/unregister)
+- **Why fragile:** Complex goroutine coordination with multiple channel operations
+- **Safe modification:** Always use defer for cleanup, respect channel closing patterns
+- **Test coverage:** No unit tests found for WebSocket connection handling
 
-- **WebSocket connection replacement**: In `api/internal/websocket/manager.go` lines 59-64:
-  - Old connection closed after new connection registered
-  - Brief window where both could exist
+### OAuth2 Token Validation Dual-Path
+- **File:** `api/internal/middleware/oauth2.go` (lines 107-115)
+- **Why fragile:** Two different validation paths (JWT parse vs UserInfo) with different behavior
+- **Safe modification:** Ensure both paths extract identical claims and scopes
+- **Test coverage:** Limited test coverage for token edge cases
 
-### Inconsistent Error Handling
-- **Mixed error response formats**: Throughout API:
-  - Some handlers use `ErrorResponseWithCode` with numeric codes
-  - Others return raw gin.H{"error": "message"}
-  - Some return localized Chinese messages, others English
+### Database Transaction Error Handling
+- **File:** `api/internal/database/database.go` (lines 64-87)
+- **Why fragile:** Generic error wrapping may hide underlying PostgreSQL error codes
+- **Safe modification:** Check for specific error types and handle accordingly
+- **Test coverage:** No transaction rollback scenario tests
 
-- **Silent failure pattern**: In `api/internal/handlers/print_job_handler.go` lines 203-213:
-  - Print job dispatch failure logged but not returned to client
-  - Client receives 201 Created but job may not actually dispatch
+### Job Retry Mechanism State Machine
+- **File:** `api/cmd/server/main.go` (lines 431-531)
+- **Why fragile:** Complex state transitions between pending/dispatched/printing/completed/failed
+- **Safe modification:** Use explicit state machine with validation
+- **Test coverage:** No retry scenario tests
 
-### Magic Numbers
-- **Status code confusion**: In `api/internal/handlers/file_handler.go`:
-  - Line 14: Hardcoded `len("/api/v1/files/") = 14` for file ID extraction
-  - Same in `api/internal/websocket/manager.go` lines 238-240, 294-296
-  - Should use constant or strings.LastIndex
+## Scaling Limits
+
+### Single WebSocket Manager Instance
+- **Current capacity:** Single goroutine manages all connections
+- **Limit:** Memory and goroutine limits of single process
+- **Scaling path:** Shard connections by node_id across multiple manager instances
+
+### In-Memory Rate Limiter
+- **Current capacity:** ~10 req/s per instance (configurable)
+- **Limit:** Memory usage scales with unique client count
+- **Scaling path:** Use Redis or other distributed store
+
+### File Upload Directory
+- **Current capacity:** Local filesystem
+- **Limit:** Single server disk space
+- **Scaling path:** Use object storage (S3, MinIO) for file storage
+
+### PostgreSQL Connection Pool
+- **Current configuration:** 25 max open connections (hardcoded in `database.go` line 37)
+- **Limit:** Database server connection limit
+- **Scaling path:** Use connection pooler (PgBouncer) or increase pool size
+
+## Dependencies at Risk
+
+### pdfcpu (PDF processing)
+- **Risk:** Heavy dependency for simple page count validation
+- **Impact:** Large binary size, potential memory issues with malformed PDFs
+- **Migration plan:** Consider lighter PDF libraries or service-based validation
+
+### gorilla/websocket (WebSocket library)
+- **Risk:** Project maintenance status - gorilla toolkit is community maintained
+- **Impact:** Future security patches may be delayed
+- **Migration plan:** Monitor for alternatives (nhooyr/websocket) but stable for now
+
+### ulule/limiter (Rate limiting)
+- **Risk:** Smaller project, limited maintenance
+- **Impact:** Feature gaps for distributed rate limiting
+- **Migration plan:** Evaluate tollbooth or Redis-based solutions
 
 ## Missing Critical Features
 
-### No Rate Limiting
-- **Missing protection**: No rate limiting found on:
-  - Token generation endpoints
-  - File upload endpoints
-  - Edge node registration
-  - OAuth2 endpoints
+### Health Check Deep Validation
+- **Problem:** `/health` endpoint returns basic status without dependency checks
+- **File:** `api/internal/handlers/health_handler.go`
+- **What's missing:** Database connectivity, WebSocket status, external service health
 
-### No Request Timeout
-- **Missing timeouts**: HTTP handlers don't set request timeouts
-- Could allow long-running requests to consume resources
+### Request Logging Middleware
+- **Problem:** No structured request logging with timing
+- **What's missing:** HTTP request/response logging, latency tracking, request ID propagation
 
-### No Input Size Validation
-- **Missing limits**: Most request structs don't have size limits on string fields
-- Could allow DoS via very large payloads
+### Database Migration Tooling
+- **Problem:** Schema migrations embedded in application startup
+- **File:** `api/internal/database/database.go` (lines 307-321)
+- **What's missing:** Versioned migrations, rollback capability, migration locking
 
-### No Audit Logging
-- **Missing audit trail**: No centralized audit logging for:
-  - Administrative actions (create/delete edge nodes)
-  - Print job submissions
-  - File uploads/downloads
-  - Authentication events
+### Circuit Breaker Pattern
+- **Problem:** No protection against cascading failures
+- **What's missing:** Circuit breaker for external calls, especially OAuth2 UserInfo endpoint
 
 ## Test Coverage Gaps
 
 ### No Test Files Found
-- **Missing tests**: No `*_test.go` files found in API codebase
-- **No React tests**: No `*.test.tsx` or `*.spec.tsx` files found
+- **Status:** Zero `*_test.go` files in entire codebase
+- **High-risk untested areas:**
+  - WebSocket connection handling (`api/internal/websocket/`)
+  - OAuth2 token validation (`api/internal/middleware/oauth2.go`)
+  - Database repository operations (`api/internal/database/*_repository.go`)
+  - File upload/download handlers (`api/internal/handlers/file_handler.go`)
+  - Token generation and validation (`api/internal/security/token_manager.go`)
 
-### Critical Paths Untested
-- **Token validation logic**: Complex one-time token flow has no automated tests
-- **WebSocket message handling**: Connection lifecycle not tested
-- **OAuth2 integration**: Both builtin and Keycloak modes need tests
-- **File upload validation**: Magic byte detection and page counting
+### Missing Integration Tests
+- **Untested scenarios:**
+  - End-to-end print job flow
+  - Edge node registration and heartbeat
+  - File upload with token validation
+  - OAuth2 authentication flows (both builtin and Keycloak modes)
 
-## Recommendations
+### Manual Testing Only Areas
+- **Document page validation** (`api/internal/utils/document_validator.go`)
+- **Database transaction handling**
+- **WebSocket reconnection and message retry**
 
-### Immediate (High Priority)
-1. Remove or secure all development-only secrets
-2. Add rate limiting to authentication and file upload endpoints
-3. Fix JWT signature verification in middleware
-4. Add proper error handling for WebSocket dispatch failures
+## Documentation Gaps
 
-### Short Term
-1. Make all hardcoded timeouts configurable
-2. Add comprehensive audit logging
-3. Implement request timeouts on all handlers
-4. Add database query optimization for N+1 patterns
+### API Documentation
+- **File:** `api/docs/docs.go` (Swagger generated)
+- **Gap:** No manual API documentation for edge cases and error responses
 
-### Long Term
-1. Add comprehensive test suite (unit, integration, e2e)
-2. Implement message queue for WebSocket broadcasts
-3. Add streaming file upload support
-4. Consider implementing cursor-based pagination
+### Deployment Documentation
+- **Gap:** No production deployment checklist or security hardening guide
+
+### Architecture Decision Records
+- **Gap:** No ADRs documenting why specific patterns were chosen
 
 ---
 
-*Concerns audit: 2025-03-17*
+*Concerns audit: 2025-03-18*

@@ -1,467 +1,329 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-03-17
+**Analysis Date:** 2025-03-18
 
-## Current State
+## Overview
 
-**No tests exist in this codebase.** This document describes the testing setup, recommended patterns, and how to add tests.
+**Critical Finding: No tests detected in this codebase.**
 
----
+This codebase currently has **zero test coverage**. No unit tests, integration tests, or end-to-end tests were found in either the frontend (`admin/`) or backend (`api/`) components.
 
-## Backend Testing (Go)
+## Frontend Testing Status
 
-### Testing Framework
+### Test Framework
 
-**Standard:** Go's built-in `testing` package
-**Recommended additions:**
-- `github.com/stretchr/testify` - Assertions and test utilities
-- `github.com/DATA-DOG/go-sqlmock` - Database mocking
-- `github.com/golang/mock` or `gomock` - Interface mocking
+**Installed but Unused:**
+- **Testing Library**: `@testing-library/jest-dom@^5.16.4`, `@testing-library/react@^13.3.0`, `@testing-library/user-event@^13.5.0`
+- **Jest**: Included via `react-scripts` (Create React App)
+- **Types**: `@types/jest@^27.5.2`
+
+**Configuration:**
+- ESLint extends `react-app/jest` (configured in `admin/package.json`)
+- No custom Jest configuration detected
+- No test scripts beyond default CRA `react-scripts test`
 
 ### Test File Locations
 
-**Co-located with source files:**
+**Expected but Not Found:**
+- No `*.test.ts` or `*.test.tsx` files
+- No `*.spec.ts` or `*.spec.tsx` files
+- No `__tests__/` directories
+- No `src/setupTests.ts` or similar setup files
+
+### Run Commands (Standard CRA)
+
+```bash
+# From admin/ directory
+npm test              # Run tests in watch mode
+npm test -- --coverage # Run with coverage report
+npm test -- --watchAll=false # Run once (CI mode)
 ```
-api/internal/handlers/user_handler.go
-api/internal/handlers/user_handler_test.go
 
-api/internal/database/user_repository.go
-api/internal/database/user_repository_test.go
+**Note:** Commands exist but will report "No tests found" if executed.
+
+## Backend Testing Status
+
+### Test Framework
+
+**Not Configured:**
+- No `*_test.go` files found
+- No testing dependencies in `go.mod`
+- No test utilities or helper packages
+
+**Standard Go Testing Available:**
+- Go's built-in `testing` package is available
+- No external testing libraries (testify, ginkgo, etc.)
+
+### Test File Locations
+
+**Expected but Not Found:**
+- No `*_test.go` files in any package
+- No testdata directories
+- No benchmark files (`*_benchmark.go`)
+
+### Run Commands (Standard Go)
+
+```bash
+# From api/ directory
+go test ./...         # Run all tests
+go test -v ./...      # Run with verbose output
+go test -cover ./...  # Run with coverage
+go test -race ./...   # Run with race detector
 ```
 
-### Test Structure
+**Note:** Commands will report "no test files" if executed.
 
+## Testing Recommendations
+
+### Priority Areas for Testing
+
+**1. Backend API Handlers (`api/internal/handlers/`)**
+Files to test:
+- `user_handler.go` - User CRUD operations
+- `edge_node_handler.go` - Edge node management
+- `printer_handler.go` - Printer operations
+- `print_job_handler.go` - Print job lifecycle
+- `oauth2_handler.go` - Authentication flows
+- `file_handler.go` - File upload/download
+
+**2. Critical Business Logic**
+Files to test:
+- `api/internal/security/token_manager.go` - Token generation/validation
+- `api/internal/auth/builtin_auth_service.go` - Authentication service
+- `api/internal/websocket/manager.go` - WebSocket connection management
+
+**3. Frontend Components (`admin/src/components/`)**
+Components to test:
+- `ErrorBoundary.tsx` - Error handling behavior
+- `Loading.tsx` - Loading state rendering
+- `pages/Login.tsx` - Authentication flow
+- `pages/Dashboard.tsx` - Data fetching and display
+
+**4. Service Layer (`admin/src/services/`)**
+- `api.ts` - API client methods, error handling
+
+### Recommended Testing Approach
+
+#### Backend (Go)
+
+**Unit Tests for Handlers:**
 ```go
+// api/internal/handlers/user_handler_test.go
 package handlers
 
 import (
+    "net/http"
+    "net/http/httptest"
     "testing"
+
+    "github.com/gin-gonic/gin"
     "github.com/stretchr/testify/assert"
     "github.com/stretchr/testify/mock"
 )
 
-func TestUserHandler_CreateUser(t *testing.T) {
-    // Arrange
-    mockRepo := new(mockUserRepository)
+func TestUserHandler_ListUsers(t *testing.T) {
+    gin.SetMode(gin.TestMode)
+    
+    // Setup mock repository
+    mockRepo := new(MockUserRepository)
+    mockRepo.On("ListUsers").Return([]models.User{}, nil)
+    
     handler := NewUserHandler(mockRepo)
     
-    // Act
-    // ... execute handler
-    
-    // Assert
-    assert.Equal(t, expected, actual)
-}
-
-func TestUserHandler_CreateUser_ValidationError(t *testing.T) {
-    // Test error cases separately
-}
-```
-
-### Repository Testing Pattern
-
-**File:** Would be in `api/internal/database/*_test.go`
-
-```go
-func TestUserRepository_CreateUser(t *testing.T) {
-    db, mock, err := sqlmock.New()
-    if err != nil {
-        t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
-    }
-    defer db.Close()
-    
-    repo := NewUserRepository(&DB{db})
-    
-    // Set expectations
-    mock.ExpectQuery("INSERT INTO users").
-        WithArgs("testuser", "test@test.com", sqlmock.AnyArg(), "admin", "active").
-        WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
-            AddRow("uuid", time.Now(), time.Now()))
-    
-    user := &models.User{
-        Username: "testuser",
-        Email:    "test@test.com",
-        // ...
-    }
-    
-    err = repo.CreateUser(user)
-    assert.NoError(t, err)
-    assert.NoError(t, mock.ExpectationsWereMet())
-}
-```
-
-### Handler Testing Pattern
-
-**File:** Would be in `api/internal/handlers/*_test.go`
-
-```go
-func TestUserHandler_ListUsers(t *testing.T) {
-    // Setup Gin test context
     w := httptest.NewRecorder()
     c, _ := gin.CreateTestContext(w)
     
-    // Mock repository
-    mockRepo := new(MockUserRepository)
-    mockRepo.On("ListUsers", 0, 10).Return([]*models.User{{ID: "1", Username: "test"}}, 1, nil)
-    
-    handler := NewUserHandler(mockRepo)
     handler.ListUsers(c)
     
-    assert.Equal(t, 200, w.Code)
-    // Assert response body
+    assert.Equal(t, http.StatusOK, w.Code)
 }
 ```
 
-### Integration Testing
+**Integration Tests:**
+- Test database repository methods with real database
+- Test middleware chains
+- Test WebSocket connections
 
-**Location:** `api/tests/integration/`
+#### Frontend (React/TypeScript)
 
-```go
-func TestAPI_CreateUserIntegration(t *testing.T) {
-    // Start test server with test database
-    // Make HTTP requests
-    // Assert responses
-}
-```
-
-### Recommended Test Commands
-
-```bash
-# Run all tests
-cd api && go test ./...
-
-# Run with coverage
-go test -cover ./...
-
-# Run specific package
-go test ./internal/handlers/...
-
-# Verbose output
-go test -v ./...
-
-# Race detection
-go test -race ./...
-```
-
----
-
-## Frontend Testing (React/TypeScript)
-
-### Testing Framework
-
-**Currently configured:**
-- Jest (via react-scripts)
-- React Testing Library (`@testing-library/react`)
-- User Event (`@testing-library/user-event`)
-- Jest DOM matchers (`@testing-library/jest-dom`)
-
-**Configuration:** Already in `admin/package.json`:
-```json
-"scripts": {
-  "test": "react-scripts test"
-},
-"eslintConfig": {
-  "extends": [
-    "react-app",
-    "react-app/jest"
-  ]
-}
-```
-
-### Test File Locations
-
-**Co-located with components:**
-```
-admin/src/components/pages/Dashboard.tsx
-admin/src/components/pages/Dashboard.test.tsx
-
-admin/src/services/api.ts
-admin/src/services/api.test.ts
-```
-
-### Component Testing Pattern
-
+**Component Tests:**
 ```typescript
-// Dashboard.test.tsx
-import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
-import Dashboard from './Dashboard';
+// admin/src/components/Loading.test.tsx
+import { render, screen } from '@testing-library/react';
+import Loading from './Loading';
 
-// Mock the fetch API
-global.fetch = jest.fn();
-
-describe('Dashboard', () => {
-  beforeEach(() => {
-    (fetch as jest.Mock).mockClear();
+describe('Loading', () => {
+  it('renders fullscreen loading', () => {
+    render(<Loading fullscreen tip="Loading..." />);
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
   });
 
-  it('renders loading state initially', () => {
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    );
-    expect(screen.getByText('加载中...')).toBeInTheDocument();
-  });
-
-  it('displays stats after loading', async () => {
-    (fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        code: 200,
-        data: { items: [] },
-        pagination: { total: 0 }
-      })
-    });
-
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('打印机总数')).toBeInTheDocument();
-    });
+  it('renders inline loading', () => {
+    render(<Loading tip="Saving..." />);
+    expect(screen.getByText('Saving...')).toBeInTheDocument();
   });
 });
 ```
 
-### Service Testing Pattern
-
+**Service Tests:**
 ```typescript
-// api.test.ts
-import { apiService } from './api';
+// admin/src/services/api.test.ts
+import apiService from './api';
 
 describe('ApiService', () => {
   beforeEach(() => {
-    fetch.mockClear();
+    fetchMock.resetMocks();
   });
 
-  describe('get', () => {
-    it('makes GET request with auth header', async () => {
-      fetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ code: 200, data: {} })
-      });
-
-      await apiService.get('/admin/users');
-
-      expect(fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/admin/users'),
-        expect.objectContaining({
-          method: 'GET',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json'
-          })
-        })
-      );
-    });
+  it('makes GET request', async () => {
+    fetchMock.mockResponseOnce(JSON.stringify({ code: 200, data: [] }));
+    
+    const result = await apiService.get('/test');
+    
+    expect(result.code).toBe(200);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/test'),
+      expect.any(Object)
+    );
   });
 });
 ```
 
-### Error Handler Testing
+## Test Structure Guidelines
 
-```typescript
-// errorHandler.test.ts
-import { ErrorHandler, ErrorType } from './errorHandler';
+### When Adding Tests, Follow These Patterns:
 
-describe('ErrorHandler', () => {
-  describe('getErrorType', () => {
-    it('returns AUTH for 401', () => {
-      expect(ErrorHandler.getErrorType(401)).toBe(ErrorType.AUTH);
-    });
-
-    it('returns SERVER for 500', () => {
-      expect(ErrorHandler.getErrorType(500)).toBe(ErrorType.SERVER);
-    });
-  });
-});
+**Backend Test Organization:**
+```
+api/
+  internal/
+    handlers/
+      user_handler.go
+      user_handler_test.go      # Co-located test file
+    database/
+      user_repository.go
+      user_repository_test.go
 ```
 
-### Recommended Test Commands
-
-```bash
-# Run all tests
-cd admin && npm test
-
-# Run in CI mode
-npm test -- --watchAll=false
-
-# Run with coverage
-npm test -- --coverage
-
-# Run specific file
-npm test -- Dashboard.test.tsx
+**Frontend Test Organization:**
+```
+admin/src/
+  components/
+    Loading.tsx
+    Loading.test.tsx           # Co-located test file
+    pages/
+      Dashboard.tsx
+      Dashboard.test.tsx
 ```
 
----
+### Naming Conventions for Tests
 
-## Test Coverage Goals
+**Go:**
+- Test functions: `Test{FunctionName}` (e.g., `TestUserHandler_ListUsers`)
+- Table-driven tests for multiple cases
+- Subtests with `t.Run()` for organization
 
-### Backend (Go)
-
-**Critical paths to cover:**
-- `api/internal/handlers/*` - HTTP handlers (highest priority)
-- `api/internal/database/*` - Repository layer
-- `api/internal/auth/*` - Authentication logic
-- `api/internal/security/*` - Token validation, encryption
-- `api/internal/middleware/*` - Auth middleware, CORS
-
-**Recommended coverage targets:**
-- Handlers: 80%+
-- Repositories: 70%+
-- Services (auth, security): 90%+
-- Utilities: 60%+
-
-### Frontend (React)
-
-**Critical paths to cover:**
-- `admin/src/services/api.ts` - API communication
-- `admin/src/utils/errorHandler.ts` - Error handling logic
-- `admin/src/components/ErrorBoundary.tsx` - Error boundary
-- Form validation logic in page components
-
-**Recommended coverage targets:**
-- Services: 80%+
-- Utilities: 70%+
-- Components: 50%+ (critical paths only)
-
----
+**TypeScript:**
+- Test files: `{filename}.test.ts` or `{filename}.spec.ts`
+- Describe blocks: Component or function name
+- Test cases: descriptive strings
 
 ## Mocking Strategy
 
-### Backend
+### Backend (Go)
 
-**Database:**
-- Use `sqlmock` for repository tests
-- Use in-memory SQLite for integration tests
+**Repository Mocking:**
+```go
+type MockUserRepository struct {
+    mock.Mock
+}
 
-**External Services:**
-- Mock OAuth2 provider responses
-- Mock WebSocket connections
-- Mock file storage operations
-
-### Frontend
-
-**API Calls:**
-```typescript
-// Mock global fetch
-global.fetch = jest.fn();
-
-// Setup mock response
-(fetch as jest.Mock).mockResolvedValueOnce({
-  ok: true,
-  json: async () => ({ code: 200, data: mockData })
-});
+func (m *MockUserRepository) GetUserByID(id string) (*models.User, error) {
+    args := m.Called(id)
+    return args.Get(0).(*models.User), args.Error(1)
+}
 ```
 
-**Ant Design Components:**
+**HTTP Testing:**
+- Use `gin.CreateTestContext()` for handler tests
+- Use `httptest.NewRecorder()` for response capture
+
+### Frontend (TypeScript)
+
+**Fetch Mocking:**
 ```typescript
-jest.mock('antd', () => ({
-  message: {
-    error: jest.fn(),
-    success: jest.fn()
-  },
-  Modal: {
-    confirm: jest.fn()
-  }
+// Use jest-fetch-mock or similar
+global.fetch = jest.fn();
+```
+
+**Service Mocking:**
+```typescript
+jest.mock('../services/api', () => ({
+  get: jest.fn().mockResolvedValue({ code: 200, data: [] }),
 }));
 ```
 
----
+## Coverage Goals
 
-## E2E Testing
+**Recommended Minimum Coverage:**
+- Handlers: 80%
+- Services: 70%
+- Utilities: 60%
+- Components: 50%
 
-**Not currently configured.** Recommended setup:
-
-### Options
-
-1. **Cypress** - Full E2E testing
-2. **Playwright** - Modern E2E testing
-3. **Go test with httptest** - API-level integration
-
-### Recommended E2E Scenarios
-
-- User login flow
-- Create print job end-to-end
-- Edge node registration flow
-- File upload and download
-
----
-
-## Adding New Tests
-
-### Backend
-
-**1. Create test file:**
-```bash
-touch api/internal/handlers/user_handler_test.go
-```
-
-**2. Add dependencies:**
-```bash
-cd api && go get github.com/stretchr/testify
-```
-
-**3. Write tests following patterns above**
-
-### Frontend
-
-**1. Create test file alongside component:**
-```bash
-touch admin/src/components/pages/Users.test.tsx
-```
-
-**2. Run tests:**
-```bash
-cd admin && npm test
-```
-
----
+**Critical Paths to Cover:**
+1. Authentication flows (login, logout, token refresh)
+2. Print job lifecycle (create, dispatch, complete, fail)
+3. File upload/download
+4. Edge node registration and heartbeat
+5. Error handling paths
 
 ## CI/CD Integration
 
-**Recommended GitHub Actions workflow:**
+**When Tests Are Added:**
 
+Add to GitHub Actions or similar:
 ```yaml
-name: Tests
-on: [push, pull_request]
+- name: Run Backend Tests
+  working-directory: ./api
+  run: go test -v -race -coverprofile=coverage.out ./...
 
-jobs:
-  backend-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v4
-        with:
-          go-version: '1.25'
-      - run: cd api && go test -v -race -cover ./...
-
-  frontend-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-      - run: cd admin && npm ci
-      - run: npm test -- --watchAll=false --coverage
+- name: Run Frontend Tests
+  working-directory: ./admin
+  run: npm test -- --coverage --watchAll=false
 ```
 
+## Testing Tools to Consider
+
+**Backend:**
+- `github.com/stretchr/testify` - Assertions and mocks
+- `github.com/DATA-DOG/go-sqlmock` - Database mocking
+- `github.com/gavv/httpexpect` - HTTP testing
+
+**Frontend:**
+- `msw` (Mock Service Worker) - API mocking
+- `@testing-library/react-hooks` - Hook testing
+- `jest-fetch-mock` - Fetch mocking
+
+## Current Testing Gaps
+
+**High Risk - No Tests:**
+- `admin/src/services/api.ts` - Core API communication
+- `api/internal/security/token_manager.go` - Security-critical code
+- `api/internal/websocket/manager.go` - Real-time communication
+- `api/internal/handlers/oauth2_handler.go` - Authentication
+
+**Medium Risk - No Tests:**
+- All React components
+- Database repository methods
+- Configuration loading
+- Middleware chains
+
+**Low Risk - No Tests:**
+- Utility functions
+- Static configuration
+- Type definitions
+
 ---
 
-## Testing Gaps
-
-**Current untested areas (high priority):**
-
-1. **Authentication flow** - `api/internal/auth/`, `api/internal/middleware/oauth2.go`
-2. **Token management** - `api/internal/security/token_manager.go`
-3. **Database operations** - All repository methods
-4. **WebSocket handling** - `api/internal/websocket/`
-5. **File upload/download** - `api/internal/handlers/file_handler.go`
-6. **API error handling** - Frontend error handler utility
-
----
-
-*Testing analysis: 2026-03-17*
+*Testing analysis: 2025-03-18*
