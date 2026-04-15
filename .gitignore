@@ -1,9 +1,38 @@
 .env
 .vscode
-node_modules/
 config.yaml
-package-lock.json
 go.sum
 uploads/
 *.exe
 test-data/
+
+.qoder
+ai_docs/
+
+# Test directory - excluded from version control
+test/
+
+# ========== api 目录下不需要推到云端的文件 ==========
+api/config.yaml
+api/uploads/
+api/*.log
+api/main
+api/api-server
+api/coverage.out
+api/__debug_bin*
+
+# ========== admin 目录下不需要推到云端的文件 ==========
+admin/node_modules/
+admin/build/
+admin/dist/
+admin/.env
+admin/.env.local
+admin/.env.development.local
+admin/.env.test.local
+admin/.env.production.local
+admin/coverage/
+admin/.DS_Store
+admin/npm-debug.log*
+admin/.cache/
+api/tests/__pycache__/
+nul

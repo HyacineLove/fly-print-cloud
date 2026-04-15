@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
+
+	"go.uber.org/zap"
 )
 
 type PrinterRepository struct {
@@ -30,14 +34,14 @@ func (r *PrinterRepository) CreatePrinter(printer *models.Printer) error {
 		                     latitude, longitude, location, capabilities, edge_node_id, queue_length)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		RETURNING created_at, updated_at`
-	
+
 	err = r.db.QueryRow(query,
 		printer.ID, printer.Name, printer.DisplayName, printer.Model, printer.SerialNumber, printer.Status,
 		printer.FirmwareVersion, printer.PortInfo, printer.IPAddress, printer.MACAddress,
 		printer.NetworkConfig, printer.Latitude, printer.Longitude, printer.Location,
 		capabilitiesJSON, printer.EdgeNodeID, printer.QueueLength,
 	).Scan(&printer.CreatedAt, &printer.UpdatedAt)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to create printer: %w", err)
 	}
@@ -51,12 +55,12 @@ func (r *PrinterRepository) GetPrinterByNameAndEdgeNode(name, edgeNodeID string)
 		       ip_address, mac_address, network_config, latitude, longitude, location,
 		       capabilities, edge_node_id, queue_length, created_at, updated_at
 		FROM printers 
-		WHERE name = $1 AND edge_node_id = $2`
-	
+		WHERE name = $1 AND edge_node_id = $2 AND deleted_at IS NULL`
+
 	var printer models.Printer
 	var capabilitiesJSON []byte
 	var firmwareVersion, portInfo sql.NullString
-	
+
 	var displayName sql.NullString
 	err := r.db.QueryRow(query, name, edgeNodeID).Scan(
 		&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.Status, &printer.Enabled,
@@ -65,11 +69,11 @@ func (r *PrinterRepository) GetPrinterByNameAndEdgeNode(name, edgeNodeID string)
 		&capabilitiesJSON, &printer.EdgeNodeID, &printer.QueueLength,
 		&printer.CreatedAt, &printer.UpdatedAt,
 	)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get printer by name and edge node: %w", err)
 	}
-	
+
 	// 处理可能为 NULL 的字段
 	if firmwareVersion.Valid {
 		printer.FirmwareVersion = firmwareVersion.String
@@ -80,14 +84,14 @@ func (r *PrinterRepository) GetPrinterByNameAndEdgeNode(name, edgeNodeID string)
 	if displayName.Valid {
 		printer.DisplayName = displayName.String
 	}
-	
+
 	// 解析 capabilities JSON
 	if len(capabilitiesJSON) > 0 {
 		if err := json.Unmarshal(capabilitiesJSON, &printer.Capabilities); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal capabilities: %w", err)
 		}
 	}
-	
+
 	return &printer, nil
 }
 
@@ -97,14 +101,14 @@ func (r *PrinterRepository) GetPrinterByID(printerID string) (*models.Printer, e
 		SELECT id, name, display_name, model, serial_number, status, enabled, firmware_version, port_info,
 		       ip_address, mac_address, network_config, latitude, longitude, location,
 		       capabilities, edge_node_id, queue_length, created_at, updated_at
-		FROM printers WHERE id = $1`
-	
+		FROM printers WHERE id = $1 AND deleted_at IS NULL`
+
 	printer := &models.Printer{}
 	var ipAddress sql.NullString
 	var firmwareVersion sql.NullString
 	var displayName sql.NullString
 	var capabilitiesJSON []byte
-	
+
 	err := r.db.QueryRow(query, printerID).Scan(
 		&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.Status, &printer.Enabled,
 		&firmwareVersion, &printer.PortInfo, &ipAddress, &printer.MACAddress,
@@ -112,14 +116,14 @@ func (r *PrinterRepository) GetPrinterByID(printerID string) (*models.Printer, e
 		&capabilitiesJSON, &printer.EdgeNodeID, &printer.QueueLength,
 		&printer.CreatedAt, &printer.UpdatedAt,
 	)
-	
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("printer not found")
 		}
 		return nil, fmt.Errorf("failed to get printer: %w", err)
 	}
-	
+
 	// 处理可空字段
 	if ipAddress.Valid {
 		printer.IPAddress = &ipAddress.String
@@ -130,42 +134,43 @@ func (r *PrinterRepository) GetPrinterByID(printerID string) (*models.Printer, e
 	if displayName.Valid {
 		printer.DisplayName = displayName.String
 	}
-	
+
 	// 解析 JSON capabilities
 	if err := json.Unmarshal(capabilitiesJSON, &printer.Capabilities); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal capabilities: %w", err)
 	}
-	
+
 	return printer, nil
 }
 
 // ListPrinters 获取打印机列表
 func (r *PrinterRepository) ListPrinters(page, pageSize int) ([]*models.Printer, int, error) {
 	offset := (page - 1) * pageSize
-	
+
 	// 获取总数
 	var total int
-	countQuery := `SELECT COUNT(*) FROM printers`
+	countQuery := `SELECT COUNT(*) FROM printers WHERE deleted_at IS NULL`
 	err := r.db.QueryRow(countQuery).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get printer count: %w", err)
 	}
-	
+
 	// 获取分页数据
 	query := `
 		SELECT id, name, display_name, model, serial_number, status, enabled, firmware_version, port_info,
 		       ip_address, mac_address, network_config, latitude, longitude, location,
 		       capabilities, edge_node_id, queue_length, created_at, updated_at
 		FROM printers 
+		WHERE deleted_at IS NULL
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2`
-	
+
 	rows, err := r.db.Query(query, pageSize, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list printers: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var printers []*models.Printer
 	for rows.Next() {
 		printer := &models.Printer{}
@@ -173,7 +178,7 @@ func (r *PrinterRepository) ListPrinters(page, pageSize int) ([]*models.Printer,
 		var firmwareVersion sql.NullString
 		var displayName sql.NullString
 		var capabilitiesJSON []byte
-		
+
 		err := rows.Scan(
 			&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.Status, &printer.Enabled,
 			&firmwareVersion, &printer.PortInfo, &ipAddress, &printer.MACAddress,
@@ -184,7 +189,7 @@ func (r *PrinterRepository) ListPrinters(page, pageSize int) ([]*models.Printer,
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan printer: %w", err)
 		}
-		
+
 		// 处理可空字段
 		if ipAddress.Valid {
 			printer.IPAddress = &ipAddress.String
@@ -195,28 +200,28 @@ func (r *PrinterRepository) ListPrinters(page, pageSize int) ([]*models.Printer,
 		if displayName.Valid {
 			printer.DisplayName = displayName.String
 		}
-		
+
 		// 解析 JSON capabilities
 		if err := json.Unmarshal(capabilitiesJSON, &printer.Capabilities); err != nil {
 			return nil, 0, fmt.Errorf("failed to unmarshal capabilities: %w", err)
 		}
-		
+
 		printers = append(printers, printer)
 	}
-	
+
 	return printers, total, nil
 }
 
 // CountPrintersByEdgeNode 统计边缘节点的打印机数量
 func (r *PrinterRepository) CountPrintersByEdgeNode(edgeNodeID string) (int, error) {
-	query := `SELECT COUNT(*) FROM printers WHERE edge_node_id = $1`
-	
+	query := `SELECT COUNT(*) FROM printers WHERE edge_node_id = $1 AND deleted_at IS NULL`
+
 	var count int
 	err := r.db.QueryRow(query, edgeNodeID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count printers by edge node: %w", err)
 	}
-	
+
 	return count, nil
 }
 
@@ -227,15 +232,15 @@ func (r *PrinterRepository) ListPrintersByEdgeNode(edgeNodeID string) ([]*models
 		       ip_address, mac_address, network_config, latitude, longitude, location,
 		       capabilities, edge_node_id, queue_length, created_at, updated_at
 		FROM printers 
-		WHERE edge_node_id = $1
+		WHERE edge_node_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC`
-	
+
 	rows, err := r.db.Query(query, edgeNodeID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list printers: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var printers []*models.Printer
 	for rows.Next() {
 		printer := &models.Printer{}
@@ -243,7 +248,7 @@ func (r *PrinterRepository) ListPrintersByEdgeNode(edgeNodeID string) ([]*models
 		var firmwareVersion sql.NullString
 		var displayName sql.NullString
 		var capabilitiesJSON []byte
-		
+
 		err := rows.Scan(
 			&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.Status, &printer.Enabled,
 			&firmwareVersion, &printer.PortInfo, &ipAddress, &printer.MACAddress,
@@ -254,7 +259,7 @@ func (r *PrinterRepository) ListPrintersByEdgeNode(edgeNodeID string) ([]*models
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan printer: %w", err)
 		}
-		
+
 		// 处理可空字段
 		if ipAddress.Valid {
 			printer.IPAddress = &ipAddress.String
@@ -265,15 +270,15 @@ func (r *PrinterRepository) ListPrintersByEdgeNode(edgeNodeID string) ([]*models
 		if displayName.Valid {
 			printer.DisplayName = displayName.String
 		}
-		
+
 		// 解析 JSON capabilities
 		if err := json.Unmarshal(capabilitiesJSON, &printer.Capabilities); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal capabilities: %w", err)
 		}
-		
+
 		printers = append(printers, printer)
 	}
-	
+
 	return printers, nil
 }
 
@@ -293,14 +298,14 @@ func (r *PrinterRepository) UpdatePrinter(printer *models.Printer) error {
 		    queue_length = $17, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING updated_at`
-	
+
 	err = r.db.QueryRow(query,
 		printer.ID, printer.Name, printer.DisplayName, printer.Model, printer.SerialNumber, printer.Status, printer.Enabled,
 		printer.FirmwareVersion, printer.PortInfo, printer.IPAddress, printer.MACAddress,
 		printer.NetworkConfig, printer.Latitude, printer.Longitude, printer.Location,
 		capabilitiesJSON, printer.QueueLength,
 	).Scan(&printer.UpdatedAt)
-	
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("printer not found")
@@ -310,24 +315,24 @@ func (r *PrinterRepository) UpdatePrinter(printer *models.Printer) error {
 	return nil
 }
 
-// DeletePrinter 删除打印机
+// DeletePrinter 删除打印机（软删除）
 func (r *PrinterRepository) DeletePrinter(printerID string) error {
-	query := `DELETE FROM printers WHERE id = $1`
-	
+	query := `UPDATE printers SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL`
+
 	result, err := r.db.Exec(query, printerID)
 	if err != nil {
 		return fmt.Errorf("failed to delete printer: %w", err)
 	}
-	
+
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to get affected rows: %w", err)
 	}
-	
+
 	if rowsAffected == 0 {
 		return fmt.Errorf("printer not found")
 	}
-	
+
 	return nil
 }
 
@@ -415,3 +420,29 @@ func (r *PrinterRepository) EnablePrintersByEdgeNode(edgeNodeID string) error {
 	return err
 }
 
+// DeletePrintersByEdgeNode 删除指定Edge Node下的所有打印机
+// 用于节点软删除时级联删除打印机
+func (r *PrinterRepository) DeletePrintersByEdgeNode(edgeNodeID string) error {
+	query := `DELETE FROM printers WHERE edge_node_id = $1`
+	result, err := r.db.DB.Exec(query, edgeNodeID)
+	if err != nil {
+		return fmt.Errorf("failed to delete printers by edge node: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	logger.Info("Deleted printers for edge node", zap.Int64("count", rowsAffected), zap.String("edge_node_id", edgeNodeID))
+	return nil
+}
+
+// DeletePrintersByEdgeNodeTx 删除指定Edge Node下的所有打印机（使用事务）
+func (r *PrinterRepository) DeletePrintersByEdgeNodeTx(tx *Tx, edgeNodeID string) error {
+	query := `DELETE FROM printers WHERE edge_node_id = $1`
+	result, err := tx.Exec(query, edgeNodeID)
+	if err != nil {
+		return fmt.Errorf("failed to delete printers by edge node in transaction: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	logger.Info("Deleted printers for edge node in transaction", zap.Int64("count", rowsAffected), zap.String("edge_node_id", edgeNodeID))
+	return nil
+}

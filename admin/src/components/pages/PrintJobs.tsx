@@ -1,13 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Table, Tag, Space, Button, Select, Input, message, Popconfirm, Modal, Form, InputNumber, Radio } from 'antd';
+import { Card, Table, Tag, Space, Button, Select, message, DatePicker, Popconfirm } from 'antd';
 import { 
   ReloadOutlined,
-  SearchOutlined,
-  DeleteOutlined,
   FileTextOutlined,
   UserOutlined,
-  PrinterOutlined
+  PrinterOutlined,
+  ClusterOutlined
 } from '@ant-design/icons';
+import type { Dayjs } from 'dayjs';
+import { buildApiUrl, buildAuthUrl } from '../../config';
+
+const { RangePicker } = DatePicker;
 
 // 打印任务接口定义
 interface PrintJob {
@@ -15,6 +18,7 @@ interface PrintJob {
   name: string;
   user_name: string;
   printer_id: string;
+  edge_node_id: string;  // 新增：节点ID
   status: 'pending' | 'dispatched' | 'downloading' | 'printing' | 'completed' | 'failed' | 'cancelled';
   created_at: string;
   updated_at: string;
@@ -42,38 +46,11 @@ interface EdgeNode {
   status: string;
 }
 
-// Printer 接口
-interface Printer {
-  id: string;
-  name: string;
-  display_name: string;
-  status: string;
-  edge_node_id: string;
-  capabilities: {
-    paper_sizes: string[];
-    color_support: boolean;
-    duplex_support: boolean;
-    resolution: string;
-    print_speed: string;
-    media_types: string[];
-  };
-}
-
-// 重新打印表单数据
-interface ReprintFormData {
-  edge_node_id: string;
-  printer_id: string;
-  copies: number;
-  color_mode: 'color' | 'grayscale';
-  duplex_mode: 'single' | 'duplex';
-  paper_size: string;
-}
-
 // Print Jobs 服务类
 class PrintJobsService {
   async getToken(): Promise<string | null> {
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -86,12 +63,28 @@ class PrintJobsService {
     return null;
   }
 
-  async getPrintJobs(page = 1, pageSize = 10, status = ''): Promise<{ jobs: PrintJob[]; total: number; page: number; pageSize: number }> {
+  async getPrintJobs(
+    page = 1, 
+    pageSize = 10, 
+    status = '', 
+    edgeNodeId = '',
+    startTime = '',
+    endTime = ''
+  ): Promise<{ jobs: PrintJob[]; total: number; page: number; pageSize: number }> {
     try {
       const token = await this.getToken();
-      let url = `/api/v1/admin/print-jobs?page=${page}&pageSize=${pageSize}`;
+      let url = buildApiUrl(`/admin/print-jobs?page=${page}&pageSize=${pageSize}`);
       if (status) {
         url += `&status=${status}`;
+      }
+      if (edgeNodeId) {
+        url += `&edge_node_id=${edgeNodeId}`;
+      }
+      if (startTime) {
+        url += `&start_time=${encodeURIComponent(startTime)}`;
+      }
+      if (endTime) {
+        url += `&end_time=${encodeURIComponent(endTime)}`;
       }
       
       const response = await fetch(url, {
@@ -121,6 +114,47 @@ class PrintJobsService {
       pageSize: pageSize
     };
   }
+
+  // 获取 Edge Nodes 列表
+  async getEdgeNodes(): Promise<EdgeNode[]> {
+    try {
+      const token = await this.getToken();
+      const response = await fetch(buildApiUrl('/admin/edge-nodes'), {
+        headers: {
+          ...(token && { 'Authorization': `Bearer ${token}` }),
+        },
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        return result.data?.items || [];
+      }
+    } catch (error) {
+      console.error('获取Edge Nodes失败:', error);
+    }
+    return [];
+  }
+
+  async cancelPrintJob(jobId: string): Promise<void> {
+    const token = await this.getToken();
+    const response = await fetch(buildApiUrl(`/admin/print-jobs/${jobId}/cancel`), {
+      method: 'POST',
+      headers: {
+        ...(token && { 'Authorization': `Bearer ${token}` }),
+      },
+    });
+
+    if (!response.ok) {
+      let errorMessage = '取消打印任务失败';
+      try {
+        const result = await response.json();
+        errorMessage = result?.message || result?.error || errorMessage;
+      } catch {
+        // keep default message when response body is not json
+      }
+      throw new Error(errorMessage);
+    }
+  }
 }
 
 const printJobsService = new PrintJobsService();
@@ -130,24 +164,26 @@ const PrintJobs: React.FC = () => {
   const [printJobs, setPrintJobs] = useState<PrintJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [edgeNodeFilter, setEdgeNodeFilter] = useState<string>('');
+  const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [total, setTotal] = useState(0);
-  
-  // 重新打印Modal相关状态
-  const [reprintModalVisible, setReprintModalVisible] = useState(false);
-  const [reprintJob, setReprintJob] = useState<PrintJob | null>(null);
   const [edgeNodes, setEdgeNodes] = useState<EdgeNode[]>([]);
-  const [printers, setPrinters] = useState<Printer[]>([]);
-  const [selectedEdgeNodeId, setSelectedEdgeNodeId] = useState<string>('');
-  const [selectedPrinter, setSelectedPrinter] = useState<Printer | null>(null);
-  const [form] = Form.useForm();
+  const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
 
   // 加载打印任务数据
-  const loadPrintJobs = async (page = 1, size = 10, status = '') => {
+  const loadPrintJobs = async (
+    page = 1, 
+    size = 10, 
+    status = '', 
+    edgeNodeId = '',
+    startTime = '',
+    endTime = ''
+  ) => {
     try {
       setLoading(true);
-      const result = await printJobsService.getPrintJobs(page, size, status);
+      const result = await printJobsService.getPrintJobs(page, size, status, edgeNodeId, startTime, endTime);
       setPrintJobs(result.jobs.map(job => ({ ...job, key: job.id })));
       setTotal(result.total);
       setCurrentPage(page);
@@ -160,8 +196,15 @@ const PrintJobs: React.FC = () => {
     }
   };
 
+  // 加载Edge Nodes
+  const loadEdgeNodes = async () => {
+    const nodes = await printJobsService.getEdgeNodes();
+    setEdgeNodes(nodes);
+  };
+
   useEffect(() => {
-    loadPrintJobs(currentPage, pageSize, statusFilter);
+    loadPrintJobs(currentPage, pageSize, statusFilter, edgeNodeFilter);
+    loadEdgeNodes();
   }, []);
 
   // 状态标签映射
@@ -190,7 +233,40 @@ const PrintJobs: React.FC = () => {
   const handleStatusChange = (value: string) => {
     setStatusFilter(value);
     setCurrentPage(1);
-    loadPrintJobs(1, pageSize, value);
+    const [startTime, endTime] = getDateRangeStrings();
+    loadPrintJobs(1, pageSize, value, edgeNodeFilter, startTime, endTime);
+  };
+
+  // 处理节点筛选
+  const handleEdgeNodeChange = (value: string) => {
+    setEdgeNodeFilter(value);
+    setCurrentPage(1);
+    const [startTime, endTime] = getDateRangeStrings();
+    loadPrintJobs(1, pageSize, statusFilter, value, startTime, endTime);
+  };
+
+  // 处理日期范围变化
+  const handleDateRangeChange = (dates: [Dayjs | null, Dayjs | null] | null) => {
+    setDateRange(dates);
+    setCurrentPage(1);
+    let startTime = '';
+    let endTime = '';
+    if (dates && dates[0] && dates[1]) {
+      startTime = dates[0].format('YYYY-MM-DD HH:mm');
+      endTime = dates[1].format('YYYY-MM-DD HH:mm');
+    }
+    loadPrintJobs(1, pageSize, statusFilter, edgeNodeFilter, startTime, endTime);
+  };
+
+  // 获取日期范围字符串
+  const getDateRangeStrings = (): [string, string] => {
+    if (dateRange && dateRange[0] && dateRange[1]) {
+      return [
+        dateRange[0].format('YYYY-MM-DD HH:mm'),
+        dateRange[1].format('YYYY-MM-DD HH:mm')
+      ];
+    }
+    return ['', ''];
   };
 
   // 处理分页变化
@@ -198,198 +274,32 @@ const PrintJobs: React.FC = () => {
     const newSize = size || pageSize;
     setCurrentPage(page);
     setPageSize(newSize);
-    loadPrintJobs(page, newSize, statusFilter);
+    const [startTime, endTime] = getDateRangeStrings();
+    loadPrintJobs(page, newSize, statusFilter, edgeNodeFilter, startTime, endTime);
   };
 
   // 刷新数据
   const handleRefresh = () => {
-    loadPrintJobs(currentPage, pageSize, statusFilter);
+    const [startTime, endTime] = getDateRangeStrings();
+    loadPrintJobs(currentPage, pageSize, statusFilter, edgeNodeFilter, startTime, endTime);
   };
 
-  // 删除任务
-  const handleDeleteJob = async (jobId: string) => {
+  const canCancel = (status: string) => {
+    return status === 'pending' || status === 'dispatched' || status === 'printing';
+  };
+
+  const handleCancelJob = async (job: PrintJob) => {
     try {
-      const token = await printJobsService.getToken();
-      const response = await fetch(`/api/v1/admin/print-jobs/${jobId}`, {
-        method: 'DELETE',
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-      });
-      
-      if (response.ok) {
-        message.success('删除任务成功');
-        loadPrintJobs(currentPage, pageSize, statusFilter);
-      } else {
-        message.error('删除任务失败');
-      }
+      setCancellingJobId(job.id);
+      await printJobsService.cancelPrintJob(job.id);
+      message.success('任务已取消');
+      const [startTime, endTime] = getDateRangeStrings();
+      await loadPrintJobs(currentPage, pageSize, statusFilter, edgeNodeFilter, startTime, endTime);
     } catch (error) {
-      console.error('删除任务失败:', error);
-      message.error('删除任务失败');
-    }
-  };
-
-  // 取消任务
-  const handleCancelJob = async (jobId: string) => {
-    try {
-      const token = await printJobsService.getToken();
-      const response = await fetch(`/api/v1/admin/print-jobs/${jobId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-        body: JSON.stringify({ status: 'cancelled' }),
-      });
-      
-      if (response.ok) {
-        message.success('取消任务成功');
-        loadPrintJobs(currentPage, pageSize, statusFilter);
-      } else {
-        message.error('取消任务失败');
-      }
-    } catch (error) {
-      console.error('取消任务失败:', error);
-      message.error('取消任务失败');
-    }
-  };
-
-  // 打开重新打印Modal
-  const handleReprintJob = async (job: PrintJob) => {
-    setReprintJob(job);
-    setReprintModalVisible(true);
-    
-    // 加载Edge Nodes
-    await loadEdgeNodes();
-    
-    // 预设表单默认值
-    form.setFieldsValue({
-      edge_node_id: '', // 需要用户选择
-      printer_id: job.printer_id,
-      copies: job.copies || 1,
-      color_mode: job.color_mode || 'grayscale',
-      duplex_mode: job.duplex_mode || 'single',
-      paper_size: job.paper_size || 'A4',
-    });
-  };
-
-  // 加载Edge Nodes
-  const loadEdgeNodes = async () => {
-    try {
-      const token = await printJobsService.getToken();
-      const response = await fetch('/api/v1/admin/edge-nodes', {
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        setEdgeNodes(result.data?.items || []);
-      }
-    } catch (error) {
-      console.error('加载Edge Nodes失败:', error);
-    }
-  };
-
-  // 加载指定Edge Node的打印机
-  const loadPrinters = async (edgeNodeId: string) => {
-    try {
-      const token = await printJobsService.getToken();
-      const response = await fetch(`/api/v1/admin/printers?edge_node_id=${edgeNodeId}`, {
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        setPrinters(result.data?.items || []);
-      }
-    } catch (error) {
-      console.error('加载打印机失败:', error);
-    }
-  };
-
-  // Edge Node选择变化
-  const handleEdgeNodeChange = (edgeNodeId: string) => {
-    setSelectedEdgeNodeId(edgeNodeId);
-    setSelectedPrinter(null); // 清空选中的打印机
-    form.setFieldsValue({ printer_id: '' }); // 清空打印机选择
-    loadPrinters(edgeNodeId);
-  };
-
-  // 打印机选择变化
-  const handlePrinterChange = (printerId: string) => {
-    const printer = printers.find(p => p.id === printerId);
-    setSelectedPrinter(printer || null);
-    
-    // 确保表单中的printer_id正确设置
-    form.setFieldsValue({ printer_id: printerId });
-    
-    // 根据打印机能力调整表单值
-    if (printer) {
-      const formValues = form.getFieldsValue();
-      const updates: any = {};
-      
-      // 如果打印机不支持彩色，强制设为黑白
-      if (!printer.capabilities.color_support && formValues.color_mode === 'color') {
-        updates.color_mode = 'grayscale';
-      }
-      
-      // 如果打印机不支持双面，强制设为单面
-      if (!printer.capabilities.duplex_support && formValues.duplex_mode === 'duplex') {
-        updates.duplex_mode = 'single';
-      }
-      
-      // 如果当前纸张大小不支持，设为第一个支持的纸张大小
-      if (printer.capabilities.paper_sizes.length > 0 && 
-          !printer.capabilities.paper_sizes.includes(formValues.paper_size)) {
-        updates.paper_size = printer.capabilities.paper_sizes[0];
-      }
-      
-      // 批量更新表单值
-      if (Object.keys(updates).length > 0) {
-        form.setFieldsValue(updates);
-      }
-    }
-  };
-
-  // 提交重新打印
-  const handleReprintSubmit = async (values: ReprintFormData) => {
-    if (!reprintJob) return;
-
-    try {
-      const token = await printJobsService.getToken();
-      const response = await fetch(`/api/v1/admin/print-jobs/${reprintJob.id}/reprint`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-        body: JSON.stringify({
-          printer_id: values.printer_id,
-          copies: values.copies,
-          paper_size: values.paper_size,
-          color_mode: values.color_mode,
-          duplex_mode: values.duplex_mode,
-        }),
-      });
-      
-      if (response.ok) {
-        message.success('重新打印任务创建成功');
-        setReprintModalVisible(false);
-        setSelectedPrinter(null);
-        setSelectedEdgeNodeId('');
-        form.resetFields();
-        loadPrintJobs(currentPage, pageSize, statusFilter);
-      } else {
-        const result = await response.json();
-        message.error(result.error || '重新打印任务创建失败');
-      }
-    } catch (error) {
-      console.error('重新打印任务失败:', error);
-      message.error('重新打印任务失败');
+      const errorMessage = error instanceof Error ? error.message : '取消打印任务失败';
+      message.error(errorMessage);
+    } finally {
+      setCancellingJobId(null);
     }
   };
 
@@ -399,8 +309,12 @@ const PrintJobs: React.FC = () => {
       title: '任务ID',
       dataIndex: 'id',
       key: 'id',
-      width: 220,
-      render: (text: string) => text || '-',
+      width: 120,
+      render: (text: string) => (
+        <span title={text}>
+          {text ? text.substring(0, 8) + '...' : '-'}
+        </span>
+      ),
     },
     {
       title: '任务名称',
@@ -428,13 +342,30 @@ const PrintJobs: React.FC = () => {
       ),
     },
     {
+      title: '节点ID',
+      dataIndex: 'edge_node_id',
+      key: 'edge_node_id',
+      width: 120,
+      render: (text: string) => (
+        <Space>
+          <ClusterOutlined />
+          <span title={text}>
+            {text ? text.substring(0, 8) + '...' : '-'}
+          </span>
+        </Space>
+      ),
+    },
+    {
       title: '打印机ID',
       dataIndex: 'printer_id',
       key: 'printer_id',
+      width: 120,
       render: (text: string) => (
         <Space>
           <PrinterOutlined />
-          {text ? text.substring(0, 8) + '...' : '-'}
+          <span title={text}>
+            {text ? text.substring(0, 8) + '...' : '-'}
+          </span>
         </Space>
       ),
     },
@@ -460,6 +391,7 @@ const PrintJobs: React.FC = () => {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
+      width: 170,
       render: (time: string) => {
         if (!time) return '-';
         const date = new Date(time);
@@ -479,46 +411,31 @@ const PrintJobs: React.FC = () => {
     },
     {
       title: '操作',
-      key: 'action',
-      width: 150,
-      render: (_, record: PrintJob) => (
-        <Space size="small">
-          {/* 取消任务 - 只有pending和dispatched状态可以取消 */}
-          {(record.status === 'pending' || record.status === 'dispatched') && (
-            <Popconfirm
-              title="确定要取消这个任务吗？"
-              onConfirm={() => handleCancelJob(record.id)}
-              okText="确定"
-              cancelText="取消"
-            >
-              <Button size="small" type="link">
-                取消
-              </Button>
-            </Popconfirm>
-          )}
-          
-          {/* 重新打印 - 已完成、失败、取消的任务都可以重新打印 */}
-          {(record.status === 'completed' || record.status === 'failed' || record.status === 'cancelled') && (
-            <Button size="small" type="link" onClick={() => handleReprintJob(record)}>
-              重新打印
-            </Button>
-          )}
+      key: 'actions',
+      width: 120,
+      render: (_: unknown, record: PrintJob) => {
+        if (!canCancel(record.status)) {
+          return '-';
+        }
 
-          {/* 删除任务 - 只有completed、failed、cancelled状态可以删除 */}
-          {(record.status === 'completed' || record.status === 'failed' || record.status === 'cancelled') && (
-            <Popconfirm
-              title="确定要删除这个任务吗？"
-              onConfirm={() => handleDeleteJob(record.id)}
-              okText="确定"
-              cancelText="取消"
+        return (
+          <Popconfirm
+            title="确认取消该打印任务？"
+            description="取消后任务将在云端立即结束，不会再参与重发。"
+            okText="确认"
+            cancelText="取消"
+            onConfirm={() => handleCancelJob(record)}
+          >
+            <Button
+              type="link"
+              danger
+              loading={cancellingJobId === record.id}
             >
-              <Button size="small" type="link" danger icon={<DeleteOutlined />}>
-                删除
-              </Button>
-            </Popconfirm>
-          )}
-        </Space>
-      ),
+              取消任务
+            </Button>
+          </Popconfirm>
+        );
+      },
     },
   ];
 
@@ -528,23 +445,45 @@ const PrintJobs: React.FC = () => {
       
       <Card>
         {/* 筛选和操作栏 */}
-        <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Space>
+        <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+          <Space wrap>
             <Select
-              placeholder="选择状态筛选"
+              placeholder="选择状态"
               allowClear
-              style={{ width: 150 }}
+              style={{ width: 130 }}
               value={statusFilter || undefined}
               onChange={handleStatusChange}
             >
               <Select.Option value="pending">等待中</Select.Option>
               <Select.Option value="dispatched">已分发</Select.Option>
-              <Select.Option value="downloading">下载中</Select.Option>
               <Select.Option value="printing">打印中</Select.Option>
               <Select.Option value="completed">已完成</Select.Option>
               <Select.Option value="failed">失败</Select.Option>
-              <Select.Option value="cancelled">已取消</Select.Option>
             </Select>
+            
+            <Select
+              placeholder="选择节点"
+              allowClear
+              style={{ width: 180 }}
+              value={edgeNodeFilter || undefined}
+              onChange={handleEdgeNodeChange}
+              showSearch
+              optionFilterProp="children"
+            >
+              {edgeNodes.map(node => (
+                <Select.Option key={node.id} value={node.id}>
+                  {node.display_name || node.name}
+                </Select.Option>
+              ))}
+            </Select>
+            
+            <RangePicker
+              showTime={{ format: 'HH:mm' }}
+              format="YYYY-MM-DD HH:mm"
+              placeholder={['开始时间', '结束时间']}
+              value={dateRange}
+              onChange={handleDateRangeChange}
+            />
           </Space>
           
           <Space>
@@ -576,156 +515,9 @@ const PrintJobs: React.FC = () => {
             pageSizeOptions: ['10', '20', '50', '100'],
           }}
           size="middle"
-          scroll={{ x: 1200 }}
+          scroll={{ x: 1400 }}
         />
       </Card>
-
-      {/* 重新打印Modal */}
-      <Modal
-        title={`重新打印 - ${reprintJob?.name}`}
-        open={reprintModalVisible}
-        onCancel={() => {
-          setReprintModalVisible(false);
-          setSelectedPrinter(null);
-          setSelectedEdgeNodeId('');
-          form.resetFields();
-        }}
-        footer={null}
-        width={600}
-      >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={handleReprintSubmit}
-        >
-          <Form.Item
-            name="edge_node_id"
-            label="选择Edge Node"
-            rules={[{ required: true, message: '请选择Edge Node' }]}
-          >
-            <Select
-              placeholder="请选择Edge Node"
-              onChange={handleEdgeNodeChange}
-              showSearch
-              optionFilterProp="children"
-            >
-              {edgeNodes.map(node => (
-                <Select.Option key={node.id} value={node.id}>
-                  {node.display_name || node.name} ({node.status})
-                </Select.Option>
-              ))}
-            </Select>
-          </Form.Item>
-
-          <Form.Item
-            name="printer_id"
-            label="选择打印机"
-            rules={[{ required: true, message: '请选择打印机' }]}
-          >
-            <Select
-              placeholder="请先选择Edge Node"
-              disabled={!selectedEdgeNodeId}
-              showSearch
-              optionFilterProp="children"
-              onChange={handlePrinterChange}
-            >
-              {printers.map(printer => (
-                <Select.Option key={printer.id} value={printer.id}>
-                  {printer.display_name || printer.name} ({printer.status})
-                </Select.Option>
-              ))}
-            </Select>
-            {selectedPrinter && (
-              <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
-                <strong>打印机能力：</strong>
-                {selectedPrinter.capabilities.color_support ? '支持彩色' : '仅黑白'}
-                {', '}
-                {selectedPrinter.capabilities.duplex_support ? '支持双面' : '仅单面'}
-                {selectedPrinter.capabilities.paper_sizes.length > 0 && (
-                  <>，支持纸张：{selectedPrinter.capabilities.paper_sizes.join(', ')}</>
-                )}
-              </div>
-            )}
-          </Form.Item>
-
-          <Form.Item
-            name="copies"
-            label="打印份数"
-            rules={[{ required: true, message: '请输入打印份数' }]}
-          >
-            <InputNumber min={1} max={99} />
-          </Form.Item>
-
-          <Form.Item
-            name="paper_size"
-            label="纸张大小"
-            rules={[{ required: true, message: '请选择纸张大小' }]}
-          >
-            <Select disabled={!selectedPrinter}>
-              {selectedPrinter?.capabilities.paper_sizes.length > 0 ? (
-                selectedPrinter.capabilities.paper_sizes.map(size => (
-                  <Select.Option key={size} value={size}>{size}</Select.Option>
-                ))
-              ) : (
-                // 默认选项（如果打印机没有指定支持的纸张大小）
-                <>
-                  <Select.Option value="A4">A4</Select.Option>
-                  <Select.Option value="A3">A3</Select.Option>
-                  <Select.Option value="Letter">Letter</Select.Option>
-                  <Select.Option value="Legal">Legal</Select.Option>
-                </>
-              )}
-            </Select>
-          </Form.Item>
-
-          <Form.Item
-            name="color_mode"
-            label="颜色模式"
-            rules={[{ required: true, message: '请选择颜色模式' }]}
-          >
-            <Radio.Group disabled={!selectedPrinter}>
-              <Radio value="grayscale">黑白</Radio>
-              {selectedPrinter?.capabilities.color_support && (
-                <Radio value="color">彩色</Radio>
-              )}
-            </Radio.Group>
-            {selectedPrinter && !selectedPrinter.capabilities.color_support && (
-              <div style={{ fontSize: '12px', color: '#999', marginTop: '4px' }}>
-                该打印机不支持彩色打印
-              </div>
-            )}
-          </Form.Item>
-
-          <Form.Item
-            name="duplex_mode"
-            label="双面模式"
-            rules={[{ required: true, message: '请选择双面模式' }]}
-          >
-            <Radio.Group disabled={!selectedPrinter}>
-              <Radio value="single">单面</Radio>
-              {selectedPrinter?.capabilities.duplex_support && (
-                <Radio value="duplex">双面</Radio>
-              )}
-            </Radio.Group>
-            {selectedPrinter && !selectedPrinter.capabilities.duplex_support && (
-              <div style={{ fontSize: '12px', color: '#999', marginTop: '4px' }}>
-                该打印机不支持双面打印
-              </div>
-            )}
-          </Form.Item>
-
-          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space>
-              <Button onClick={() => setReprintModalVisible(false)}>
-                取消
-              </Button>
-              <Button type="primary" htmlType="submit">
-                确认打印
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
-      </Modal>
     </div>
   );
 };

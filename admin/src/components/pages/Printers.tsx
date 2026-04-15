@@ -9,6 +9,7 @@ import {
   DeleteOutlined,
   EditOutlined
 } from '@ant-design/icons';
+import { buildApiUrl, buildAuthUrl } from '../../config';
 
 // 打印机接口（适配后端数据模型）
 interface PrinterStatus {
@@ -38,7 +39,7 @@ interface EdgeNode {
 class PrintersService {
   private async getToken(): Promise<string | null> {
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -54,7 +55,7 @@ class PrintersService {
   async getEdgeNodes(): Promise<EdgeNode[]> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/edge-nodes', {
+      const response = await fetch(buildApiUrl('/admin/edge-nodes'), {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
@@ -77,10 +78,10 @@ class PrintersService {
       
       // 同时获取打印机和边缘节点数据
       const [printersResponse, edgeNodesResponse] = await Promise.all([
-        fetch('/api/v1/admin/printers', {
+        fetch(buildApiUrl('/admin/printers'), {
           headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
         }),
-        fetch('/api/v1/admin/edge-nodes', {
+        fetch(buildApiUrl('/admin/edge-nodes'), {
           headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
         })
       ]);
@@ -110,7 +111,7 @@ class PrintersService {
   async getPrinters(): Promise<PrinterStatus[]> {
     try {
       const token = await this.getToken();
-      const response = await fetch('/api/v1/admin/printers', {
+      const response = await fetch(buildApiUrl('/admin/printers'), {
         headers: {
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
@@ -141,6 +142,10 @@ const Printers: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   
+  // 搜索和筛选状态
+  const [searchName, setSearchName] = useState<string>('');
+  const [selectedStatus, setSelectedStatus] = useState<string>('');
+  
   // 别名编辑相关状态
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editingPrinter, setEditingPrinter] = useState<PrinterStatus | null>(null);
@@ -149,7 +154,7 @@ const Printers: React.FC = () => {
   // 获取token
   const getToken = async (): Promise<string | null> => {
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -171,7 +176,7 @@ const Printers: React.FC = () => {
         return;
       }
 
-      const response = await fetch(`/api/v1/admin/printers/${printerId}`, {
+      const response = await fetch(buildApiUrl(`/admin/printers/${printerId}`), {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -212,7 +217,7 @@ const Printers: React.FC = () => {
         return;
       }
 
-      const response = await fetch(`/api/v1/admin/printers/${editingPrinter.id}`, {
+      const response = await fetch(buildApiUrl(`/admin/printers/${editingPrinter.id}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -249,7 +254,7 @@ const Printers: React.FC = () => {
       }
 
       const newEnabled = !printer.enabled;
-      const response = await fetch(`/api/v1/admin/printers/${printer.id}`, {
+      const response = await fetch(buildApiUrl(`/admin/printers/${printer.id}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -300,14 +305,32 @@ const Printers: React.FC = () => {
     loadData();
   }, []);
 
-  // Edge Node 筛选逻辑
+  // 综合筛选逻辑：Edge Node + 状态 + 名称搜索
   useEffect(() => {
-    if (selectedEdgeNode === '') {
-      setFilteredPrinters(printers);
-    } else {
-      setFilteredPrinters(printers.filter(printer => printer.edge_node_id === selectedEdgeNode));
+    let result = printers;
+    
+    // 按Edge Node筛选
+    if (selectedEdgeNode) {
+      result = result.filter(printer => printer.edge_node_id === selectedEdgeNode);
     }
-  }, [selectedEdgeNode, printers]);
+    
+    // 按状态筛选
+    if (selectedStatus) {
+      result = result.filter(printer => printer.status === selectedStatus);
+    }
+    
+    // 按名称搜索（不区分大小写，匹配名称、别名和ID）
+    if (searchName) {
+      const keyword = searchName.toLowerCase();
+      result = result.filter(printer => 
+        (printer.display_name || '').toLowerCase().includes(keyword) ||
+        printer.name.toLowerCase().includes(keyword) ||
+        printer.id.toLowerCase().includes(keyword)
+      );
+    }
+    
+    setFilteredPrinters(result);
+  }, [selectedEdgeNode, selectedStatus, searchName, printers]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -516,7 +539,7 @@ const Printers: React.FC = () => {
 
       {/* 筛选器 */}
       <div style={{ marginBottom: 16 }}>
-        <Space>
+        <Space wrap>
           <span>边缘节点：</span>
           <Select 
             value={selectedEdgeNode} 
@@ -529,6 +552,30 @@ const Printers: React.FC = () => {
               <Select.Option key={node.id} value={node.id}>{node.name}</Select.Option>
             ))}
           </Select>
+          
+          <span style={{ marginLeft: 16 }}>运行状态：</span>
+          <Select
+            value={selectedStatus}
+            onChange={setSelectedStatus}
+            style={{ width: 120 }}
+            placeholder="选择状态"
+          >
+            <Select.Option value="">全部</Select.Option>
+            <Select.Option value="ready">就绪</Select.Option>
+            <Select.Option value="printing">打印中</Select.Option>
+            <Select.Option value="error">错误</Select.Option>
+            <Select.Option value="offline">离线</Select.Option>
+          </Select>
+          
+          <span style={{ marginLeft: 16 }}>搜索：</span>
+          <Input.Search
+            placeholder="搜索打印机名称/ID"
+            value={searchName}
+            onChange={(e) => setSearchName(e.target.value)}
+            onSearch={setSearchName}
+            style={{ width: 200 }}
+            allowClear
+          />
         </Space>
       </div>
 

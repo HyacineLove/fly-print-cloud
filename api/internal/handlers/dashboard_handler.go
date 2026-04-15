@@ -4,8 +4,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"fly-print-cloud/api/internal/database"
+
+	"github.com/gin-gonic/gin"
 )
 
 type DashboardHandler struct {
@@ -37,14 +38,14 @@ func (h *DashboardHandler) GetTrends(c *gin.Context) {
 
 		completedCount, err := h.printJobRepo.CountJobsByStatusAndDate("completed", startOfDay, endOfDay)
 		if err != nil {
-			// 如果查询失败，使用模拟数据
-			completedCount = 5 + (i % 15)
+			InternalErrorResponse(c, "查询完成任务数量失败")
+			return
 		}
 
 		failedCount, err := h.printJobRepo.CountJobsByStatusAndDate("failed", startOfDay, endOfDay)
 		if err != nil {
-			// 如果查询失败，使用模拟数据
-			failedCount = i % 3
+			InternalErrorResponse(c, "查询失败任务数量失败")
+			return
 		}
 
 		completed[6-i] = completedCount

@@ -3,6 +3,8 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"time"
+
 	"fly-print-cloud/api/internal/models"
 )
 
@@ -57,4 +59,50 @@ func (r *FileRepository) GetByID(id string) (*models.File, error) {
 	}
 	
 	return file, nil
+}
+
+// ListOldFiles 列出早于指定时间创建的文件，用于清理任务
+func (r *FileRepository) ListOldFiles(cutoff time.Time) ([]*models.File, error) {
+	query := `
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, created_at
+		FROM files WHERE created_at < $1`
+
+	rows, err := r.db.Query(query, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list old files: %w", err)
+	}
+	defer rows.Close()
+
+	var files []*models.File
+	for rows.Next() {
+		file := &models.File{}
+		if err := rows.Scan(
+			&file.ID,
+			&file.OriginalName,
+			&file.FileName,
+			&file.FilePath,
+			&file.MimeType,
+			&file.Size,
+			&file.UploaderID,
+			&file.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan old file: %w", err)
+		}
+		files = append(files, file)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return files, nil
+}
+
+// DeleteByID 根据ID删除文件记录
+func (r *FileRepository) DeleteByID(id string) error {
+	query := `DELETE FROM files WHERE id = $1`
+	if _, err := r.db.Exec(query, id); err != nil {
+		return fmt.Errorf("failed to delete file: %w", err)
+	}
+	return nil
 }

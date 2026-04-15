@@ -87,10 +87,12 @@ type PrinterCapabilities struct {
 type PrintJob struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
-	Status       string    `json:"status"`        // pending/dispatched/downloading/printing/completed/failed/cancelled
+	Status       string    `json:"status"`        // pending/dispatched/printing/completed/failed (downloading/cancelled 仅用于历史数据兼容)
 	
 	// 关联信息
 	PrinterID    string    `json:"printer_id"`
+	PrinterName  string    `json:"printer_name,omitempty"` // 打印机名称 (非DB字段，仅用于API返回或内部逻辑)
+	EdgeNodeID   string    `json:"edge_node_id,omitempty"` // 所属节点ID（查询时填充）
 	UserID       string    `json:"user_id"`       // 提交用户
 	UserName     string    `json:"user_name"`     // 提交用户名
 	

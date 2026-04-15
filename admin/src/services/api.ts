@@ -1,4 +1,7 @@
 // API 基础服务
+import { ErrorHandler } from '../utils/errorHandler';
+import { buildApiUrl, buildAuthUrl } from '../config';
+
 export interface ApiResponse<T = any> {
   code: number;
   message: string;
@@ -11,8 +14,19 @@ export interface ApiError {
   details?: any;
 }
 
+export class ApiError extends Error {
+  code: number;
+  details?: any;
+
+  constructor({ code, message, details }: { code: number; message: string; details?: any }) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
 class ApiService {
-  private baseURL = '/api/v1';
   private token: string | null = null;
 
   // 设置认证 token
@@ -27,7 +41,7 @@ class ApiService {
     }
 
     try {
-      const response = await fetch('/auth/me');
+      const response = await fetch(buildAuthUrl('me'));
       const result = await response.json();
       
       if (result.code === 200 && result.data.access_token) {
@@ -59,7 +73,7 @@ class ApiService {
     };
 
     try {
-      const response = await fetch(`${this.baseURL}${endpoint}`, config);
+      const response = await fetch(buildApiUrl(endpoint), config);
       const result = await response.json();
 
       if (!response.ok) {
@@ -110,17 +124,37 @@ class ApiService {
   }
 
   // 文件上传
-  async uploadFile(file: File, token?: string, nodeId?: string): Promise<ApiResponse<any>> {
+  async uploadFile(file: File, uploadToken?: string, nodeId?: string): Promise<ApiResponse<any>> {
     const formData = new FormData();
     formData.append('file', file);
     
-    // 如果提供了 token，临时设置
-    const originalToken = this.token;
-    if (token) {
-      this.setToken(token);
-    }
-
     try {
+      // 如果提供了上传凭证，使用 token 查询参数，不需要 OAuth2 认证
+      if (uploadToken) {
+        let url = buildApiUrl(`/files?token=${encodeURIComponent(uploadToken)}`);
+        if (nodeId) {
+          url += `&node_id=${encodeURIComponent(nodeId)}`;
+        }
+        
+        const response = await fetch(url, {
+          method: 'POST',
+          body: formData,
+        });
+        
+        const result = await response.json();
+        
+        if (!response.ok) {
+          throw new ApiError({
+            code: response.status,
+            message: result.message || '请求失败',
+            details: result,
+          });
+        }
+        
+        return result;
+      }
+      
+      // 否则使用 OAuth2 认证
       let endpoint = '/files';
       if (nodeId) {
         endpoint += `?node_id=${nodeId}`;
@@ -128,13 +162,52 @@ class ApiService {
       return await this.request(endpoint, {
         method: 'POST',
         body: formData,
-        // request 方法会自动处理 FormData 的 Content-Type 问题
       });
-    } finally {
-      // 恢复 token (虽然在这个场景下可能不需要，但为了安全)
-      if (token) {
-        this.token = originalToken;
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
       }
+      
+      throw new ApiError({
+        code: 500,
+        message: error instanceof Error ? error.message : '网络错误',
+      });
+    }
+  }
+
+  async preflightUpload(file: File, uploadToken?: string): Promise<ApiResponse<any>> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      let url = buildApiUrl('/files/preflight');
+      if (uploadToken) {
+        url += `?token=${encodeURIComponent(uploadToken)}`;
+      }
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new ApiError({
+          code: response.status,
+          message: result.message || '请求失败',
+          details: result,
+        });
+      }
+
+      return result;
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+
+      throw new ApiError({
+        code: 500,
+        message: error instanceof Error ? error.message : '网络错误',
+      });
     }
   }
 
@@ -160,18 +233,6 @@ class ApiService {
 
 // 创建单例实例
 const apiService = new ApiService();
-
-export class ApiError extends Error {
-  code: number;
-  details?: any;
-
-  constructor({ code, message, details }: { code: number; message: string; details?: any }) {
-    super(message);
-    this.name = 'ApiError';
-    this.code = code;
-    this.details = details;
-  }
-}
 
 export { apiService };
 export default apiService;

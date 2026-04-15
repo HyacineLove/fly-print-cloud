@@ -1,5 +1,5 @@
-#FROM dockerpull.pw/library/golang:1.21-alpine AS builder
-FROM docker.m.daocloud.io/library/golang:1.21-alpine AS builder
+#FROM dockerpull.pw/library/golang:1.25-alpine AS builder
+FROM docker.m.daocloud.io/library/golang:1.25-alpine AS builder
 
 # 设置Go代理和网络配置
 ENV GOPROXY=https://goproxy.cn,direct

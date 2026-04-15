@@ -4,13 +4,16 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
-	"log"
 	"math/big"
+	"time"
 
 	"fly-print-cloud/api/internal/config"
-	"github.com/spf13/viper"
-	"golang.org/x/crypto/bcrypt"
+	"fly-print-cloud/api/internal/logger"
+
 	_ "github.com/lib/pq"
+	"github.com/spf13/viper"
+	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // DB 数据库实例
@@ -31,8 +34,9 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 	}
 
 	// 设置连接池参数
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	db.SetMaxOpenConns(25)                 // 最大打开连接数
+	db.SetMaxIdleConns(5)                  // 最大空闲连接数
+	db.SetConnMaxLifetime(5 * time.Minute) // 连接最大生存时间
 
 	return &DB{db}, nil
 }
@@ -40,6 +44,46 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 // Close 关闭数据库连接
 func (db *DB) Close() error {
 	return db.DB.Close()
+}
+
+// Ping 测试数据库连接
+func (db *DB) Ping() error {
+	return db.DB.Ping()
+}
+
+// Stats 获取数据库连接池统计信息
+func (db *DB) Stats() sql.DBStats {
+	return db.DB.Stats()
+}
+
+// Tx 数据库事务包装器
+type Tx struct {
+	*sql.Tx
+}
+
+// BeginTx 开始一个数据库事务
+func (db *DB) BeginTx() (*Tx, error) {
+	tx, err := db.DB.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	return &Tx{tx}, nil
+}
+
+// Commit 提交事务
+func (tx *Tx) Commit() error {
+	if err := tx.Tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	return nil
+}
+
+// Rollback 回滚事务
+func (tx *Tx) Rollback() error {
+	if err := tx.Tx.Rollback(); err != nil {
+		return fmt.Errorf("failed to rollback transaction: %w", err)
+	}
+	return nil
 }
 
 // InitTables 初始化数据库表
@@ -197,7 +241,7 @@ func (db *DB) InitTables() error {
 		
 		-- 关联信息
 		printer_id UUID REFERENCES printers(id) ON DELETE CASCADE,
-		user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+		user_id VARCHAR(255), -- 移除外键约束，支持OAuth2外部用户ID
 		user_name VARCHAR(100),
 		
 		-- 任务信息
@@ -241,16 +285,81 @@ func (db *DB) InitTables() error {
 		return fmt.Errorf("failed to create print_jobs update trigger: %w", err)
 	}
 
+	// 创建Token使用记录表（用于一次性凭证验证）
+	tokenUsageTableSQL := `
+	CREATE TABLE IF NOT EXISTS token_usage_records (
+		token_hash VARCHAR(64) PRIMARY KEY,
+		token_type VARCHAR(20) NOT NULL,
+		node_id VARCHAR(100) NOT NULL,
+		resource_id VARCHAR(100),
+		job_id VARCHAR(100),
+		used_at TIMESTAMP,
+		revoked BOOLEAN DEFAULT FALSE,
+		revoked_at TIMESTAMP,
+		expires_at TIMESTAMP NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	if _, err := db.Exec(tokenUsageTableSQL); err != nil {
+		return fmt.Errorf("failed to create token_usage_records table: %w", err)
+	}
+
+	// 数据库迁移：为 token_usage_records 表添加新字段（如果不存在）
+	migrations := []string{
+		"ALTER TABLE token_usage_records ADD COLUMN IF NOT EXISTS revoked BOOLEAN DEFAULT FALSE;",
+		"ALTER TABLE token_usage_records ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP;",
+		// 将 used_at 改为可空（兼容预注册token）
+		"ALTER TABLE token_usage_records ALTER COLUMN used_at DROP NOT NULL;",
+		"ALTER TABLE token_usage_records ALTER COLUMN used_at DROP DEFAULT;",
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil {
+			// 某些错误可以忽略（例如约束已存在）
+			logger.Warn("Migration warning (可能已应用)", zap.Error(err))
+		}
+	}
+
 	// 创建索引
 	indexesSQL := []string{
+		// Edge Nodes 索引
 		"CREATE INDEX IF NOT EXISTS idx_edge_nodes_status ON edge_nodes(status);",
 		"CREATE INDEX IF NOT EXISTS idx_edge_nodes_last_heartbeat ON edge_nodes(last_heartbeat);",
+		"CREATE INDEX IF NOT EXISTS idx_edge_nodes_enabled ON edge_nodes(enabled);",
+		"CREATE INDEX IF NOT EXISTS idx_edge_nodes_status_enabled ON edge_nodes(status, enabled);", // 复合索引
+
+		// Printers 索引
 		"CREATE INDEX IF NOT EXISTS idx_printers_edge_node_id ON printers(edge_node_id);",
 		"CREATE INDEX IF NOT EXISTS idx_printers_status ON printers(status);",
+		"CREATE INDEX IF NOT EXISTS idx_printers_enabled ON printers(enabled);",
+		"CREATE INDEX IF NOT EXISTS idx_printers_edge_node_status ON printers(edge_node_id, status);", // 复合索引
+		"CREATE INDEX IF NOT EXISTS idx_printers_status_enabled ON printers(status, enabled);",        // 复合索引
+
+		// Print Jobs 索引
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status);",
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_printer_id ON print_jobs(printer_id);",
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_user_id ON print_jobs(user_id);",
-		"CREATE INDEX IF NOT EXISTS idx_print_jobs_created_at ON print_jobs(created_at);",
+		"CREATE INDEX IF NOT EXISTS idx_print_jobs_created_at ON print_jobs(created_at DESC);", // 降序，常用于最新任务查询
+		"CREATE INDEX IF NOT EXISTS idx_print_jobs_updated_at ON print_jobs(updated_at DESC);",
+		"CREATE INDEX IF NOT EXISTS idx_print_jobs_status_created ON print_jobs(status, created_at DESC);", // 复合索引
+		"CREATE INDEX IF NOT EXISTS idx_print_jobs_printer_status ON print_jobs(printer_id, status);",      // 复合索引
+
+		// Token Usage 索引
+		"CREATE INDEX IF NOT EXISTS idx_token_usage_expires_at ON token_usage_records(expires_at);",
+		"CREATE INDEX IF NOT EXISTS idx_token_usage_node_id ON token_usage_records(node_id);",
+		"CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage_records(created_at);",
+		"CREATE INDEX IF NOT EXISTS idx_token_usage_node_resource ON token_usage_records(node_id, resource_id, token_type);",
+		"CREATE INDEX IF NOT EXISTS idx_token_usage_revoked ON token_usage_records(revoked);",
+
+		// Files 索引
+		"CREATE INDEX IF NOT EXISTS idx_files_uploader_id ON files(uploader_id);",
+		"CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at DESC);",
+
+		// Users 索引（如果需要经常按角色查询）
+		"CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);",
+		"CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);",
+		"CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);", // username已有UNIQUE，此索引可选
+		"CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",       // email已有UNIQUE，此索引可选
 	}
 
 	// 创建文件表
@@ -270,13 +379,65 @@ func (db *DB) InitTables() error {
 		return fmt.Errorf("failed to create files table: %w", err)
 	}
 
+	// 创建 OAuth2 客户端表（内置认证模式使用）
+	oauth2ClientsTableSQL := `
+	CREATE TABLE IF NOT EXISTS oauth2_clients (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		client_id VARCHAR(100) UNIQUE NOT NULL,
+		client_secret_hash VARCHAR(255) NOT NULL,
+		client_type VARCHAR(20) NOT NULL DEFAULT 'edge_node',
+		allowed_scopes TEXT NOT NULL,
+		description TEXT,
+		enabled BOOLEAN NOT NULL DEFAULT true,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	if _, err := db.Exec(oauth2ClientsTableSQL); err != nil {
+		return fmt.Errorf("failed to create oauth2_clients table: %w", err)
+	}
+
+	// 创建 OAuth2 客户端更新时间触发器
+	oauth2ClientsTriggerSQL := `
+	DROP TRIGGER IF EXISTS update_oauth2_clients_updated_at ON oauth2_clients;
+	CREATE TRIGGER update_oauth2_clients_updated_at
+		BEFORE UPDATE ON oauth2_clients
+		FOR EACH ROW
+		EXECUTE FUNCTION update_updated_at_column();`
+
+	if _, err := db.Exec(oauth2ClientsTriggerSQL); err != nil {
+		return fmt.Errorf("failed to create oauth2_clients update trigger: %w", err)
+	}
+
+	// 添加 OAuth2 客户端索引
+	indexesSQL = append(indexesSQL, "CREATE INDEX IF NOT EXISTS idx_oauth2_clients_client_id ON oauth2_clients(client_id);")
+	indexesSQL = append(indexesSQL, "CREATE INDEX IF NOT EXISTS idx_oauth2_clients_enabled ON oauth2_clients(enabled);")
+
 	for _, indexSQL := range indexesSQL {
 		if _, err := db.Exec(indexSQL); err != nil {
 			return fmt.Errorf("failed to create index: %w", err)
 		}
 	}
 
-	log.Println("Database tables initialized successfully")
+	// 为 printers 表添加 deleted_at 字段（如果不存在）
+	// 用于统一软删除策略，与 edge_nodes 保持一致
+	alterPrintersSQL := `
+	DO $$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM information_schema.columns 
+			WHERE table_name = 'printers' AND column_name = 'deleted_at'
+		) THEN
+			ALTER TABLE printers ADD COLUMN deleted_at TIMESTAMP;
+			CREATE INDEX idx_printers_deleted_at ON printers(deleted_at);
+		END IF;
+	END $$;`
+
+	if _, err := db.Exec(alterPrintersSQL); err != nil {
+		return fmt.Errorf("failed to add deleted_at column to printers: %w", err)
+	}
+
+	logger.Info("Database tables initialized successfully")
 	return nil
 }
 
@@ -290,15 +451,15 @@ func (db *DB) CreateDefaultAdmin() error {
 	}
 
 	if count > 0 {
-		log.Println("Admin user already exists, skipping creation")
+		logger.Info("Admin user already exists, skipping creation")
 		return nil
 	}
 
 	// 只在环境变量允许时创建默认管理员
 	createDefault := viper.GetString("create_default_admin")
 	if createDefault != "true" {
-		log.Println("No admin users found, but CREATE_DEFAULT_ADMIN is not set to 'true'")
-		log.Println("To create a default admin, set CREATE_DEFAULT_ADMIN=true and restart")
+		logger.Info("No admin users found, but CREATE_DEFAULT_ADMIN is not set to 'true'")
+		logger.Info("To create a default admin, set CREATE_DEFAULT_ADMIN=true and restart")
 		return nil
 	}
 
@@ -306,8 +467,8 @@ func (db *DB) CreateDefaultAdmin() error {
 	adminPassword := viper.GetString("default_admin_password")
 	if adminPassword == "" {
 		adminPassword = generateRandomPassword(16)
-		log.Printf("Generated random admin password: %s", adminPassword)
-		log.Println("IMPORTANT: Save this password immediately! It will not be shown again.")
+		logger.Info("Generated random admin password", zap.String("password", adminPassword))
+		logger.Warn("IMPORTANT: Save this password immediately! It will not be shown again.")
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
@@ -323,21 +484,66 @@ func (db *DB) CreateDefaultAdmin() error {
 		return fmt.Errorf("failed to create default admin: %w", err)
 	}
 
-	log.Println("Default admin user created successfully (username: admin)")
+	logger.Info("Default admin user created successfully", zap.String("username", "admin"))
 	if viper.GetString("default_admin_password") == "" {
-		log.Println("=====================================")
-		log.Println("🔑 IMPORTANT: ADMIN CREDENTIALS")
-		log.Println("=====================================")
-		log.Printf("Username: admin")
-		log.Printf("Password: %s", adminPassword)
-		log.Println("=====================================")
-		log.Println("⚠️  SAVE THIS PASSWORD IMMEDIATELY!")
-		log.Println("⚠️  This password will NOT be shown again!")
-		log.Println("⚠️  Change it after first login for security!")
-		log.Println("=====================================")
+		logger.Warn("=====================================")
+		logger.Warn("IMPORTANT: ADMIN CREDENTIALS")
+		logger.Warn("=====================================")
+		logger.Info("Default admin created", zap.String("username", "admin"), zap.String("password", adminPassword))
+		logger.Warn("=====================================")
+		logger.Warn("SAVE THIS PASSWORD IMMEDIATELY!")
+		logger.Warn("This password will NOT be shown again!")
+		logger.Warn("Change it after first login for security!")
+		logger.Warn("=====================================")
 	} else {
-		log.Println("Using custom admin password from environment variable")
+		logger.Info("Using custom admin password from environment variable")
 	}
+	return nil
+}
+
+// CreateDefaultOAuth2Client 创建默认 Edge OAuth2 客户端（builtin 模式首次启动时）
+func (db *DB) CreateDefaultOAuth2Client() error {
+	// 检查是否已存在客户端
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM oauth2_clients").Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check oauth2 clients: %w", err)
+	}
+
+	if count > 0 {
+		logger.Info("OAuth2 clients already exist, skipping default client creation")
+		return nil
+	}
+
+	// 生成随机 client_secret
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		return fmt.Errorf("failed to generate client secret: %w", err)
+	}
+	rawSecret := fmt.Sprintf("%x", secretBytes)
+
+	hashedSecret, err := bcrypt.GenerateFromPassword([]byte(rawSecret), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("failed to hash client secret: %w", err)
+	}
+
+	insertSQL := `
+	INSERT INTO oauth2_clients (client_id, client_secret_hash, client_type, allowed_scopes, description, enabled)
+	VALUES ('edge-default', $1, 'edge_node', 'edge:register edge:printer edge:heartbeat file:read', 'Default Edge client (auto-generated)', true)`
+
+	if _, err := db.Exec(insertSQL, string(hashedSecret)); err != nil {
+		return fmt.Errorf("failed to create default oauth2 client: %w", err)
+	}
+
+	logger.Warn("==========================================")
+	logger.Warn("  DEFAULT EDGE OAuth2 CLIENT CREATED")
+	logger.Warn("==========================================")
+	logger.Info("Default Edge OAuth2 client", zap.String("client_id", "edge-default"), zap.String("client_secret", rawSecret))
+	logger.Warn("==========================================")
+	logger.Warn("  SAVE THIS SECRET IMMEDIATELY!")
+	logger.Warn("  It will NOT be shown again!")
+	logger.Warn("==========================================")
+
 	return nil
 }
 

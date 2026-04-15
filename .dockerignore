@@ -1,0 +1,3 @@
+# 若在 cloud 根目录执行 docker build，避免将敏感或无关文件带入构建上下文
+.env
+.git
