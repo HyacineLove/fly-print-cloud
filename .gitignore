@@ -34,3 +34,5 @@ admin/coverage/
 admin/.DS_Store
 admin/npm-debug.log*
 admin/.cache/
+api/tests/__pycache__/
+nul
