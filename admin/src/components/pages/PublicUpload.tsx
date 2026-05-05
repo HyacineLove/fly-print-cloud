@@ -273,7 +273,7 @@ const PublicUpload: React.FC = () => {
             支持格式：{FILE_TYPE_LABEL}
           </Paragraph>
           <Paragraph style={{ fontSize: '14px', whiteSpace: 'nowrap', margin: '0 0 6px 0' }}>
-            上传限制：<Text strong style={{ color: '#cf1322' }}>≤ 5MB</Text> ｜ <Text strong style={{ color: '#cf1322' }}>≤ 5页</Text>
+            上传限制：<Text strong style={{ color: '#cf1322' }}>≤ 10MB</Text> ｜ <Text strong style={{ color: '#cf1322' }}>≤ 5页</Text>
           </Paragraph>
 
           {/* 隐藏的文件输入 */}
@@ -302,7 +302,7 @@ const PublicUpload: React.FC = () => {
                 可上传图片、PDF、Word 文档
               </p>
               <p className="ant-upload-hint" style={{ whiteSpace: 'nowrap' }}>
-                上传限制：<Text strong style={{ color: '#cf1322' }}>≤ 5MB</Text> ｜ <Text strong style={{ color: '#cf1322' }}>≤ 5页</Text>
+                上传限制：<Text strong style={{ color: '#cf1322' }}>≤ 10MB</Text> ｜ <Text strong style={{ color: '#cf1322' }}>≤ 5页</Text>
               </p>
               <p className="ant-upload-hint" style={{ whiteSpace: 'nowrap' }}>仅支持 A4 简历打印</p>
             </Upload.Dragger>
