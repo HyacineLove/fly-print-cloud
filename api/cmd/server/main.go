@@ -16,6 +16,7 @@ import (
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/middleware"
 	"fly-print-cloud/api/internal/security"
+	"fly-print-cloud/api/internal/storage"
 	"fly-print-cloud/api/internal/websocket"
 
 	"github.com/gin-gonic/gin"
@@ -113,10 +114,15 @@ func main() {
 		tokenUsageRepo,
 	)
 
+	storageService, err := storage.NewFromConfig(cfg.Storage)
+	if err != nil {
+		logger.Fatal("Failed to initialize storage backend", zap.Error(err))
+	}
+
 	// 启动Token使用记录清理任务（每小时清理过期记录）
 	go startTokenCleanupTask(tokenUsageRepo)
 	// 启动文件清理任务（定期删除1天前的文件）
-	go startFileCleanupTask(fileRepo, cfg.Storage.UploadDir)
+	go startFileCleanupTask(fileRepo, storageService)
 	// 启动打印任务状态清理任务（每30分钟检查一次超时任务）
 	go startStaleJobCleanupTask(printJobRepo)
 
@@ -149,7 +155,7 @@ func main() {
 	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo, printJobRepo, wsManager, tokenUsageRepo)
 	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, edgeNodeRepo, wsManager)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo, builtinAuth)
-	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, wsManager, tokenManager)
+	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, storageService, wsManager, tokenManager)
 	healthHandler := handlers.NewHealthHandler(db, wsManager)
 
 	// 启动 WebSocket 管理器
@@ -354,7 +360,8 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 
 // startFileCleanupTask 启动文件清理任务
 // 每小时扫描一次，删除创建时间超过1天的文件记录和物理文件
-func startFileCleanupTask(fileRepo *database.FileRepository, uploadDir string) {
+func startFileCleanupTask(fileRepo *database.FileRepository, storageService storage.Service) {
+	_ = storageService
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
