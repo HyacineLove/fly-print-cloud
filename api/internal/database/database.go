@@ -369,6 +369,9 @@ func (db *DB) InitTables() error {
 		original_name VARCHAR(255) NOT NULL,
 		file_name VARCHAR(255) NOT NULL,
 		file_path VARCHAR(512) NOT NULL,
+		storage_provider VARCHAR(20) NOT NULL DEFAULT 'local',
+		storage_bucket VARCHAR(255),
+		object_key VARCHAR(512),
 		mime_type VARCHAR(100) NOT NULL,
 		size BIGINT NOT NULL,
 		uploader_id VARCHAR(100) NOT NULL,
@@ -377,6 +380,21 @@ func (db *DB) InitTables() error {
 
 	if _, err := db.Exec(filesTableSQL); err != nil {
 		return fmt.Errorf("failed to create files table: %w", err)
+	}
+
+	fileMigrations := []string{
+		"ALTER TABLE files ADD COLUMN IF NOT EXISTS storage_provider VARCHAR(20);",
+		"ALTER TABLE files ADD COLUMN IF NOT EXISTS storage_bucket VARCHAR(255);",
+		"ALTER TABLE files ADD COLUMN IF NOT EXISTS object_key VARCHAR(512);",
+		"ALTER TABLE files ALTER COLUMN storage_provider SET DEFAULT 'local';",
+		"UPDATE files SET storage_provider = 'local' WHERE storage_provider IS NULL OR storage_provider = '';",
+		"UPDATE files SET object_key = file_path WHERE object_key IS NULL OR object_key = '';",
+	}
+
+	for _, migration := range fileMigrations {
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("failed to migrate files table: %w", err)
+		}
 	}
 
 	// 创建 OAuth2 客户端表（内置认证模式使用）

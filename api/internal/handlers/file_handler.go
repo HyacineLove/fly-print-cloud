@@ -162,12 +162,15 @@ func (h *FileHandler) Upload(c *gin.Context) {
 
 	// Create DB record
 	file := &models.File{
-		OriginalName: fileHeader.Filename,
-		FileName:     fileName,
-		FilePath:     objectKey,
-		MimeType:     fileHeader.Header.Get("Content-Type"),
-		Size:         fileHeader.Size,
-		UploaderID:   uploaderID,
+		OriginalName:    fileHeader.Filename,
+		FileName:        fileName,
+		FilePath:        objectKey,
+		StorageProvider: h.config.Provider,
+		StorageBucket:   h.config.MinIO.Bucket,
+		ObjectKey:       objectKey,
+		MimeType:        fileHeader.Header.Get("Content-Type"),
+		Size:            fileHeader.Size,
+		UploaderID:      uploaderID,
 	}
 
 	if err := h.repo.Create(file); err != nil {
@@ -446,7 +449,12 @@ func (h *FileHandler) PreflightUpload(c *gin.Context) {
 }
 
 func (h *FileHandler) serveStoredFile(c *gin.Context, file *models.File) {
-	reader, _, err := h.storage.Get(c.Request.Context(), file.FilePath)
+	storageKey := file.ObjectKey
+	if storageKey == "" {
+		storageKey = file.FilePath
+	}
+
+	reader, _, err := h.storage.Get(c.Request.Context(), storageKey)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
