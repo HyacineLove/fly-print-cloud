@@ -75,9 +75,21 @@ type AdminConfig struct {
 
 // StorageConfig 存储配置
 type StorageConfig struct {
-	UploadDir        string `mapstructure:"upload_dir"`
-	MaxSize          int64  `mapstructure:"max_size"`
-	MaxDocumentPages int    `mapstructure:"max_document_pages"` // PDF/DOCX 等文档的最大页数限制
+	UploadDir        string      `mapstructure:"upload_dir"`
+	Provider         string      `mapstructure:"provider"`
+	DownloadMode     string      `mapstructure:"download_mode"`
+	MaxSize          int64       `mapstructure:"max_size"`
+	MaxDocumentPages int         `mapstructure:"max_document_pages"` // PDF/DOCX 等文档的最大页数限制
+	MinIO            MinIOConfig `mapstructure:"minio"`
+}
+
+type MinIOConfig struct {
+	Endpoint     string `mapstructure:"endpoint"`
+	AccessKey    string `mapstructure:"access_key"`
+	SecretKey    string `mapstructure:"secret_key"`
+	Bucket       string `mapstructure:"bucket"`
+	UseSSL       bool   `mapstructure:"use_ssl"`
+	ObjectPrefix string `mapstructure:"object_prefix"`
 }
 
 // SecurityConfig 安全配置
@@ -209,8 +221,28 @@ func (c *Config) Validate() error {
 	}
 
 	// 验证存储配置
+	if c.Storage.Provider != "local" && c.Storage.Provider != "minio" {
+		return fmt.Errorf("storage.provider must be 'local' or 'minio', got: %s", c.Storage.Provider)
+	}
+	if c.Storage.DownloadMode != "proxy" && c.Storage.DownloadMode != "presigned" {
+		return fmt.Errorf("storage.download_mode must be 'proxy' or 'presigned', got: %s", c.Storage.DownloadMode)
+	}
 	if c.Storage.MaxSize <= 0 {
 		return fmt.Errorf("storage.max_size must be greater than 0")
+	}
+	if c.Storage.Provider == "minio" {
+		if c.Storage.MinIO.Endpoint == "" {
+			return fmt.Errorf("storage.minio.endpoint is required for minio provider")
+		}
+		if c.Storage.MinIO.AccessKey == "" {
+			return fmt.Errorf("storage.minio.access_key is required for minio provider")
+		}
+		if c.Storage.MinIO.SecretKey == "" {
+			return fmt.Errorf("storage.minio.secret_key is required for minio provider")
+		}
+		if c.Storage.MinIO.Bucket == "" {
+			return fmt.Errorf("storage.minio.bucket is required for minio provider")
+		}
 	}
 
 	// 验证安全配置
@@ -277,8 +309,16 @@ func setDefaults() {
 
 	// Storage 默认值
 	viper.SetDefault("storage.upload_dir", "./uploads")
+	viper.SetDefault("storage.provider", "local")
+	viper.SetDefault("storage.download_mode", "proxy")
 	viper.SetDefault("storage.max_size", 10485760) // 10MB
 	viper.SetDefault("storage.max_document_pages", 5)
+	viper.SetDefault("storage.minio.endpoint", "")
+	viper.SetDefault("storage.minio.access_key", "")
+	viper.SetDefault("storage.minio.secret_key", "")
+	viper.SetDefault("storage.minio.bucket", "")
+	viper.SetDefault("storage.minio.use_ssl", false)
+	viper.SetDefault("storage.minio.object_prefix", "")
 
 	// Security 默认值
 	viper.SetDefault("security.file_access_secret", "fly-print-file-access-secret-dev-only")
