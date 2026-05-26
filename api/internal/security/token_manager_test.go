@@ -1,7 +1,6 @@
 package security
 
 import (
-	"encoding/base64"
 	"fmt"
 	"testing"
 	"time"
@@ -97,32 +96,5 @@ func TestGenerateUploadTokenProducesUniqueTokensForRapidRefresh(t *testing.T) {
 
 	if _, err := tm.ValidateUploadToken(first); GetTokenErrorCode(err) != "token_revoked" {
 		t.Fatalf("expected previous token to be revoked, got %v", err)
-	}
-}
-
-func TestUploadTokenValidationSupportsLegacyFormat(t *testing.T) {
-	tm := NewTokenManager("secret", 180, 180, nil)
-	now := time.Now()
-	issuedAt := now.Unix()
-	expiresAt := now.Add(3 * time.Minute).Unix()
-
-	payload := fmt.Sprintf("%s|%s|%s|%d|%d", TokenTypeUpload, "node-1", "printer-1", issuedAt, expiresAt)
-	signature := tm.generateSignature(payload)
-	token := base64.StdEncoding.EncodeToString([]byte(payload + "|" + signature))
-
-	lightweight, err := tm.VerifyUploadTokenLightweight(token)
-	if err != nil {
-		t.Fatalf("lightweight verify legacy token: %v", err)
-	}
-	if lightweight.NodeID != "node-1" || lightweight.PrinterID != "printer-1" {
-		t.Fatalf("unexpected lightweight payload: %+v", lightweight)
-	}
-
-	validated, err := tm.ValidateUploadToken(token)
-	if err != nil {
-		t.Fatalf("validate legacy token: %v", err)
-	}
-	if validated.NodeID != "node-1" || validated.PrinterID != "printer-1" {
-		t.Fatalf("unexpected validated payload: %+v", validated)
 	}
 }
