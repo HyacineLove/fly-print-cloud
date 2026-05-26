@@ -1,16 +1,17 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"fly-print-cloud/api/internal/config"
-	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/security"
@@ -29,14 +30,19 @@ const (
 )
 
 type FileHandler struct {
-	repo         *database.FileRepository
+	repo         fileRepository
 	config       *config.StorageConfig
 	storage      storage.Service
 	wsManager    *websocket.ConnectionManager
 	tokenManager *security.TokenManager
 }
 
-func NewFileHandler(repo *database.FileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager) *FileHandler {
+type fileRepository interface {
+	Create(file *models.File) error
+	GetByID(id string) (*models.File, error)
+}
+
+func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager) *FileHandler {
 	return &FileHandler{repo: repo, config: cfg, storage: storageService, wsManager: wsManager, tokenManager: tokenManager}
 }
 
@@ -121,10 +127,18 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	ext := filepath.Ext(safeFilename)
 	fileUUID := uuid.New().String()
 	fileName := fileUUID + ext
-	filePath := filepath.Join(h.config.UploadDir, fileName)
+	objectKey := fileName
 
-	// Save file
-	if err := c.SaveUploadedFile(fileHeader, filePath); err != nil {
+	uploadFile, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reopen uploaded file"})
+		return
+	}
+	defer uploadFile.Close()
+
+	if _, err := h.storage.Put(c.Request.Context(), objectKey, uploadFile, storage.PutOptions{
+		ContentType: fileHeader.Header.Get("Content-Type"),
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
 		return
 	}
@@ -133,8 +147,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	if token != "" {
 		payload, err := h.tokenManager.ValidateUploadToken(token)
 		if err != nil {
-			// Token验证失败，删除已保存的文件
-			os.Remove(filePath)
+			_ = h.storage.Delete(c.Request.Context(), objectKey)
 			logger.Warn("Upload token validation failed", zap.Error(err))
 			errorCode := security.GetTokenErrorCode(err)
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -151,15 +164,14 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	file := &models.File{
 		OriginalName: fileHeader.Filename,
 		FileName:     fileName,
-		FilePath:     filePath,
+		FilePath:     objectKey,
 		MimeType:     fileHeader.Header.Get("Content-Type"),
 		Size:         fileHeader.Size,
 		UploaderID:   uploaderID,
 	}
 
 	if err := h.repo.Create(file); err != nil {
-		// Clean up file if DB fails
-		os.Remove(filePath)
+		_ = h.storage.Delete(c.Request.Context(), objectKey)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata"})
 		return
 	}
@@ -301,8 +313,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 			return
 		}
 
-		// Serve file
-		c.FileAttachment(file.FilePath, file.OriginalName)
+		h.serveStoredFile(c, file)
 		return
 	}
 
@@ -317,8 +328,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	// Serve file
-	c.FileAttachment(file.FilePath, file.OriginalName)
+	h.serveStoredFile(c, file)
 }
 
 // VerifyUploadToken 轻量验证上传Token（不消耗一次性Token）
@@ -433,4 +443,26 @@ func (h *FileHandler) PreflightUpload(c *gin.Context) {
 		"message": "Preflight validation passed",
 		"valid":   true,
 	})
+}
+
+func (h *FileHandler) serveStoredFile(c *gin.Context, file *models.File) {
+	reader, _, err := h.storage.Get(c.Request.Context(), file.FilePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file"})
+		return
+	}
+	defer reader.Close()
+
+	extraHeaders := map[string]string{
+		"Content-Disposition": fmt.Sprintf("attachment; filename=%q", file.OriginalName),
+	}
+
+	c.DataFromReader(http.StatusOK, file.Size, file.MimeType, reader, extraHeaders)
+	if file.Size > 0 {
+		c.Header("Content-Length", strconv.FormatInt(file.Size, 10))
+	}
 }
