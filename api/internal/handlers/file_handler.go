@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	uploadRuleMaxSizeBytes = 10 * 1024 * 1024
+	defaultUploadRuleMaxSizeBytes int64 = 10 * 1024 * 1024
 	uploadRuleMaxPages     = 5
 )
 
@@ -192,7 +192,12 @@ var (
 )
 
 func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcFile multipart.File) error {
-	if fileHeader.Size > uploadRuleMaxSizeBytes {
+	maxSizeBytes := defaultUploadRuleMaxSizeBytes
+	if h != nil && h.config != nil && h.config.MaxSize > 0 {
+		maxSizeBytes = h.config.MaxSize
+	}
+
+	if fileHeader.Size > maxSizeBytes {
 		return errUploadTooLarge
 	}
 	buffer := make([]byte, 512)
