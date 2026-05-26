@@ -14,6 +14,7 @@ import (
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/security"
+	"fly-print-cloud/api/internal/storage"
 	"fly-print-cloud/api/internal/utils"
 	"fly-print-cloud/api/internal/websocket"
 
@@ -24,22 +25,19 @@ import (
 
 const (
 	defaultUploadRuleMaxSizeBytes int64 = 10 * 1024 * 1024
-	uploadRuleMaxPages     = 5
+	uploadRuleMaxPages                  = 5
 )
 
 type FileHandler struct {
 	repo         *database.FileRepository
 	config       *config.StorageConfig
+	storage      storage.Service
 	wsManager    *websocket.ConnectionManager
 	tokenManager *security.TokenManager
 }
 
-func NewFileHandler(repo *database.FileRepository, cfg *config.StorageConfig, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager) *FileHandler {
-	// Ensure upload directory exists
-	if err := os.MkdirAll(cfg.UploadDir, 0755); err != nil {
-		logger.Error("Failed to create upload directory", zap.Error(err))
-	}
-	return &FileHandler{repo: repo, config: cfg, wsManager: wsManager, tokenManager: tokenManager}
+func NewFileHandler(repo *database.FileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager) *FileHandler {
+	return &FileHandler{repo: repo, config: cfg, storage: storageService, wsManager: wsManager, tokenManager: tokenManager}
 }
 
 // Upload 上传文件
