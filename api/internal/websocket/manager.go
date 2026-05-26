@@ -233,11 +233,7 @@ func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, 
 
 	// 生成文件访问凭证（用于预览）
 	if fileURL != "" && m.TokenManager != nil {
-		// 从 FileURL 提取 fileID（格式: /api/v1/files/{fileID}）
-		extractedFileID := ""
-		if len(fileURL) > 14 { // len("/api/v1/files/") = 14
-			extractedFileID = fileURL[14:]
-		}
+		extractedFileID := extractProxyFileID(fileURL)
 		if extractedFileID != "" {
 			// 生成预览专用 token，使用 "preview" 作为 jobID
 			token, expiresAt, err := m.TokenManager.GenerateDownloadToken(extractedFileID, "preview", nodeID)
@@ -289,11 +285,7 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 
 	// 如果有文件URL，生成一次性下载凭证
 	if job.FileURL != "" && m.TokenManager != nil {
-		// 从 FileURL 提取 fileID（格式: /api/v1/files/{fileID}）
-		fileID := ""
-		if len(job.FileURL) > 14 { // len("/api/v1/files/") = 14
-			fileID = job.FileURL[14:]
-		}
+		fileID := extractProxyFileID(job.FileURL)
 		if fileID != "" {
 			token, expiresAt, err := m.TokenManager.GenerateDownloadToken(fileID, job.ID, nodeID)
 			if err != nil {

@@ -310,7 +310,7 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 	}
 
 	// 重新生成文件URL（因为DB不存储URL）
-	file.URL = "/api/v1/files/" + file.ID
+	file.URL = buildProxyFileURL(file.ID)
 
 	// 标准验证顺序：节点存在性 → 打印机存在性 → 节点启用 → 打印机启用
 	// 注意：节点存在性和启用已由 handleMessage 通用拦截器处理
