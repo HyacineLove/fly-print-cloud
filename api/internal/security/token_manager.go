@@ -291,7 +291,6 @@ func (tm *TokenManager) ValidateDownloadTokenSimple(token string) (*DownloadToke
 }
 
 // VerifyUploadTokenLightweight validates signature and expiry without consuming the token.
-// It accepts both the new nonce-based upload token format and the legacy format.
 func (tm *TokenManager) VerifyUploadTokenLightweight(token string) (*UploadTokenPayload, error) {
 	decoded, err := base64.StdEncoding.DecodeString(token)
 	if err != nil {
@@ -331,15 +330,12 @@ func (tm *TokenManager) generateSignature(payload string) string {
 }
 
 func buildUploadTokenPayload(tokenType, nodeID, printerID string, issuedAt, expiresAt int64, nonce string) string {
-	if nonce == "" {
-		return fmt.Sprintf("%s|%s|%s|%d|%d", tokenType, nodeID, printerID, issuedAt, expiresAt)
-	}
 	return fmt.Sprintf("%s|%s|%s|%d|%d|%s", tokenType, nodeID, printerID, issuedAt, expiresAt, nonce)
 }
 
 func parseUploadTokenParts(decoded string) (tokenType, nodeID, printerID string, issuedAt, expiresAt int64, payload, signature string, err error) {
 	parts := strings.Split(decoded, "|")
-	if len(parts) != 6 && len(parts) != 7 {
+	if len(parts) != 7 {
 		err = ErrInvalidFormat
 		return
 	}
@@ -358,14 +354,8 @@ func parseUploadTokenParts(decoded string) (tokenType, nodeID, printerID string,
 		return
 	}
 
-	nonce := ""
-	if len(parts) == 7 {
-		nonce = parts[5]
-		signature = parts[6]
-	} else {
-		signature = parts[5]
-	}
-
+	nonce := parts[5]
+	signature = parts[6]
 	payload = buildUploadTokenPayload(tokenType, nodeID, printerID, issuedAt, expiresAt, nonce)
 	return
 }
