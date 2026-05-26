@@ -121,26 +121,44 @@ func (b *LocalBackend) resolvePath(key string) (string, error) {
 		return "", fmt.Errorf("storage key is required")
 	}
 
+	rootAbs, err := filepath.Abs(b.root)
+	if err != nil {
+		return "", fmt.Errorf("resolve storage root: %w", err)
+	}
+
 	cleanKey := filepath.Clean(filepath.FromSlash(key))
 	if cleanKey == "." || cleanKey == "" {
 		return "", fmt.Errorf("storage key is required")
 	}
-	if filepath.IsAbs(cleanKey) {
-		return "", fmt.Errorf("absolute storage keys are not allowed")
-	}
-	if cleanKey == ".." || strings.HasPrefix(cleanKey, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("storage key escapes root: %s", key)
+
+	rootClean := filepath.Clean(filepath.FromSlash(b.root))
+
+	var fullPath string
+	switch {
+	case filepath.IsAbs(cleanKey):
+		fullPath = cleanKey
+	case cleanKey == rootClean || strings.HasPrefix(cleanKey, rootClean+string(filepath.Separator)):
+		fullPath = cleanKey
+	default:
+		if cleanKey == ".." || strings.HasPrefix(cleanKey, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("storage key escapes root: %s", key)
+		}
+		fullPath = filepath.Join(b.root, cleanKey)
 	}
 
-	fullPath := filepath.Join(b.root, cleanKey)
-	rel, err := filepath.Rel(b.root, fullPath)
+	fullAbs, err := filepath.Abs(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve storage key: %w", err)
+	}
+
+	rel, err := filepath.Rel(rootAbs, fullAbs)
 	if err != nil {
 		return "", fmt.Errorf("resolve storage key: %w", err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("storage key escapes root: %s", key)
 	}
-	return fullPath, nil
+	return fullAbs, nil
 }
 
 func buildLocalObjectInfo(key string, info os.FileInfo) *ObjectInfo {

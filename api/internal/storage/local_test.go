@@ -77,3 +77,32 @@ func TestLocalStoragePutGetDelete(t *testing.T) {
 		t.Fatalf("Stat() after Delete() error = nil, want non-nil")
 	}
 }
+
+func TestLocalStorageSupportsLegacyRootPrefixedKeys(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	backend, err := NewLocalBackend(root)
+	if err != nil {
+		t.Fatalf("NewLocalBackend() error = %v", err)
+	}
+
+	legacyPath := filepath.Join(root, "legacy.txt")
+	if _, err := backend.Put(context.Background(), legacyPath, bytes.NewReader([]byte("legacy")), PutOptions{}); err != nil {
+		t.Fatalf("Put() with legacy path error = %v", err)
+	}
+
+	reader, _, err := backend.Get(context.Background(), legacyPath)
+	if err != nil {
+		t.Fatalf("Get() with legacy path error = %v", err)
+	}
+	defer reader.Close()
+
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(got) != "legacy" {
+		t.Fatalf("Get() payload = %q, want %q", string(got), "legacy")
+	}
+}

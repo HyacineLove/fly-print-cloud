@@ -165,3 +165,79 @@ func TestFileRepositoryGetByIDFallsBackForLegacyRows(t *testing.T) {
 		t.Fatalf("ExpectationsWereMet() error = %v", err)
 	}
 }
+
+func TestFileRepositoryListByStorageProvider(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	repo := NewFileRepository(&DB{db})
+	rows := sqlmock.NewRows([]string{
+		"id", "original_name", "file_name", "file_path", "mime_type", "size", "uploader_id", "storage_provider", "storage_bucket", "object_key", "created_at",
+	}).AddRow(
+		"file-1",
+		"report.pdf",
+		"generated.pdf",
+		"legacy/generated.pdf",
+		"application/pdf",
+		int64(1234),
+		"user-1",
+		"local",
+		nil,
+		"legacy/generated.pdf",
+		time.Unix(1, 0),
+	)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, created_at
+		FROM files
+		WHERE COALESCE(NULLIF(storage_provider, ''), 'local') = $1
+		ORDER BY created_at ASC`)).
+		WithArgs("local").
+		WillReturnRows(rows)
+
+	files, err := repo.ListByStorageProvider("local")
+	if err != nil {
+		t.Fatalf("ListByStorageProvider() error = %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("ListByStorageProvider() len = %d, want %d", len(files), 1)
+	}
+	if files[0].StorageProvider != "local" {
+		t.Fatalf("StorageProvider = %q, want %q", files[0].StorageProvider, "local")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet() error = %v", err)
+	}
+}
+
+func TestFileRepositoryUpdateStorageMetadata(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	repo := NewFileRepository(&DB{db})
+	mock.ExpectExec(regexp.QuoteMeta(`
+		UPDATE files
+		SET file_path = $2,
+			storage_provider = $3,
+			storage_bucket = $4,
+			object_key = $5
+		WHERE id = $1`)).
+		WithArgs("file-1", "objects/report.pdf", "minio", "fly-print-files", "objects/report.pdf").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repo.UpdateStorageMetadata("file-1", "minio", "fly-print-files", "objects/report.pdf"); err != nil {
+		t.Fatalf("UpdateStorageMetadata() error = %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet() error = %v", err)
+	}
+}

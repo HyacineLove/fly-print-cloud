@@ -122,7 +122,7 @@ func main() {
 	// 启动Token使用记录清理任务（每小时清理过期记录）
 	go startTokenCleanupTask(tokenUsageRepo)
 	// 启动文件清理任务（定期删除1天前的文件）
-	go startFileCleanupTask(fileRepo, storageService)
+	go startFileCleanupTask(fileRepo, cfg.Storage)
 	// 启动打印任务状态清理任务（每30分钟检查一次超时任务）
 	go startStaleJobCleanupTask(printJobRepo)
 
@@ -360,10 +360,11 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 
 // startFileCleanupTask 启动文件清理任务
 // 每小时扫描一次，删除创建时间超过1天的文件记录和物理文件
-func startFileCleanupTask(fileRepo *database.FileRepository, storageService storage.Service) {
-	_ = storageService
+func startFileCleanupTask(fileRepo *database.FileRepository, storageCfg config.StorageConfig) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
+
+	backendCache := make(map[string]storage.Service)
 
 	for range ticker.C {
 		cutoff := time.Now().Add(-24 * time.Hour)
@@ -378,13 +379,32 @@ func startFileCleanupTask(fileRepo *database.FileRepository, storageService stor
 
 		deletedCount := 0
 		for _, f := range files {
-			// 尝试删除物理文件
-			if err := os.Remove(f.FilePath); err != nil && !os.IsNotExist(err) {
-				logger.Warn("File cleanup: failed to remove file", zap.String("path", f.FilePath), zap.Error(err))
+			provider := f.StorageProvider
+			if provider == "" {
+				provider = "local"
+			}
+
+			storageSvc, ok := backendCache[provider]
+			if !ok {
+				var err error
+				storageSvc, err = storage.NewForFile(storageCfg, f)
+				if err != nil {
+					logger.Warn("File cleanup: failed to initialize storage backend", zap.String("provider", provider), zap.String("id", f.ID), zap.Error(err))
+					continue
+				}
+				backendCache[provider] = storageSvc
+			}
+
+			storageKey := f.ObjectKey
+			if storageKey == "" {
+				storageKey = f.FilePath
+			}
+
+			if err := storageSvc.Delete(context.Background(), storageKey); err != nil {
+				logger.Warn("File cleanup: failed to remove file", zap.String("key", storageKey), zap.String("provider", provider), zap.Error(err))
 				continue
 			}
 
-			// 删除数据库记录
 			if err := fileRepo.DeleteByID(f.ID); err != nil {
 				logger.Warn("File cleanup: failed to delete db record", zap.String("id", f.ID), zap.Error(err))
 				continue
