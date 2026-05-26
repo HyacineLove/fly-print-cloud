@@ -1,6 +1,6 @@
 # 构建阶段
-#FROM dockerpull.pw/library/node:18-alpine AS builder
-FROM docker.m.daocloud.io/library/node:18-alpine AS builder
+ARG DOCKERHUB_MIRROR=docker.1ms.run
+FROM ${DOCKERHUB_MIRROR}/library/node:18-alpine AS builder
 
 WORKDIR /app
 
@@ -26,8 +26,7 @@ ENV REACT_APP_API_URL=$REACT_APP_API_URL
 RUN npm run build
 
 # 运行阶段 - 复制文件到volume
-#FROM dockerpull.pw/library/alpine:latest
-FROM docker.m.daocloud.io/library/alpine:latest
+FROM ${DOCKERHUB_MIRROR}/library/alpine:latest
 
 # 复制构建产物
 COPY --from=builder /app/build /app/dist

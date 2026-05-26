@@ -1,5 +1,5 @@
-#FROM dockerpull.pw/library/golang:1.25-alpine AS builder
-FROM docker.m.daocloud.io/library/golang:1.25-alpine AS builder
+ARG DOCKERHUB_MIRROR=docker.1ms.run
+FROM ${DOCKERHUB_MIRROR}/library/golang:1.25-alpine AS builder
 
 # 设置Go代理和网络配置
 ENV GOPROXY=https://goproxy.cn,direct
@@ -17,8 +17,7 @@ RUN go mod verify
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/server
 
 # 运行阶段
-#FROM dockerpull.pw/library/alpine:latest
-FROM docker.m.daocloud.io/library/alpine:latest
+FROM ${DOCKERHUB_MIRROR}/library/alpine:latest
 
 WORKDIR /root/
 

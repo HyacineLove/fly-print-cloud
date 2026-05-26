@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: docker.m.daocloud.io/library/postgres:15
+    image: ${COMPOSE_LIBRARY_MIRROR:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io}/library/postgres:15
     container_name: fly-print-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-fly_print_cloud}
@@ -23,7 +23,7 @@ services:
         max-file: "5"
 
   minio:
-    image: docker.m.daocloud.io/minio/minio:latest
+    image: ${MINIO_IMAGE_MIRROR:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io}/minio/minio:latest
     container_name: fly-print-minio
     command: server /data --console-address ":9001"
     environment:
@@ -49,7 +49,7 @@ services:
         max-file: "5"
 
   minio-init:
-    image: docker.m.daocloud.io/minio/mc:latest
+    image: ${MINIO_IMAGE_MIRROR:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io}/minio/mc:latest
     container_name: fly-print-minio-init
     depends_on:
       minio:
@@ -74,6 +74,7 @@ services:
       context: ./api
       dockerfile: Dockerfile
       args:
+        - DOCKERHUB_MIRROR=${DOCKERHUB_MIRROR:-docker.1ms.run}
         - GOPROXY=https://goproxy.cn,direct
     container_name: fly-print-api
     environment:
@@ -131,6 +132,7 @@ services:
       context: ./admin
       dockerfile: Dockerfile
       args:
+        - DOCKERHUB_MIRROR=${DOCKERHUB_MIRROR:-docker.1ms.run}
         - REACT_APP_API_BASE_PATH=${REACT_APP_API_BASE_PATH:-}
         - REACT_APP_AUTH_BASE_PATH=${REACT_APP_AUTH_BASE_PATH:-}
         - REACT_APP_API_URL=${REACT_APP_API_URL:-}
@@ -147,7 +149,7 @@ services:
         max-file: "2"
 
   nginx:
-    image: docker.m.daocloud.io/library/nginx:alpine
+    image: ${COMPOSE_LIBRARY_MIRROR:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io}/library/nginx:alpine
     container_name: fly-print-nginx
     ports:
       - "${HTTP_PORT:-8012}:80"
