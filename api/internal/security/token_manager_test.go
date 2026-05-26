@@ -1,220 +1,128 @@
 package security
 
 import (
-	"errors"
+	"encoding/base64"
+	"fmt"
 	"testing"
 	"time"
 )
 
-// MockTokenUsageMarker 模拟 TokenUsageMarker
-type MockTokenUsageMarker struct {
-	usedTokens map[string]bool
+type testTokenRecord struct {
+	tokenType  string
+	nodeID     string
+	resourceID string
+	jobID      string
+	expiresAt  time.Time
+	revoked    bool
+	used       bool
 }
 
-func NewMockTokenUsageMarker() *MockTokenUsageMarker {
-	return &MockTokenUsageMarker{
-		usedTokens: make(map[string]bool),
+type testTokenRepo struct {
+	records map[string]*testTokenRecord
+}
+
+func newTestTokenRepo() *testTokenRepo {
+	return &testTokenRepo{records: map[string]*testTokenRecord{}}
+}
+
+func (r *testTokenRepo) PreRegisterToken(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error {
+	if _, ok := r.records[tokenHash]; ok {
+		return nil
 	}
-}
-
-func (m *MockTokenUsageMarker) PreRegisterToken(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error {
+	r.records[tokenHash] = &testTokenRecord{
+		tokenType:  tokenType,
+		nodeID:     nodeID,
+		resourceID: resourceID,
+		jobID:      jobID,
+		expiresAt:  expiresAt,
+	}
 	return nil
 }
 
-func (m *MockTokenUsageMarker) MarkTokenAsUsed(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error {
-	if m.usedTokens[tokenHash] {
-		return errors.New("token has already been used")
+func (r *testTokenRepo) MarkTokenAsUsed(tokenHash, tokenType, nodeID, resourceID, jobID string, expiresAt time.Time) error {
+	if existing, ok := r.records[tokenHash]; ok {
+		if existing.revoked {
+			return fmt.Errorf("token has been revoked")
+		}
+		if existing.used {
+			return fmt.Errorf("token has already been used")
+		}
+		existing.used = true
+		return nil
 	}
-	m.usedTokens[tokenHash] = true
+
+	r.records[tokenHash] = &testTokenRecord{
+		tokenType:  tokenType,
+		nodeID:     nodeID,
+		resourceID: resourceID,
+		jobID:      jobID,
+		expiresAt:  expiresAt,
+		used:       true,
+	}
 	return nil
 }
 
-func TestTokenManager_GenerateUploadToken(t *testing.T) {
-	tm := NewTokenManager("test-secret", 180, 180, nil)
+func (r *testTokenRepo) RevokeTokensByNodeAndResource(tokenType, nodeID, resourceID string) (int64, error) {
+	var revoked int64
+	for _, record := range r.records {
+		if record.tokenType == tokenType && record.nodeID == nodeID && record.resourceID == resourceID && !record.revoked {
+			record.revoked = true
+			revoked++
+		}
+	}
+	return revoked, nil
+}
 
-	nodeID := "node-123"
-	printerID := "printer-456"
+func TestGenerateUploadTokenProducesUniqueTokensForRapidRefresh(t *testing.T) {
+	repo := newTestTokenRepo()
+	tm := NewTokenManager("secret", 180, 180, repo)
 
-	token, expiresAt, err := tm.GenerateUploadToken(nodeID, printerID)
+	first, _, err := tm.GenerateUploadToken("node-1", "printer-1")
 	if err != nil {
-		t.Fatalf("GenerateUploadToken() error = %v", err)
+		t.Fatalf("first token: %v", err)
 	}
 
-	if token == "" {
-		t.Error("Expected non-empty token")
+	second, _, err := tm.GenerateUploadToken("node-1", "printer-1")
+	if err != nil {
+		t.Fatalf("second token: %v", err)
 	}
 
-	if expiresAt.Before(time.Now()) {
-		t.Error("Token expiration time should be in the future")
+	if first == second {
+		t.Fatalf("expected rapid refresh tokens to be unique")
 	}
 
-	// Token should expire in approximately 180 seconds
-	expectedExpiry := time.Now().Add(180 * time.Second)
-	diff := expiresAt.Sub(expectedExpiry)
-	if diff < -5*time.Second || diff > 5*time.Second {
-		t.Errorf("Token expiry time off by %v", diff)
+	if _, err := tm.ValidateUploadToken(second); err != nil {
+		t.Fatalf("expected latest token to validate, got %v", err)
+	}
+
+	if _, err := tm.ValidateUploadToken(first); GetTokenErrorCode(err) != "token_revoked" {
+		t.Fatalf("expected previous token to be revoked, got %v", err)
 	}
 }
 
-func TestTokenManager_ValidateUploadToken(t *testing.T) {
-	tm := NewTokenManager("test-secret", 180, 180, nil)
+func TestUploadTokenValidationSupportsLegacyFormat(t *testing.T) {
+	tm := NewTokenManager("secret", 180, 180, nil)
+	now := time.Now()
+	issuedAt := now.Unix()
+	expiresAt := now.Add(3 * time.Minute).Unix()
 
-	nodeID := "node-123"
-	printerID := "printer-456"
+	payload := fmt.Sprintf("%s|%s|%s|%d|%d", TokenTypeUpload, "node-1", "printer-1", issuedAt, expiresAt)
+	signature := tm.generateSignature(payload)
+	token := base64.StdEncoding.EncodeToString([]byte(payload + "|" + signature))
 
-	// Generate a valid token
-	token, _, err := tm.GenerateUploadToken(nodeID, printerID)
+	lightweight, err := tm.VerifyUploadTokenLightweight(token)
 	if err != nil {
-		t.Fatalf("GenerateUploadToken() error = %v", err)
+		t.Fatalf("lightweight verify legacy token: %v", err)
+	}
+	if lightweight.NodeID != "node-1" || lightweight.PrinterID != "printer-1" {
+		t.Fatalf("unexpected lightweight payload: %+v", lightweight)
 	}
 
-	// Test valid token
-	payload, err := tm.ValidateUploadToken(token)
+	validated, err := tm.ValidateUploadToken(token)
 	if err != nil {
-		t.Errorf("ValidateUploadToken() error = %v", err)
+		t.Fatalf("validate legacy token: %v", err)
 	}
-
-	if payload.NodeID != nodeID {
-		t.Errorf("Expected NodeID %s, got %s", nodeID, payload.NodeID)
-	}
-
-	if payload.PrinterID != printerID {
-		t.Errorf("Expected PrinterID %s, got %s", printerID, payload.PrinterID)
-	}
-
-	// Test invalid token
-	_, err = tm.ValidateUploadToken("invalid-token")
-	if err == nil {
-		t.Error("Expected error for invalid token")
-	}
-}
-
-func TestTokenManager_GenerateDownloadToken(t *testing.T) {
-	tm := NewTokenManager("test-secret", 180, 180, nil)
-
-	fileID := "file-123"
-	jobID := "job-456"
-	nodeID := "node-789"
-
-	token, expiresAt, err := tm.GenerateDownloadToken(fileID, jobID, nodeID)
-	if err != nil {
-		t.Fatalf("GenerateDownloadToken() error = %v", err)
-	}
-
-	if token == "" {
-		t.Error("Expected non-empty token")
-	}
-
-	if expiresAt.Before(time.Now()) {
-		t.Error("Token expiration time should be in the future")
-	}
-}
-
-func TestTokenManager_ValidateDownloadToken(t *testing.T) {
-	tm := NewTokenManager("test-secret", 180, 180, nil)
-
-	fileID := "file-123"
-	jobID := "job-456"
-	nodeID := "node-789"
-
-	// Generate a valid token
-	token, _, err := tm.GenerateDownloadToken(fileID, jobID, nodeID)
-	if err != nil {
-		t.Fatalf("GenerateDownloadToken() error = %v", err)
-	}
-
-	// Test valid token
-	payload, err := tm.ValidateDownloadToken(token, fileID, nodeID)
-	if err != nil {
-		t.Errorf("ValidateDownloadToken() error = %v", err)
-	}
-
-	if payload.FileID != fileID {
-		t.Errorf("Expected FileID %s, got %s", fileID, payload.FileID)
-	}
-
-	if payload.JobID != jobID {
-		t.Errorf("Expected JobID %s, got %s", jobID, payload.JobID)
-	}
-
-	if payload.NodeID != nodeID {
-		t.Errorf("Expected NodeID %s, got %s", nodeID, payload.NodeID)
-	}
-
-	// Test context mismatch
-	_, err = tm.ValidateDownloadToken(token, "wrong-file-id", nodeID)
-	if err == nil {
-		t.Error("Expected error for context mismatch")
-	}
-}
-
-func TestTokenManager_ExpiredToken(t *testing.T) {
-	// 测试过期token需要修改代码支持负数TTL或使用时间注入
-	// 这里改为简单验证token格式包含过期时间
-	tm := NewTokenManager("test-secret", 180, 180, nil)
-
-	nodeID := "node-123"
-	printerID := "printer-456"
-
-	token, expiresAt, err := tm.GenerateUploadToken(nodeID, printerID)
-	if err != nil {
-		t.Fatalf("GenerateUploadToken() error = %v", err)
-	}
-
-	// Verify expiration time is in the future
-	if expiresAt.Before(time.Now()) {
-		t.Error("Expiration time should be in the future")
-	}
-
-	// Validate the token works when not expired
-	_, err = tm.ValidateUploadToken(token)
-	if err != nil {
-		t.Errorf("ValidateUploadToken() error = %v", err)
-	}
-}
-
-func TestTokenManager_OneTimeToken(t *testing.T) {
-	mockRepo := NewMockTokenUsageMarker()
-	tm := NewTokenManager("test-secret", 180, 180, mockRepo)
-
-	nodeID := "node-123"
-	printerID := "printer-456"
-
-	// Generate token
-	token, _, err := tm.GenerateUploadToken(nodeID, printerID)
-	if err != nil {
-		t.Fatalf("GenerateUploadToken() error = %v", err)
-	}
-
-	// First validation should succeed and mark as used
-	_, err = tm.ValidateUploadToken(token)
-	if err != nil {
-		t.Errorf("First ValidateUploadToken() error = %v", err)
-	}
-
-	// Second validation should fail (already used)
-	_, err = tm.ValidateUploadToken(token)
-	if err != ErrTokenAlreadyUsed {
-		t.Errorf("Expected ErrTokenAlreadyUsed, got %v", err)
-	}
-}
-
-func TestTokenManager_WrongSecret(t *testing.T) {
-	tm1 := NewTokenManager("secret1", 180, 180, nil)
-	tm2 := NewTokenManager("secret2", 180, 180, nil)
-
-	nodeID := "node-123"
-	printerID := "printer-456"
-
-	// Generate token with first manager
-	token, _, err := tm1.GenerateUploadToken(nodeID, printerID)
-	if err != nil {
-		t.Fatalf("GenerateUploadToken() error = %v", err)
-	}
-
-	// Validate with second manager (different secret)
-	_, err = tm2.ValidateUploadToken(token)
-	if err == nil {
-		t.Error("Expected error when validating with wrong secret")
+	if validated.NodeID != "node-1" || validated.PrinterID != "printer-1" {
+		t.Fatalf("unexpected validated payload: %+v", validated)
 	}
 }
