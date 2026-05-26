@@ -105,6 +105,48 @@ func (r *FileRepository) DeleteByID(id string) error {
 	return nil
 }
 
+func (r *FileRepository) ListByStorageProvider(provider string) ([]*models.File, error) {
+	query := `
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, created_at
+		FROM files
+		WHERE COALESCE(NULLIF(storage_provider, ''), 'local') = $1
+		ORDER BY created_at ASC`
+
+	rows, err := r.db.Query(query, provider)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files by storage provider: %w", err)
+	}
+	defer rows.Close()
+
+	var files []*models.File
+	for rows.Next() {
+		file, err := scanFileRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan file by storage provider: %w", err)
+		}
+		files = append(files, file)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+	return files, nil
+}
+
+func (r *FileRepository) UpdateStorageMetadata(id, provider, bucket, objectKey string) error {
+	query := `
+		UPDATE files
+		SET file_path = $2,
+			storage_provider = $3,
+			storage_bucket = $4,
+			object_key = $5
+		WHERE id = $1`
+
+	if _, err := r.db.Exec(query, id, objectKey, provider, bucket, objectKey); err != nil {
+		return fmt.Errorf("failed to update file storage metadata: %w", err)
+	}
+	return nil
+}
+
 type fileScanner interface {
 	Scan(dest ...any) error
 }
