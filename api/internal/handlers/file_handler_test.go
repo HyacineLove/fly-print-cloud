@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -15,10 +16,41 @@ import (
 
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/security"
 	"fly-print-cloud/api/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestUploadPolicyEndpointReturnsConfiguredLimits(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+
+	handler := &FileHandler{
+		config: &config.StorageConfig{
+			MaxSize:          20 * 1024 * 1024,
+			MaxDocumentPages: 8,
+		},
+	}
+
+	router := gin.New()
+	router.GET("/api/v1/files/upload-policy", handler.GetUploadPolicy)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/files/upload-policy", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"max_file_size_bytes":20971520`) {
+		t.Fatalf("body = %s, want configured max size", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"max_pages":8`) {
+		t.Fatalf("body = %s, want configured max pages", rec.Body.String())
+	}
+}
 
 func TestValidateUploadRulesUsesConfiguredMaxSize(t *testing.T) {
 	t.Helper()
@@ -50,6 +82,44 @@ func TestValidateUploadRulesUsesConfiguredMaxSize(t *testing.T) {
 
 	if err := handler.validateUploadRules(fileHeader, tmpFile); err != errUploadTooLarge {
 		t.Fatalf("expected errUploadTooLarge, got %v", err)
+	}
+}
+
+func TestVerifyUploadEndpointRejectsDisabledPrinter(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+
+	repo := &stubTokenRepo{records: map[string]*stubTokenRecord{}}
+	tm := security.NewTokenManager("secret", 180, 180, repo)
+	token, _, err := tm.GenerateUploadToken("node-1", "printer-1")
+	if err != nil {
+		t.Fatalf("GenerateUploadToken() error = %v", err)
+	}
+
+	handler := &FileHandler{
+		config:       &config.StorageConfig{MaxSize: 10 * 1024 * 1024, MaxDocumentPages: 5},
+		tokenManager: tm,
+		edgeNodeRepo: &stubEdgeNodeRepo{nodes: map[string]*models.EdgeNode{
+			"node-1": {ID: "node-1", Enabled: true},
+		}},
+		printerRepo: &stubPrinterRepo{printers: map[string]*models.Printer{
+			"printer-1": {ID: "printer-1", EdgeNodeID: "node-1", Enabled: false},
+		}},
+	}
+
+	router := gin.New()
+	router.GET("/api/v1/files/verify-upload-token", handler.VerifyUploadToken)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/files/verify-upload-token?token="+url.QueryEscape(token)+"&node_id=node-1&printer_id=printer-1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error":"printer_disabled"`) {
+		t.Fatalf("body = %s, want printer_disabled", rec.Body.String())
 	}
 }
 
@@ -250,6 +320,74 @@ type fakeStorage struct {
 	putErr        error
 	getErr        error
 	deleteErr     error
+}
+
+type stubEdgeNodeRepo struct {
+	nodes map[string]*models.EdgeNode
+}
+
+func (r *stubEdgeNodeRepo) GetEdgeNodeByID(id string) (*models.EdgeNode, error) {
+	node, ok := r.nodes[id]
+	if !ok {
+		return nil, nil
+	}
+	return node, nil
+}
+
+type stubPrinterRepo struct {
+	printers map[string]*models.Printer
+}
+
+func (r *stubPrinterRepo) GetPrinterByID(id string) (*models.Printer, error) {
+	printer, ok := r.printers[id]
+	if !ok {
+		return nil, nil
+	}
+	return printer, nil
+}
+
+type stubTokenRecord struct {
+	revoked bool
+	used    bool
+}
+
+type stubTokenRepo struct {
+	records map[string]*stubTokenRecord
+}
+
+func (r *stubTokenRepo) PreRegisterToken(tokenHash, _, _, _, _ string, _ time.Time) error {
+	if _, ok := r.records[tokenHash]; !ok {
+		r.records[tokenHash] = &stubTokenRecord{}
+	}
+	return nil
+}
+
+func (r *stubTokenRepo) MarkTokenAsUsed(tokenHash, _, _, _, _ string, _ time.Time) error {
+	record, ok := r.records[tokenHash]
+	if !ok {
+		record = &stubTokenRecord{}
+		r.records[tokenHash] = record
+	}
+	if record.revoked {
+		return errors.New("token has been revoked")
+	}
+	if record.used {
+		return errors.New("token has already been used")
+	}
+	record.used = true
+	return nil
+}
+
+func (r *stubTokenRepo) RevokeTokensByNodeAndResource(_, _, _ string) (int64, error) {
+	return 0, nil
+}
+
+func (r *stubTokenRepo) GetTokenStatus(tokenHash string) (bool, bool, bool, error) {
+	record, ok := r.records[tokenHash]
+	if !ok {
+		return false, false, false, nil
+	}
+	return record.used, record.revoked, true, nil
 }
 
 func newFakeStorage() *fakeStorage {

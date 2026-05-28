@@ -72,6 +72,14 @@ func (r *testTokenRepo) RevokeTokensByNodeAndResource(tokenType, nodeID, resourc
 	return revoked, nil
 }
 
+func (r *testTokenRepo) GetTokenStatus(tokenHash string) (bool, bool, bool, error) {
+	record, ok := r.records[tokenHash]
+	if !ok {
+		return false, false, false, nil
+	}
+	return record.used, record.revoked, true, nil
+}
+
 func TestGenerateUploadTokenProducesUniqueTokensForRapidRefresh(t *testing.T) {
 	repo := newTestTokenRepo()
 	tm := NewTokenManager("secret", 180, 180, repo)
@@ -96,5 +104,37 @@ func TestGenerateUploadTokenProducesUniqueTokensForRapidRefresh(t *testing.T) {
 
 	if _, err := tm.ValidateUploadToken(first); GetTokenErrorCode(err) != "token_revoked" {
 		t.Fatalf("expected previous token to be revoked, got %v", err)
+	}
+}
+
+func TestVerifyUploadTokenAvailableRejectsUsedToken(t *testing.T) {
+	repo := newTestTokenRepo()
+	tm := NewTokenManager("secret", 180, 180, repo)
+
+	token, _, err := tm.GenerateUploadToken("node-1", "printer-1")
+	if err != nil {
+		t.Fatalf("GenerateUploadToken() error = %v", err)
+	}
+
+	if _, err := tm.ValidateUploadToken(token); err != nil {
+		t.Fatalf("ValidateUploadToken() error = %v", err)
+	}
+
+	if _, err := tm.VerifyUploadTokenAvailable(token, "node-1", "printer-1"); GetTokenErrorCode(err) != "token_already_used" {
+		t.Fatalf("error code = %s, want token_already_used", GetTokenErrorCode(err))
+	}
+}
+
+func TestVerifyUploadTokenAvailableRejectsWrongContext(t *testing.T) {
+	repo := newTestTokenRepo()
+	tm := NewTokenManager("secret", 180, 180, repo)
+
+	token, _, err := tm.GenerateUploadToken("node-1", "printer-1")
+	if err != nil {
+		t.Fatalf("GenerateUploadToken() error = %v", err)
+	}
+
+	if _, err := tm.VerifyUploadTokenAvailable(token, "node-2", "printer-1"); GetTokenErrorCode(err) != "invalid_context" {
+		t.Fatalf("error code = %s, want invalid_context", GetTokenErrorCode(err))
 	}
 }

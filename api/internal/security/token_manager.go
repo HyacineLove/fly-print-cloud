@@ -39,6 +39,10 @@ type TokenManager struct {
 	tokenRepo        TokenUsageMarker
 }
 
+type tokenStatusReader interface {
+	GetTokenStatus(tokenHash string) (used bool, revoked bool, found bool, err error)
+}
+
 type UploadTokenPayload struct {
 	NodeID    string
 	PrinterID string
@@ -172,31 +176,12 @@ func (tm *TokenManager) GenerateDownloadToken(fileID, jobID, nodeID string) (str
 }
 
 func (tm *TokenManager) ValidateUploadToken(token string) (*UploadTokenPayload, error) {
-	decoded, err := base64.StdEncoding.DecodeString(token)
-	if err != nil {
-		return nil, ErrInvalidFormat
-	}
-
-	tokenType, nodeID, printerID, issuedAt, expiresAt, payload, signature, err := parseUploadTokenParts(string(decoded))
+	tokenHash, _, nodeID, printerID, issuedAt, expiresAt, _, _, err := tm.parseUploadToken(token)
 	if err != nil {
 		return nil, err
 	}
 
-	if tokenType != TokenTypeUpload {
-		return nil, ErrInvalidType
-	}
-
-	if time.Now().Unix() > expiresAt {
-		return nil, ErrTokenExpired
-	}
-
-	expectedSignature := tm.generateSignature(payload)
-	if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
-		return nil, ErrInvalidSignature
-	}
-
 	if tm.tokenRepo != nil {
-		tokenHash := generateTokenHash(token)
 		err := tm.tokenRepo.MarkTokenAsUsed(tokenHash, TokenTypeUpload, nodeID, printerID, "", time.Unix(expiresAt, 0))
 		if err != nil {
 			if err.Error() == "token has already been used" {
@@ -292,27 +277,9 @@ func (tm *TokenManager) ValidateDownloadTokenSimple(token string) (*DownloadToke
 
 // VerifyUploadTokenLightweight validates signature and expiry without consuming the token.
 func (tm *TokenManager) VerifyUploadTokenLightweight(token string) (*UploadTokenPayload, error) {
-	decoded, err := base64.StdEncoding.DecodeString(token)
-	if err != nil {
-		return nil, ErrInvalidFormat
-	}
-
-	tokenType, nodeID, printerID, issuedAt, expiresAt, payload, signature, err := parseUploadTokenParts(string(decoded))
+	_, _, nodeID, printerID, issuedAt, expiresAt, _, _, err := tm.parseUploadToken(token)
 	if err != nil {
 		return nil, err
-	}
-
-	if tokenType != TokenTypeUpload {
-		return nil, ErrInvalidType
-	}
-
-	if time.Now().Unix() > expiresAt {
-		return nil, ErrTokenExpired
-	}
-
-	expectedSignature := tm.generateSignature(payload)
-	if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
-		return nil, ErrInvalidSignature
 	}
 
 	return &UploadTokenPayload{
@@ -321,6 +288,72 @@ func (tm *TokenManager) VerifyUploadTokenLightweight(token string) (*UploadToken
 		IssuedAt:  issuedAt,
 		ExpiresAt: expiresAt,
 	}, nil
+}
+
+func (tm *TokenManager) VerifyUploadTokenAvailable(token, expectedNodeID, expectedPrinterID string) (*UploadTokenPayload, error) {
+	tokenHash, _, nodeID, printerID, issuedAt, expiresAt, _, _, err := tm.parseUploadToken(token)
+	if err != nil {
+		return nil, err
+	}
+
+	if expectedNodeID != "" && nodeID != expectedNodeID {
+		return nil, ErrInvalidContext
+	}
+	if expectedPrinterID != "" && printerID != expectedPrinterID {
+		return nil, ErrInvalidContext
+	}
+
+	if inspector, ok := tm.tokenRepo.(tokenStatusReader); ok {
+		used, revoked, found, err := inspector.GetTokenStatus(tokenHash)
+		if err != nil {
+			return nil, &TokenError{Code: "database_error", Message: "Failed to verify token usage"}
+		}
+		if found && revoked {
+			return nil, &TokenError{Code: "token_revoked", Message: "Token has been revoked"}
+		}
+		if found && used {
+			return nil, ErrTokenAlreadyUsed
+		}
+	}
+
+	return &UploadTokenPayload{
+		NodeID:    nodeID,
+		PrinterID: printerID,
+		IssuedAt:  issuedAt,
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+func (tm *TokenManager) parseUploadToken(token string) (tokenHash, tokenType, nodeID, printerID string, issuedAt, expiresAt int64, payload, signature string, err error) {
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		err = ErrInvalidFormat
+		return
+	}
+
+	tokenType, nodeID, printerID, issuedAt, expiresAt, payload, signature, err = parseUploadTokenParts(string(decoded))
+	if err != nil {
+		return
+	}
+
+	if tokenType != TokenTypeUpload {
+		err = ErrInvalidType
+		return
+	}
+
+	if time.Now().Unix() > expiresAt {
+		err = ErrTokenExpired
+		return
+	}
+
+	expectedSignature := tm.generateSignature(payload)
+	if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
+		err = ErrInvalidSignature
+		return
+	}
+
+	tokenHash = generateTokenHash(token)
+	return
 }
 
 func (tm *TokenManager) generateSignature(payload string) string {
