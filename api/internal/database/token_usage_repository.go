@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"errors"
 	"time"
 )
@@ -124,6 +125,25 @@ func (r *TokenUsageRepository) IsTokenUsed(tokenHash string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (r *TokenUsageRepository) GetTokenStatus(tokenHash string) (bool, bool, bool, error) {
+	var revoked bool
+	var usedAt *time.Time
+
+	err := r.db.QueryRow(`
+		SELECT revoked, used_at
+		FROM token_usage_records
+		WHERE token_hash = $1
+	`, tokenHash).Scan(&revoked, &usedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, false, false, nil
+		}
+		return false, false, false, err
+	}
+
+	return usedAt != nil, revoked, true, nil
 }
 
 // CleanupExpiredTokens 清理过期的Token记录

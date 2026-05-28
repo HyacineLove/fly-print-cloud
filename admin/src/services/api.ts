@@ -124,7 +124,12 @@ class ApiService {
   }
 
   // 文件上传
-  async uploadFile(file: File, uploadToken?: string, nodeId?: string): Promise<ApiResponse<any>> {
+  async uploadFile(
+    file: File,
+    uploadToken?: string,
+    nodeId?: string,
+    printerId?: string
+  ): Promise<ApiResponse<any>> {
     const formData = new FormData();
     formData.append('file', file);
     
@@ -134,6 +139,9 @@ class ApiService {
         let url = buildApiUrl(`/files?token=${encodeURIComponent(uploadToken)}`);
         if (nodeId) {
           url += `&node_id=${encodeURIComponent(nodeId)}`;
+        }
+        if (printerId) {
+          url += `&printer_id=${encodeURIComponent(printerId)}`;
         }
         
         const response = await fetch(url, {

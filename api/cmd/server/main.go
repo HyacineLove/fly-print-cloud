@@ -155,7 +155,7 @@ func main() {
 	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo, printJobRepo, wsManager, tokenUsageRepo)
 	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, edgeNodeRepo, wsManager)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo, builtinAuth)
-	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, storageService, wsManager, tokenManager)
+	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, storageService, wsManager, tokenManager, edgeNodeRepo, printerRepo)
 	healthHandler := handlers.NewHealthHandler(db, wsManager)
 
 	// 启动 WebSocket 管理器
@@ -348,6 +348,7 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 		fileGroup := apiV1Group.Group("/files")
 		{
 			// 轻量验证上传Token（不消耗一次性Token）
+			fileGroup.GET("/upload-policy", fileHandler.GetUploadPolicy)
 			fileGroup.GET("/verify-upload-token", fileHandler.VerifyUploadToken)
 			fileGroup.POST("/preflight", middleware.OptionalOAuth2ResourceServer(), fileHandler.PreflightUpload)
 			// 上传：支持上传凭证或 OAuth2 认证

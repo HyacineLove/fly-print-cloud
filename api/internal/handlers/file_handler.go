@@ -35,6 +35,8 @@ type FileHandler struct {
 	storage      storage.Service
 	wsManager    *websocket.ConnectionManager
 	tokenManager *security.TokenManager
+	edgeNodeRepo edgeNodeLookup
+	printerRepo  printerLookup
 }
 
 type fileRepository interface {
@@ -42,8 +44,24 @@ type fileRepository interface {
 	GetByID(id string) (*models.File, error)
 }
 
-func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager) *FileHandler {
-	return &FileHandler{repo: repo, config: cfg, storage: storageService, wsManager: wsManager, tokenManager: tokenManager}
+type edgeNodeLookup interface {
+	GetEdgeNodeByID(id string) (*models.EdgeNode, error)
+}
+
+type printerLookup interface {
+	GetPrinterByID(id string) (*models.Printer, error)
+}
+
+func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager, edgeNodeRepo edgeNodeLookup, printerRepo printerLookup) *FileHandler {
+	return &FileHandler{
+		repo:         repo,
+		config:       cfg,
+		storage:      storageService,
+		wsManager:    wsManager,
+		tokenManager: tokenManager,
+		edgeNodeRepo: edgeNodeRepo,
+		printerRepo:  printerRepo,
+	}
 }
 
 // Upload 上传文件
@@ -55,9 +73,9 @@ func (h *FileHandler) Upload(c *gin.Context) {
 
 	if token != "" {
 		// 第一阶段：使用轻量验证（不消耗Token），提前检查Token有效性
-		payload, err := h.tokenManager.VerifyUploadTokenLightweight(token)
+		payload, err := h.tokenManager.VerifyUploadTokenAvailable(token, c.Query("node_id"), c.Query("printer_id"))
 		if err != nil {
-			logger.Warn("Upload token lightweight verification failed", zap.Error(err))
+			logger.Warn("Upload token verification failed", zap.Error(err))
 			errorCode := security.GetTokenErrorCode(err)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    401,
@@ -67,6 +85,14 @@ func (h *FileHandler) Upload(c *gin.Context) {
 			return
 		}
 		// 暂存信息，稍后验证通过再使用
+		if err := h.ensureUploadTargetActive(payload.NodeID, payload.PrinterID); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":    401,
+				"error":   uploadTargetErrorCode(err),
+				"message": err.Error(),
+			})
+			return
+		}
 		nodeID = payload.NodeID
 		uploaderID = payload.NodeID // 使用节点ID作为上传者标识
 		logger.Debug("File upload pre-authorized for node", zap.String("node_id", payload.NodeID), zap.String("printer_id", payload.PrinterID))
@@ -202,15 +228,17 @@ var (
 	errUploadInvalidType  = fmt.Errorf("invalid file type")
 	errUploadTooLarge     = fmt.Errorf("file too large")
 	errUploadTooManyPages = fmt.Errorf("too many pages")
+	errNodeNotFound       = errors.New("Edge node not found")
+	errNodeDisabled       = errors.New("Edge node has been disabled by administrator")
+	errPrinterNotFound    = errors.New("Printer not found")
+	errPrinterNotBelongToNode = errors.New("Printer does not belong to this node")
+	errPrinterDisabled    = errors.New("Printer has been disabled by administrator")
 )
 
 func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcFile multipart.File) error {
-	maxSizeBytes := defaultUploadRuleMaxSizeBytes
-	if h != nil && h.config != nil && h.config.MaxSize > 0 {
-		maxSizeBytes = h.config.MaxSize
-	}
+	policy := h.currentUploadPolicy()
 
-	if fileHeader.Size > maxSizeBytes {
+	if fileHeader.Size > policy.MaxFileSizeBytes {
 		return errUploadTooLarge
 	}
 	buffer := make([]byte, 512)
@@ -239,13 +267,48 @@ func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcF
 	if ext != ".pdf" && ext != ".doc" && ext != ".docx" {
 		return nil
 	}
-	pageCount, err := utils.ValidateDocumentPageCountFromReader(srcFile, srcFile, fileHeader.Size, ext, uploadRuleMaxPages)
+	pageCount, err := utils.ValidateDocumentPageCountFromReader(srcFile, srcFile, fileHeader.Size, ext, policy.MaxPages)
 	if err != nil {
 		logger.Debug("document page validation failed", zap.Error(err), zap.String("file", fileHeader.Filename))
 		return errUploadTooManyPages
 	}
 	logger.Debug("document page validation passed", zap.Int("pages", pageCount), zap.String("file", fileHeader.Filename))
 	return nil
+}
+
+type UploadPolicyResponse struct {
+	MaxFileSizeBytes int64    `json:"max_file_size_bytes"`
+	MaxPages         int      `json:"max_pages"`
+	AllowedExtensions []string `json:"allowed_extensions"`
+	AllowedMimeTypes []string  `json:"allowed_mime_types"`
+}
+
+func (h *FileHandler) currentUploadPolicy() UploadPolicyResponse {
+	maxSize := defaultUploadRuleMaxSizeBytes
+	maxPages := uploadRuleMaxPages
+	if h != nil && h.config != nil {
+		if h.config.MaxSize > 0 {
+			maxSize = h.config.MaxSize
+		}
+		if h.config.MaxDocumentPages > 0 {
+			maxPages = h.config.MaxDocumentPages
+		}
+	}
+
+	return UploadPolicyResponse{
+		MaxFileSizeBytes: maxSize,
+		MaxPages:         maxPages,
+		AllowedExtensions: []string{".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff"},
+		AllowedMimeTypes: append([]string{}, security.AllowedPrintFileTypes...),
+	}
+}
+
+func (h *FileHandler) GetUploadPolicy(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data":    h.currentUploadPolicy(),
+	})
 }
 
 // Download 下载文件
@@ -338,6 +401,8 @@ func (h *FileHandler) Download(c *gin.Context) {
 // GET /api/v1/files/verify-upload-token?token=xxx
 func (h *FileHandler) VerifyUploadToken(c *gin.Context) {
 	token := c.Query("token")
+	nodeID := c.Query("node_id")
+	printerID := c.Query("printer_id")
 	if token == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    400,
@@ -348,7 +413,7 @@ func (h *FileHandler) VerifyUploadToken(c *gin.Context) {
 	}
 
 	// 使用轻量验证方法（不标记为已使用）
-	payload, err := h.tokenManager.VerifyUploadTokenLightweight(token)
+	payload, err := h.tokenManager.VerifyUploadTokenAvailable(token, nodeID, printerID)
 	if err != nil {
 		logger.Warn("Upload token verification failed", zap.Error(err))
 		errorCode := security.GetTokenErrorCode(err)
@@ -362,9 +427,18 @@ func (h *FileHandler) VerifyUploadToken(c *gin.Context) {
 	}
 
 	// 返回验证结果和Token信息
+	if err := h.ensureUploadTargetActive(payload.NodeID, payload.PrinterID); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"error":   uploadTargetErrorCode(err),
+			"message": err.Error(),
+			"valid":   false,
+		})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
-		"message": "Token is valid",
+		"message": "Upload session is valid",
 		"valid":   true,
 		"data": gin.H{
 			"node_id":    payload.NodeID,
@@ -377,13 +451,22 @@ func (h *FileHandler) VerifyUploadToken(c *gin.Context) {
 func (h *FileHandler) PreflightUpload(c *gin.Context) {
 	token := c.Query("token")
 	if token != "" {
-		_, err := h.tokenManager.VerifyUploadTokenLightweight(token)
+		payload, err := h.tokenManager.VerifyUploadTokenAvailable(token, c.Query("node_id"), c.Query("printer_id"))
 		if err != nil {
 			logger.Warn("Upload token preflight verification failed", zap.Error(err))
 			errorCode := security.GetTokenErrorCode(err)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    401,
 				"error":   errorCode,
+				"message": err.Error(),
+				"valid":   false,
+			})
+			return
+		}
+		if err := h.ensureUploadTargetActive(payload.NodeID, payload.PrinterID); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":    401,
+				"error":   uploadTargetErrorCode(err),
 				"message": err.Error(),
 				"valid":   false,
 			})
@@ -446,6 +529,50 @@ func (h *FileHandler) PreflightUpload(c *gin.Context) {
 		"message": "Preflight validation passed",
 		"valid":   true,
 	})
+}
+
+func (h *FileHandler) ensureUploadTargetActive(nodeID, printerID string) error {
+	if h.edgeNodeRepo == nil || h.printerRepo == nil {
+		return nil
+	}
+
+	node, err := h.edgeNodeRepo.GetEdgeNodeByID(nodeID)
+	if err != nil || node == nil {
+		return errNodeNotFound
+	}
+	if !node.Enabled {
+		return errNodeDisabled
+	}
+
+	printer, err := h.printerRepo.GetPrinterByID(printerID)
+	if err != nil || printer == nil {
+		return errPrinterNotFound
+	}
+	if printer.EdgeNodeID != nodeID {
+		return errPrinterNotBelongToNode
+	}
+	if !printer.Enabled {
+		return errPrinterDisabled
+	}
+
+	return nil
+}
+
+func uploadTargetErrorCode(err error) string {
+	switch err {
+	case errNodeNotFound:
+		return "node_not_found"
+	case errNodeDisabled:
+		return "node_disabled"
+	case errPrinterNotFound:
+		return "printer_not_found"
+	case errPrinterNotBelongToNode:
+		return "printer_not_belong_to_node"
+	case errPrinterDisabled:
+		return "printer_disabled"
+	default:
+		return "unknown_error"
+	}
 }
 
 func (h *FileHandler) serveStoredFile(c *gin.Context, file *models.File) {
