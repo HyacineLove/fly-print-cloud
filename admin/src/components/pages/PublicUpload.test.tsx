@@ -71,6 +71,8 @@ describe('PublicUpload', () => {
     renderUploadPage('/upload?token=test-token&node_id=node-1&printer_id=printer-1');
 
     await screen.findByText(/1(\.0)? KB/i);
+    expect(screen.queryByText(/剩余时间/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/倒计时结束前/i)).not.toBeInTheDocument();
 
     const fileInput = document.querySelector('#public-upload-input') as HTMLInputElement;
     const file = new File([new Uint8Array(2048)], 'too-large.pdf', { type: 'application/pdf' });

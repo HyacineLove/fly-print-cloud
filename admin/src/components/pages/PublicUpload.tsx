@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Result, Spin, Typography, message } from 'antd';
-import { CheckCircleOutlined, ClockCircleOutlined, FileOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, FileOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import { apiService } from '../../services/api';
 import { UploadPolicy, uploadService } from '../../services/upload';
@@ -168,16 +168,6 @@ const formatAllowedTypes = (policy: UploadPolicy): string => {
   return '按服务端配置';
 };
 
-const formatCountdown = (countdownSeconds: number | null): string => {
-  if (countdownSeconds === null) {
-    return '--:--';
-  }
-
-  const minutes = Math.floor(countdownSeconds / 60);
-  const seconds = countdownSeconds % 60;
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-};
-
 const validateSelectedFile = (file: File, policy: UploadPolicy): string | null => {
   const fileName = file.name.toLowerCase();
   const matchesExtension =
@@ -207,7 +197,6 @@ const PublicUpload: React.FC = () => {
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [printerId, setPrinterId] = useState<string | null>(null);
   const [expiresAtMs, setExpiresAtMs] = useState<number | null>(null);
-  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>('idle');
@@ -271,13 +260,10 @@ const PublicUpload: React.FC = () => {
     const syncCountdown = () => {
       const remainingMs = expiresAtMs - Date.now() - 2000;
       if (remainingMs <= 0) {
-        setCountdownSeconds(0);
         setPageErrorMessage(EXPIRED_SESSION_MESSAGE);
         setPageState('invalid');
         return;
       }
-
-      setCountdownSeconds(Math.ceil(remainingMs / 1000));
     };
 
     syncCountdown();
@@ -430,13 +416,7 @@ const PublicUpload: React.FC = () => {
         <Card style={{ textAlign: 'center' }}>
           <Title level={2}>文件上传</Title>
           <Paragraph type="secondary" style={{ marginBottom: 12 }}>
-            二维码当前可用，请在倒计时结束前完成上传。
-          </Paragraph>
-          <Paragraph style={{ marginBottom: 8 }}>
-            <Text strong>
-              <ClockCircleOutlined style={{ marginRight: 8 }} />
-              剩余时间：{formatCountdown(countdownSeconds)}
-            </Text>
+            二维码当前可用，请尽快完成上传。
           </Paragraph>
 
           {policy ? (
