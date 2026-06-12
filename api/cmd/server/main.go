@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"fly-print-cloud/api/internal/auth"
+	"fly-print-cloud/api/internal/business"
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/handlers"
@@ -105,6 +106,8 @@ func main() {
 	printJobRepo := database.NewPrintJobRepository(db)
 	fileRepo := database.NewFileRepository(db)
 	tokenUsageRepo := database.NewTokenUsageRepository(db)
+	systemSettingsRepo := database.NewSystemSettingsRepository(db)
+	businessSettingsService := business.NewSettingsService(systemSettingsRepo, cfg)
 
 	// 初始化凭证管理器（支持一次性凭证验证）
 	tokenManager := security.NewTokenManager(
@@ -113,6 +116,7 @@ func main() {
 		cfg.Security.DownloadTokenTTL,
 		tokenUsageRepo,
 	)
+	tokenManager.SetTTLProvider(businessSettingsService)
 
 	storageService, err := storage.NewFromConfig(cfg.Storage)
 	if err != nil {
@@ -155,7 +159,8 @@ func main() {
 	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo, printJobRepo, wsManager, tokenUsageRepo)
 	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, edgeNodeRepo, wsManager)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo, builtinAuth)
-	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, storageService, wsManager, tokenManager, edgeNodeRepo, printerRepo)
+	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, storageService, wsManager, tokenManager, businessSettingsService, edgeNodeRepo, printerRepo)
+	businessSettingsHandler := handlers.NewBusinessSettingsHandler(businessSettingsService)
 	healthHandler := handlers.NewHealthHandler(db, wsManager)
 
 	// 启动 WebSocket 管理器
@@ -180,7 +185,7 @@ func main() {
 	r.Use(middleware.SecurityHeadersMiddleware())
 
 	// 设置路由
-	setupRoutes(r, userHandler, edgeNodeHandler, printerHandler, printJobHandler, wsHandler, oauth2Handler, fileHandler, healthHandler, printJobRepo, edgeNodeRepo, printerRepo, oauth2ClientRepo)
+	setupRoutes(r, userHandler, edgeNodeHandler, printerHandler, printJobHandler, wsHandler, oauth2Handler, fileHandler, businessSettingsHandler, healthHandler, printJobRepo, edgeNodeRepo, printerRepo, oauth2ClientRepo)
 
 	// 创建HTTP服务器
 	serverAddr := cfg.Server.GetServerAddr()
@@ -216,7 +221,7 @@ func main() {
 	logger.Info("Server exited")
 }
 
-func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandler *handlers.EdgeNodeHandler, printerHandler *handlers.PrinterHandler, printJobHandler *handlers.PrintJobHandler, wsHandler *websocket.WebSocketHandler, oauth2Handler *handlers.OAuth2Handler, fileHandler *handlers.FileHandler, healthHandler *handlers.HealthHandler, printJobRepo *database.PrintJobRepository, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, oauth2ClientRepo *database.OAuth2ClientRepository) {
+func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandler *handlers.EdgeNodeHandler, printerHandler *handlers.PrinterHandler, printJobHandler *handlers.PrintJobHandler, wsHandler *websocket.WebSocketHandler, oauth2Handler *handlers.OAuth2Handler, fileHandler *handlers.FileHandler, businessSettingsHandler *handlers.BusinessSettingsHandler, healthHandler *handlers.HealthHandler, printJobRepo *database.PrintJobRepository, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, oauth2ClientRepo *database.OAuth2ClientRepository) {
 	// Swagger 文档路由
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
@@ -268,6 +273,12 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 
 			// 当前用户业务信息 - 任何认证用户都可以访问自己的档案
 			adminGroup.GET("/profile", middleware.OAuth2ResourceServer(), userHandler.GetCurrentUserProfile)
+
+			businessSettingsGroup := adminGroup.Group("/business-settings", middleware.OAuth2ResourceServer("fly-print-admin"))
+			{
+				businessSettingsGroup.GET("", businessSettingsHandler.Get)
+				businessSettingsGroup.PUT("", businessSettingsHandler.Update)
+			}
 
 			// Edge Node 管理路由 - 需要 admin 或 operator 权限
 			edgeNodeGroup := adminGroup.Group("/edge-nodes", middleware.OAuth2ResourceServer("fly-print-admin", "fly-print-operator"))

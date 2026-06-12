@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"fly-print-cloud/api/internal/business"
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/security"
@@ -52,6 +55,48 @@ func TestUploadPolicyEndpointReturnsConfiguredLimits(t *testing.T) {
 	}
 }
 
+func TestUploadPolicyEndpointReturnsDynamicSettings(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+
+	handler := &FileHandler{
+		config: &config.StorageConfig{
+			MaxSize:          20 * 1024 * 1024,
+			MaxDocumentPages: 8,
+		},
+		settingsProvider: staticSettingsProvider{
+			settings: business.Settings{
+				UploadMaxSizeBytes:      1024,
+				MaxDocumentPages:        2,
+				UploadTokenTTLSeconds:   90,
+				DownloadTokenTTLSeconds: 120,
+				AllowedExtensions:       []string{".pdf"},
+			},
+		},
+	}
+
+	router := gin.New()
+	router.GET("/api/v1/files/upload-policy", handler.GetUploadPolicy)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/files/upload-policy", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"max_file_size_bytes":1024`) {
+		t.Fatalf("body = %s, want dynamic max size", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"max_pages":2`) {
+		t.Fatalf("body = %s, want dynamic max pages", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"allowed_extensions":[".pdf"]`) {
+		t.Fatalf("body = %s, want dynamic allowed extensions", rec.Body.String())
+	}
+}
+
 func TestValidateUploadRulesUsesConfiguredMaxSize(t *testing.T) {
 	t.Helper()
 
@@ -82,6 +127,137 @@ func TestValidateUploadRulesUsesConfiguredMaxSize(t *testing.T) {
 
 	if err := handler.validateUploadRules(fileHeader, tmpFile); err != errUploadTooLarge {
 		t.Fatalf("expected errUploadTooLarge, got %v", err)
+	}
+}
+
+func TestValidateUploadRulesUsesDynamicMaxSize(t *testing.T) {
+	t.Parallel()
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "upload-*.png")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer tmpFile.Close()
+
+	content := samplePNGBytes()
+	if _, err := tmpFile.Write(content); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		t.Fatalf("seek temp file: %v", err)
+	}
+
+	handler := &FileHandler{
+		config: &config.StorageConfig{
+			MaxSize:          1024 * 1024,
+			MaxDocumentPages: 5,
+		},
+		settingsProvider: staticSettingsProvider{
+			settings: business.Settings{
+				UploadMaxSizeBytes:      int64(len(content) - 1),
+				MaxDocumentPages:        5,
+				UploadTokenTTLSeconds:   90,
+				DownloadTokenTTLSeconds: 120,
+				AllowedExtensions:       []string{".png"},
+			},
+		},
+	}
+
+	fileHeader := &multipart.FileHeader{
+		Filename: "sample.png",
+		Size:     int64(len(content)),
+	}
+
+	if err := handler.validateUploadRules(fileHeader, tmpFile); err != errUploadTooLarge {
+		t.Fatalf("expected errUploadTooLarge, got %v", err)
+	}
+}
+
+func TestValidateUploadRulesUsesDynamicMaxDocumentPages(t *testing.T) {
+	t.Parallel()
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "upload-*.docx")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer tmpFile.Close()
+
+	if err := writeDOCXWithPageCount(tmpFile, 2); err != nil {
+		t.Fatalf("write docx: %v", err)
+	}
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		t.Fatalf("seek temp file: %v", err)
+	}
+	stat, err := tmpFile.Stat()
+	if err != nil {
+		t.Fatalf("stat temp file: %v", err)
+	}
+
+	handler := &FileHandler{
+		config: &config.StorageConfig{
+			MaxSize:          1024 * 1024,
+			MaxDocumentPages: 5,
+		},
+		settingsProvider: staticSettingsProvider{
+			settings: business.Settings{
+				UploadMaxSizeBytes:      1024 * 1024,
+				MaxDocumentPages:        1,
+				UploadTokenTTLSeconds:   90,
+				DownloadTokenTTLSeconds: 120,
+				AllowedExtensions:       []string{".docx"},
+			},
+		},
+	}
+
+	fileHeader := &multipart.FileHeader{
+		Filename: "sample.docx",
+		Size:     stat.Size(),
+	}
+
+	if err := handler.validateUploadRules(fileHeader, tmpFile); err != errUploadTooManyPages {
+		t.Fatalf("expected errUploadTooManyPages, got %v", err)
+	}
+}
+
+func TestValidateUploadRulesUsesDynamicAllowedExtensions(t *testing.T) {
+	t.Parallel()
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "upload-*.png")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.Write(samplePNGBytes()); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		t.Fatalf("seek temp file: %v", err)
+	}
+
+	handler := &FileHandler{
+		config: &config.StorageConfig{
+			MaxSize:          1024 * 1024,
+			MaxDocumentPages: 5,
+		},
+		settingsProvider: staticSettingsProvider{
+			settings: business.Settings{
+				UploadMaxSizeBytes:      1024 * 1024,
+				MaxDocumentPages:        5,
+				UploadTokenTTLSeconds:   90,
+				DownloadTokenTTLSeconds: 120,
+				AllowedExtensions:       []string{".pdf"},
+			},
+		},
+	}
+
+	fileHeader := &multipart.FileHeader{
+		Filename: "sample.png",
+		Size:     int64(len(samplePNGBytes())),
+	}
+
+	if err := handler.validateUploadRules(fileHeader, tmpFile); err != errUploadInvalidType {
+		t.Fatalf("expected errUploadInvalidType, got %v", err)
 	}
 }
 
@@ -446,4 +622,33 @@ func samplePNGBytes() []byte {
 		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
 		0xDE,
 	}
+}
+
+func writeDOCXWithPageCount(file *os.File, pages int) error {
+	writer := zip.NewWriter(file)
+	appXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+  <Pages>%d</Pages>
+</Properties>`, pages)
+	entry, err := writer.Create("docProps/app.xml")
+	if err != nil {
+		return err
+	}
+	if _, err := entry.Write([]byte(appXML)); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	return writer.Close()
+}
+
+type staticSettingsProvider struct {
+	settings business.Settings
+	err      error
+}
+
+func (p staticSettingsProvider) Current() (business.Settings, error) {
+	if p.err != nil {
+		return business.Settings{}, p.err
+	}
+	return p.settings, nil
 }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Avatar, Dropdown, Space, Spin, message, Alert } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Space } from 'antd';
 import { 
   DashboardOutlined, 
   PrinterOutlined, 
@@ -9,8 +9,8 @@ import {
   UserOutlined,
   LogoutOutlined,
   SettingOutlined,
-  FileAddOutlined,
-  KeyOutlined
+  KeyOutlined,
+  ControlOutlined
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 
@@ -24,11 +24,11 @@ import Settings from './components/pages/Settings';
 import PublicUpload from './components/pages/PublicUpload';
 import Login from './components/pages/Login';
 import OAuth2Clients from './components/pages/OAuth2Clients';
+import BusinessSettings from './components/pages/BusinessSettings';
 
 // 导入错误边界和工具
 import ErrorBoundary from './components/ErrorBoundary';
 import Loading from './components/Loading';
-import { handleError } from './utils/errorHandler';
 import { buildAuthUrl } from './config';
 
 const { Header, Sider, Content } = Layout;
@@ -131,6 +131,11 @@ const AdminApp: React.FC = () => {
       key: '/oauth2-clients',
       icon: <KeyOutlined />,
       label: 'OAuth2 Clients',
+    },
+    {
+      key: '/business-settings',
+      icon: <ControlOutlined />,
+      label: 'Business Settings',
     },
     {
       key: '/settings',
@@ -247,6 +252,7 @@ const AdminApp: React.FC = () => {
               <Route path="/print-jobs" element={<PrintJobs />} />
               <Route path="/users" element={<Users />} />
               <Route path="/oauth2-clients" element={<OAuth2Clients />} />
+              <Route path="/business-settings" element={<BusinessSettings />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

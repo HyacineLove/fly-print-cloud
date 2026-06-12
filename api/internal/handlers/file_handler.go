@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fly-print-cloud/api/internal/business"
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
@@ -30,13 +31,18 @@ const (
 )
 
 type FileHandler struct {
-	repo         fileRepository
-	config       *config.StorageConfig
-	storage      storage.Service
-	wsManager    *websocket.ConnectionManager
-	tokenManager *security.TokenManager
-	edgeNodeRepo edgeNodeLookup
-	printerRepo  printerLookup
+	repo             fileRepository
+	config           *config.StorageConfig
+	storage          storage.Service
+	wsManager        *websocket.ConnectionManager
+	tokenManager     *security.TokenManager
+	settingsProvider businessSettingsProvider
+	edgeNodeRepo     edgeNodeLookup
+	printerRepo      printerLookup
+}
+
+type businessSettingsProvider interface {
+	Current() (business.Settings, error)
 }
 
 type fileRepository interface {
@@ -52,15 +58,16 @@ type printerLookup interface {
 	GetPrinterByID(id string) (*models.Printer, error)
 }
 
-func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager, edgeNodeRepo edgeNodeLookup, printerRepo printerLookup) *FileHandler {
+func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager, settingsProvider businessSettingsProvider, edgeNodeRepo edgeNodeLookup, printerRepo printerLookup) *FileHandler {
 	return &FileHandler{
-		repo:         repo,
-		config:       cfg,
-		storage:      storageService,
-		wsManager:    wsManager,
-		tokenManager: tokenManager,
-		edgeNodeRepo: edgeNodeRepo,
-		printerRepo:  printerRepo,
+		repo:             repo,
+		config:           cfg,
+		storage:          storageService,
+		wsManager:        wsManager,
+		tokenManager:     tokenManager,
+		settingsProvider: settingsProvider,
+		edgeNodeRepo:     edgeNodeRepo,
+		printerRepo:      printerRepo,
 	}
 }
 
@@ -225,14 +232,14 @@ func (h *FileHandler) Upload(c *gin.Context) {
 }
 
 var (
-	errUploadInvalidType  = fmt.Errorf("invalid file type")
-	errUploadTooLarge     = fmt.Errorf("file too large")
-	errUploadTooManyPages = fmt.Errorf("too many pages")
-	errNodeNotFound       = errors.New("Edge node not found")
-	errNodeDisabled       = errors.New("Edge node has been disabled by administrator")
-	errPrinterNotFound    = errors.New("Printer not found")
+	errUploadInvalidType      = fmt.Errorf("invalid file type")
+	errUploadTooLarge         = fmt.Errorf("file too large")
+	errUploadTooManyPages     = fmt.Errorf("too many pages")
+	errNodeNotFound           = errors.New("Edge node not found")
+	errNodeDisabled           = errors.New("Edge node has been disabled by administrator")
+	errPrinterNotFound        = errors.New("Printer not found")
 	errPrinterNotBelongToNode = errors.New("Printer does not belong to this node")
-	errPrinterDisabled    = errors.New("Printer has been disabled by administrator")
+	errPrinterDisabled        = errors.New("Printer has been disabled by administrator")
 )
 
 func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcFile multipart.File) error {
@@ -248,16 +255,12 @@ func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcF
 	}
 	contentType := http.DetectContentType(buffer[:bytesRead])
 	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	if !extensionAllowed(ext, policy.AllowedExtensions) {
+		return errUploadInvalidType
+	}
 	if !security.IsAllowedFileType(contentType, security.AllowedPrintFileTypes) {
-		allowedExtensions := []string{".docx", ".doc", ".pdf"}
-		isAllowedExt := false
-		for _, allowedExt := range allowedExtensions {
-			if ext == allowedExt {
-				isAllowedExt = true
-				break
-			}
-		}
-		if !isAllowedExt {
+		documentExtensions := []string{".docx", ".doc", ".pdf"}
+		if !extensionAllowed(ext, documentExtensions) {
 			return errUploadInvalidType
 		}
 	}
@@ -276,16 +279,27 @@ func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcF
 	return nil
 }
 
+func extensionAllowed(ext string, allowedExtensions []string) bool {
+	ext = strings.ToLower(ext)
+	for _, allowedExt := range allowedExtensions {
+		if ext == strings.ToLower(allowedExt) {
+			return true
+		}
+	}
+	return false
+}
+
 type UploadPolicyResponse struct {
-	MaxFileSizeBytes int64    `json:"max_file_size_bytes"`
-	MaxPages         int      `json:"max_pages"`
+	MaxFileSizeBytes  int64    `json:"max_file_size_bytes"`
+	MaxPages          int      `json:"max_pages"`
 	AllowedExtensions []string `json:"allowed_extensions"`
-	AllowedMimeTypes []string  `json:"allowed_mime_types"`
+	AllowedMimeTypes  []string `json:"allowed_mime_types"`
 }
 
 func (h *FileHandler) currentUploadPolicy() UploadPolicyResponse {
 	maxSize := defaultUploadRuleMaxSizeBytes
 	maxPages := uploadRuleMaxPages
+	allowedExtensions := append([]string{}, business.DefaultAllowedUploadExtensions...)
 	if h != nil && h.config != nil {
 		if h.config.MaxSize > 0 {
 			maxSize = h.config.MaxSize
@@ -294,12 +308,19 @@ func (h *FileHandler) currentUploadPolicy() UploadPolicyResponse {
 			maxPages = h.config.MaxDocumentPages
 		}
 	}
+	if h != nil && h.settingsProvider != nil {
+		if settings, err := h.settingsProvider.Current(); err == nil {
+			maxSize = settings.UploadMaxSizeBytes
+			maxPages = settings.MaxDocumentPages
+			allowedExtensions = append([]string{}, settings.AllowedExtensions...)
+		}
+	}
 
 	return UploadPolicyResponse{
-		MaxFileSizeBytes: maxSize,
-		MaxPages:         maxPages,
-		AllowedExtensions: []string{".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff"},
-		AllowedMimeTypes: append([]string{}, security.AllowedPrintFileTypes...),
+		MaxFileSizeBytes:  maxSize,
+		MaxPages:          maxPages,
+		AllowedExtensions: allowedExtensions,
+		AllowedMimeTypes:  append([]string{}, security.AllowedPrintFileTypes...),
 	}
 }
 

@@ -1,0 +1,210 @@
+import React, { useEffect, useState } from 'react';
+import { Button, Card, Form, Input, InputNumber, Space, Typography, message } from 'antd';
+import { ReloadOutlined, SaveOutlined } from '@ant-design/icons';
+import { buildApiUrl, buildAuthUrl } from '../../config';
+
+const { Title, Paragraph } = Typography;
+
+interface BusinessSettingsPayload {
+  upload_max_size_bytes: number;
+  max_document_pages: number;
+  upload_token_ttl_seconds: number;
+  download_token_ttl_seconds: number;
+  allowed_extensions: string[];
+}
+
+interface BusinessSettingsFormValues {
+  upload_size_mb: number;
+  max_document_pages: number;
+  upload_token_ttl_seconds: number;
+  download_token_ttl_seconds: number;
+  allowed_extensions: string;
+}
+
+const bytesToMegabytes = (bytes: number): number => Number((bytes / (1024 * 1024)).toFixed(2));
+const megabytesToBytes = (megabytes: number): number => Math.round(megabytes * 1024 * 1024);
+
+const parseExtensions = (value: string): string[] =>
+  value
+    .split(',')
+    .map((extension) => extension.trim())
+    .filter(Boolean);
+
+const BusinessSettings: React.FC = () => {
+  const [form] = Form.useForm<BusinessSettingsFormValues>();
+  const [token, setToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const applySettings = (settings: BusinessSettingsPayload) => {
+    form.setFieldsValue({
+      upload_size_mb: bytesToMegabytes(settings.upload_max_size_bytes),
+      max_document_pages: settings.max_document_pages,
+      upload_token_ttl_seconds: settings.upload_token_ttl_seconds,
+      download_token_ttl_seconds: settings.download_token_ttl_seconds,
+      allowed_extensions: settings.allowed_extensions.join(', '),
+    });
+  };
+
+  const loadSettings = async (accessToken?: string) => {
+    const effectiveToken = accessToken || token;
+    if (!effectiveToken) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await fetch(buildApiUrl('/admin/business-settings'), {
+        headers: { Authorization: `Bearer ${effectiveToken}` },
+      });
+      const result = await response.json();
+      if (response.ok && result.code === 200 && result.data) {
+        applySettings(result.data);
+      } else {
+        message.error(result.message || '加载业务配置失败');
+      }
+    } catch {
+      message.error('网络错误');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const response = await fetch(buildAuthUrl('me'));
+        const result = await response.json();
+        if (result.code === 200 && result.data?.access_token) {
+          const accessToken = result.data.access_token;
+          setToken(accessToken);
+          await loadSettings(accessToken);
+        } else {
+          message.error('获取登录状态失败');
+        }
+      } catch {
+        message.error('网络错误');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const saveSettings = async (values: BusinessSettingsFormValues) => {
+    if (!token) {
+      message.error('缺少访问凭证');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const payload: BusinessSettingsPayload = {
+        upload_max_size_bytes: megabytesToBytes(values.upload_size_mb),
+        max_document_pages: values.max_document_pages,
+        upload_token_ttl_seconds: values.upload_token_ttl_seconds,
+        download_token_ttl_seconds: values.download_token_ttl_seconds,
+        allowed_extensions: parseExtensions(values.allowed_extensions),
+      };
+
+      const response = await fetch(buildApiUrl('/admin/business-settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (response.ok && result.code === 200 && result.data) {
+        applySettings(result.data);
+        message.success('业务配置已更新');
+      } else {
+        message.error(result.message || '保存业务配置失败');
+      }
+    } catch {
+      message.error('网络错误');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }} align="start">
+        <div>
+          <Title level={2} style={{ marginBottom: 4 }}>业务配置</Title>
+          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            管理上传策略和凭证有效期，新请求会读取最新配置。
+          </Paragraph>
+        </div>
+        <Button icon={<ReloadOutlined />} onClick={() => loadSettings()} disabled={!token || loading}>
+          刷新
+        </Button>
+      </Space>
+
+      <Card loading={loading}>
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={saveSettings}
+          initialValues={{
+            upload_size_mb: 10,
+            max_document_pages: 5,
+            upload_token_ttl_seconds: 180,
+            download_token_ttl_seconds: 180,
+            allowed_extensions: '.pdf, .doc, .docx, .jpg, .jpeg, .png, .gif, .bmp, .tiff',
+          }}
+        >
+          <Form.Item
+            label="上传大小上限（MB）"
+            name="upload_size_mb"
+            rules={[{ required: true, type: 'number', min: 0.01, message: '请输入大于 0 的大小上限' }]}
+          >
+            <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item
+            label="文档页数上限"
+            name="max_document_pages"
+            rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的页数上限' }]}
+          >
+            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item
+            label="上传凭证有效期（秒）"
+            name="upload_token_ttl_seconds"
+            rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的上传凭证有效期' }]}
+          >
+            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item
+            label="下载凭证有效期（秒）"
+            name="download_token_ttl_seconds"
+            rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的下载凭证有效期' }]}
+          >
+            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item
+            label="允许上传扩展名"
+            name="allowed_extensions"
+            rules={[{ required: true, message: '请输入允许上传的扩展名' }]}
+          >
+            <Input.TextArea rows={3} />
+          </Form.Item>
+
+          <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saving}>
+            保存配置
+          </Button>
+        </Form>
+      </Card>
+    </div>
+  );
+};
+
+export default BusinessSettings;

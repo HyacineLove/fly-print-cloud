@@ -305,6 +305,29 @@ func (db *DB) InitTables() error {
 	}
 
 	// 数据库迁移：为 token_usage_records 表添加新字段（如果不存在）
+	systemSettingsTableSQL := `
+	CREATE TABLE IF NOT EXISTS system_settings (
+		key VARCHAR(100) PRIMARY KEY,
+		value TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	if _, err := db.Exec(systemSettingsTableSQL); err != nil {
+		return fmt.Errorf("failed to create system_settings table: %w", err)
+	}
+
+	systemSettingsTriggerSQL := `
+	DROP TRIGGER IF EXISTS update_system_settings_updated_at ON system_settings;
+	CREATE TRIGGER update_system_settings_updated_at
+		BEFORE UPDATE ON system_settings
+		FOR EACH ROW
+		EXECUTE FUNCTION update_updated_at_column();`
+
+	if _, err := db.Exec(systemSettingsTriggerSQL); err != nil {
+		return fmt.Errorf("failed to create system_settings update trigger: %w", err)
+	}
+
 	migrations := []string{
 		"ALTER TABLE token_usage_records ADD COLUMN IF NOT EXISTS revoked BOOLEAN DEFAULT FALSE;",
 		"ALTER TABLE token_usage_records ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP;",
@@ -350,6 +373,7 @@ func (db *DB) InitTables() error {
 		"CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage_records(created_at);",
 		"CREATE INDEX IF NOT EXISTS idx_token_usage_node_resource ON token_usage_records(node_id, resource_id, token_type);",
 		"CREATE INDEX IF NOT EXISTS idx_token_usage_revoked ON token_usage_records(revoked);",
+		"CREATE INDEX IF NOT EXISTS idx_system_settings_updated_at ON system_settings(updated_at DESC);",
 
 		// Files 索引
 		"CREATE INDEX IF NOT EXISTS idx_files_uploader_id ON files(uploader_id);",

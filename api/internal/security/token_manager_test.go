@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"fly-print-cloud/api/internal/business"
 )
 
 type testTokenRecord struct {
@@ -137,4 +139,53 @@ func TestVerifyUploadTokenAvailableRejectsWrongContext(t *testing.T) {
 	if _, err := tm.VerifyUploadTokenAvailable(token, "node-2", "printer-1"); GetTokenErrorCode(err) != "invalid_context" {
 		t.Fatalf("error code = %s, want invalid_context", GetTokenErrorCode(err))
 	}
+}
+
+func TestGenerateTokensUseDynamicTTLProvider(t *testing.T) {
+	t.Parallel()
+
+	tm := NewTokenManager("secret", 180, 180, nil)
+	tm.SetTTLProvider(staticTTLProvider{uploadTTL: 45, downloadTTL: 75})
+
+	uploadToken, uploadExpiresAt, err := tm.GenerateUploadToken("node-1", "printer-1")
+	if err != nil {
+		t.Fatalf("GenerateUploadToken() error = %v", err)
+	}
+	uploadPayload, err := tm.VerifyUploadTokenLightweight(uploadToken)
+	if err != nil {
+		t.Fatalf("VerifyUploadTokenLightweight() error = %v", err)
+	}
+	if got := uploadPayload.ExpiresAt - uploadPayload.IssuedAt; got != 45 {
+		t.Fatalf("upload ttl = %d, want %d", got, 45)
+	}
+	if uploadExpiresAt.Unix() != uploadPayload.ExpiresAt {
+		t.Fatalf("upload expiresAt = %d, want %d", uploadExpiresAt.Unix(), uploadPayload.ExpiresAt)
+	}
+
+	downloadToken, _, err := tm.GenerateDownloadToken("file-1", "job-1", "node-1")
+	if err != nil {
+		t.Fatalf("GenerateDownloadToken() error = %v", err)
+	}
+	downloadPayload, err := tm.ValidateDownloadTokenSimple(downloadToken)
+	if err != nil {
+		t.Fatalf("ValidateDownloadTokenSimple() error = %v", err)
+	}
+	if got := downloadPayload.ExpiresAt - downloadPayload.IssuedAt; got != 75 {
+		t.Fatalf("download ttl = %d, want %d", got, 75)
+	}
+}
+
+type staticTTLProvider struct {
+	uploadTTL   int
+	downloadTTL int
+}
+
+func (p staticTTLProvider) Current() (business.Settings, error) {
+	return business.Settings{
+		UploadMaxSizeBytes:      1024,
+		MaxDocumentPages:        5,
+		UploadTokenTTLSeconds:   p.uploadTTL,
+		DownloadTokenTTLSeconds: p.downloadTTL,
+		AllowedExtensions:       []string{".pdf"},
+	}, nil
 }

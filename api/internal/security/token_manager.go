@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"fly-print-cloud/api/internal/business"
 	"fly-print-cloud/api/internal/logger"
 
 	"go.uber.org/zap"
@@ -36,7 +37,12 @@ type TokenManager struct {
 	secret           string
 	uploadTokenTTL   int
 	downloadTokenTTL int
+	ttlProvider      tokenTTLProvider
 	tokenRepo        TokenUsageMarker
+}
+
+type tokenTTLProvider interface {
+	Current() (business.Settings, error)
 }
 
 type tokenStatusReader interface {
@@ -95,6 +101,10 @@ func NewTokenManager(secret string, uploadTTL, downloadTTL int, tokenRepo TokenU
 	}
 }
 
+func (tm *TokenManager) SetTTLProvider(provider tokenTTLProvider) {
+	tm.ttlProvider = provider
+}
+
 // GenerateUploadToken emits a unique upload token. New-format tokens include a nonce
 // so repeated refreshes within the same second do not recreate the same token string.
 func (tm *TokenManager) GenerateUploadToken(nodeID, printerID string) (string, time.Time, error) {
@@ -113,7 +123,7 @@ func (tm *TokenManager) GenerateUploadToken(nodeID, printerID string) (string, t
 
 	now := time.Now()
 	issuedAt := now.Unix()
-	expiresAt := now.Add(time.Duration(tm.uploadTokenTTL) * time.Second).Unix()
+	expiresAt := now.Add(time.Duration(tm.currentUploadTTL()) * time.Second).Unix()
 	nonce, err := generateTokenNonce()
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to generate upload token nonce: %w", err)
@@ -154,7 +164,7 @@ func (tm *TokenManager) GenerateDownloadToken(fileID, jobID, nodeID string) (str
 
 	now := time.Now()
 	issuedAt := now.Unix()
-	expiresAt := now.Add(time.Duration(tm.downloadTokenTTL) * time.Second).Unix()
+	expiresAt := now.Add(time.Duration(tm.currentDownloadTTL()) * time.Second).Unix()
 
 	payload := fmt.Sprintf("%s|%s|%s|%s|%d|%d", TokenTypeDownload, fileID, jobID, nodeID, issuedAt, expiresAt)
 	signature := tm.generateSignature(payload)
@@ -360,6 +370,24 @@ func (tm *TokenManager) generateSignature(payload string) string {
 	h := hmac.New(sha256.New, []byte(tm.secret))
 	h.Write([]byte(payload))
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (tm *TokenManager) currentUploadTTL() int {
+	if tm.ttlProvider != nil {
+		if settings, err := tm.ttlProvider.Current(); err == nil && settings.UploadTokenTTLSeconds > 0 {
+			return settings.UploadTokenTTLSeconds
+		}
+	}
+	return tm.uploadTokenTTL
+}
+
+func (tm *TokenManager) currentDownloadTTL() int {
+	if tm.ttlProvider != nil {
+		if settings, err := tm.ttlProvider.Current(); err == nil && settings.DownloadTokenTTLSeconds > 0 {
+			return settings.DownloadTokenTTLSeconds
+		}
+	}
+	return tm.downloadTokenTTL
 }
 
 func buildUploadTokenPayload(tokenType, nodeID, printerID string, issuedAt, expiresAt int64, nonce string) string {
