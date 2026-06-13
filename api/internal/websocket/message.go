@@ -2,7 +2,6 @@ package websocket
 
 import "time"
 
-
 // 基础消息格式
 type Message struct {
 	Type      string      `json:"type"`
@@ -13,11 +12,11 @@ type Message struct {
 
 // 上行消息类型
 const (
-	MsgTypeHeartbeat         = "edge_heartbeat"
-	MsgTypeJobUpdate         = "job_update"
-	MsgTypeSubmitPrintParams = "submit_print_params"
+	MsgTypeHeartbeat          = "edge_heartbeat"
+	MsgTypeJobUpdate          = "job_update"
+	MsgTypeSubmitPrintParams  = "submit_print_params"
 	MsgTypeRequestUploadToken = "request_upload_token" // 请求上传凭证
-	MsgTypeAck               = "ack"                  // 确认消息
+	MsgTypeAck                = "ack"                  // 确认消息
 )
 
 // 下行指令类型
@@ -27,7 +26,7 @@ const (
 	CmdTypeReportStatus = "report_status"
 	CmdTypePreviewFile  = "preview_file"
 	CmdTypeNodeState    = "node_state"
-	CmdTypeError        = "error" // 错误消息，用于通知 Edge 端操作失败
+	CmdTypeError        = "error"        // 错误消息，用于通知 Edge 端操作失败
 	CmdTypeUploadToken  = "upload_token" // 下发上传凭证
 )
 
@@ -38,7 +37,8 @@ type PreviewFilePayload struct {
 	FileName                 string     `json:"file_name"`
 	FileSize                 int64      `json:"file_size"`
 	FileType                 string     `json:"file_type"`
-	FileAccessToken          string     `json:"file_access_token,omitempty"`           // 文件访问凭证
+	ContentHash              string     `json:"content_hash"`
+	FileAccessToken          string     `json:"file_access_token,omitempty"`            // 文件访问凭证
 	FileAccessTokenExpiresAt *time.Time `json:"file_access_token_expires_at,omitempty"` // 凭证过期时间
 }
 
@@ -79,7 +79,7 @@ type CommandAck struct {
 	MsgID     string    `json:"msg_id,omitempty"` // 对应 Command 的 MsgID
 	NodeID    string    `json:"node_id"`
 	Timestamp time.Time `json:"timestamp"`
-	Status    string    `json:"status"`  // accepted/rejected/processing
+	Status    string    `json:"status"` // accepted/rejected/processing
 	Message   string    `json:"message"`
 }
 
@@ -106,21 +106,22 @@ type JobUpdateData struct {
 
 // 打印任务分发数据
 type PrintJobData struct {
-	JobID           string `json:"job_id"`
-	Name            string `json:"name"`
-	PrinterID       string `json:"printer_id"`
-	PrinterName     string `json:"printer_name"`
-	FilePath        string `json:"file_path,omitempty"`
-	FileURL         string `json:"file_url,omitempty"`
-	FileAccessToken string `json:"file_access_token,omitempty"` // 文件URL一次性访问凭证
+	JobID                    string     `json:"job_id"`
+	Name                     string     `json:"name"`
+	PrinterID                string     `json:"printer_id"`
+	PrinterName              string     `json:"printer_name"`
+	FilePath                 string     `json:"file_path,omitempty"`
+	FileURL                  string     `json:"file_url,omitempty"`
+	ContentHash              string     `json:"content_hash"`
+	FileAccessToken          string     `json:"file_access_token,omitempty"`            // 文件URL一次性访问凭证
 	FileAccessTokenExpiresAt *time.Time `json:"file_access_token_expires_at,omitempty"` // 下载凭证过期时间
-	FileSize        int64  `json:"file_size"`
-	PageCount       int    `json:"page_count"`
-	Copies          int    `json:"copies"`
-	PaperSize       string `json:"paper_size"`
-	ColorMode       string `json:"color_mode"`
-	DuplexMode      string `json:"duplex_mode"`
-	MaxRetries      int    `json:"max_retries"`
+	FileSize                 int64      `json:"file_size"`
+	PageCount                int        `json:"page_count"`
+	Copies                   int        `json:"copies"`
+	PaperSize                string     `json:"paper_size"`
+	ColorMode                string     `json:"color_mode"`
+	DuplexMode               string     `json:"duplex_mode"`
+	MaxRetries               int        `json:"max_retries"`
 }
 
 // RequestUploadTokenPayload 请求上传凭证载荷 (Edge -> Cloud)
@@ -130,10 +131,10 @@ type RequestUploadTokenPayload struct {
 
 // UploadTokenResponsePayload 上传凭证响应载荷 (Cloud -> Edge)
 type UploadTokenResponsePayload struct {
-	Token      string    `json:"token"`       // 一次性上传凭证
-	ExpiresAt  time.Time `json:"expires_at"`  // 过期时间
-	UploadURL  string    `json:"upload_url"`  // API上传URL（用于程序化上传，POST请求）
-	WebURL     string    `json:"web_url"`     // Web上传页面URL（用于生成二维码/链接，GET请求）
-	NodeID     string    `json:"node_id"`     // 节点ID
-	PrinterID  string    `json:"printer_id"`  // 打印机ID
+	Token     string    `json:"token"`      // 一次性上传凭证
+	ExpiresAt time.Time `json:"expires_at"` // 过期时间
+	UploadURL string    `json:"upload_url"` // API上传URL（用于程序化上传，POST请求）
+	WebURL    string    `json:"web_url"`    // Web上传页面URL（用于生成二维码/链接，GET请求）
+	NodeID    string    `json:"node_id"`    // 节点ID
+	PrinterID string    `json:"printer_id"` // 打印机ID
 }

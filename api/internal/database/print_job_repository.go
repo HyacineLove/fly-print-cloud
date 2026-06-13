@@ -23,13 +23,13 @@ func (r *PrintJobRepository) CreatePrintJob(job *models.PrintJob) error {
 	query := `
 		INSERT INTO print_jobs (
 			id, name, status, printer_id, 
-			user_id, user_name, file_path, file_url, file_size, page_count, 
+			user_id, user_name, file_path, file_url, content_hash, file_size, page_count, 
 			copies, paper_size, color_mode, duplex_mode, 
 			start_time, end_time, error_message, retry_count, 
 			max_retries, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 
-			$12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+			$12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
 		)`
 
 	now := time.Now()
@@ -45,7 +45,7 @@ func (r *PrintJobRepository) CreatePrintJob(job *models.PrintJob) error {
 
 	_, err := r.db.DB.Exec(query,
 		job.ID, job.Name, job.Status, job.PrinterID,
-		userID, job.UserName, job.FilePath, job.FileURL, job.FileSize, job.PageCount,
+		userID, job.UserName, job.FilePath, job.FileURL, job.ContentHash, job.FileSize, job.PageCount,
 		job.Copies, job.PaperSize, job.ColorMode, job.DuplexMode,
 		job.StartTime, job.EndTime, job.ErrorMessage, job.RetryCount,
 		job.MaxRetries, job.CreatedAt, job.UpdatedAt,
@@ -58,7 +58,7 @@ func (r *PrintJobRepository) CreatePrintJob(job *models.PrintJob) error {
 func (r *PrintJobRepository) GetPrintJobByID(id string) (*models.PrintJob, error) {
 	query := `
 		SELECT id, name, status, printer_id, 
-			   user_id, user_name, file_path, file_url, file_size, page_count, 
+			   user_id, user_name, file_path, file_url, content_hash, file_size, page_count, 
 			   copies, paper_size, color_mode, duplex_mode, 
 			   start_time, end_time, error_message, retry_count, 
 			   max_retries, created_at, updated_at
@@ -68,7 +68,7 @@ func (r *PrintJobRepository) GetPrintJobByID(id string) (*models.PrintJob, error
 	var userID sql.NullString
 	err := r.db.DB.QueryRow(query, id).Scan(
 		&job.ID, &job.Name, &job.Status, &job.PrinterID,
-		&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.FileSize, &job.PageCount,
+		&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.ContentHash, &job.FileSize, &job.PageCount,
 		&job.Copies, &job.PaperSize, &job.ColorMode, &job.DuplexMode,
 		&job.StartTime, &job.EndTime, &job.ErrorMessage, &job.RetryCount,
 		&job.MaxRetries, &job.CreatedAt, &job.UpdatedAt,
@@ -93,7 +93,7 @@ func (r *PrintJobRepository) GetPrintJobByID(id string) (*models.PrintJob, error
 func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID, userID, edgeNodeID string, startTime, endTime *time.Time) ([]*models.PrintJob, error) {
 	query := `
 		SELECT pj.id, pj.name, pj.status, pj.printer_id, 
-			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.file_size, pj.page_count, 
+			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.content_hash, pj.file_size, pj.page_count, 
 			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode, 
 			   pj.start_time, pj.end_time, pj.error_message, pj.retry_count, 
 			   pj.max_retries, pj.created_at, pj.updated_at,
@@ -167,7 +167,7 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 		var edgeNodeID sql.NullString
 		err := rows.Scan(
 			&job.ID, &job.Name, &job.Status, &job.PrinterID,
-			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.FileSize, &job.PageCount,
+			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.ContentHash, &job.FileSize, &job.PageCount,
 			&job.Copies, &job.PaperSize, &job.ColorMode, &job.DuplexMode,
 			&job.StartTime, &job.EndTime, &job.ErrorMessage, &job.RetryCount,
 			&job.MaxRetries, &job.CreatedAt, &job.UpdatedAt,
@@ -195,17 +195,17 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 func (r *PrintJobRepository) UpdatePrintJob(job *models.PrintJob) error {
 	query := `
 		UPDATE print_jobs SET 
-			name = $2, status = $3, file_path = $4, 
-			file_size = $5, page_count = $6, copies = $7, paper_size = $8, 
-			color_mode = $9, duplex_mode = $10, start_time = $11, 
-			end_time = $12, error_message = $13, retry_count = $14, 
-			max_retries = $15, updated_at = $16
+			name = $2, status = $3, file_path = $4,
+			content_hash = $5, file_size = $6, page_count = $7, copies = $8, paper_size = $9,
+			color_mode = $10, duplex_mode = $11, start_time = $12,
+			end_time = $13, error_message = $14, retry_count = $15,
+			max_retries = $16, updated_at = $17
 		WHERE id = $1`
 
 	job.UpdatedAt = time.Now()
 
 	_, err := r.db.DB.Exec(query,
-		job.ID, job.Name, job.Status, job.FilePath,
+		job.ID, job.Name, job.Status, job.FilePath, job.ContentHash,
 		job.FileSize, job.PageCount, job.Copies, job.PaperSize,
 		job.ColorMode, job.DuplexMode, job.StartTime,
 		job.EndTime, job.ErrorMessage, job.RetryCount,
@@ -236,7 +236,7 @@ func (r *PrintJobRepository) GetPrintJobsByUserID(userID string, limit, offset i
 func (r *PrintJobRepository) GetPendingOrDispatchedJobsByEdgeNodeID(edgeNodeID string) ([]*models.PrintJob, error) {
 	query := `
 		SELECT pj.id, pj.name, pj.status, pj.printer_id, p.name,
-			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.file_size, pj.page_count, 
+			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.content_hash, pj.file_size, pj.page_count, 
 			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode, 
 			   pj.start_time, pj.end_time, pj.error_message, pj.retry_count, 
 			   pj.max_retries, pj.created_at, pj.updated_at
@@ -258,7 +258,7 @@ func (r *PrintJobRepository) GetPendingOrDispatchedJobsByEdgeNodeID(edgeNodeID s
 		var userID sql.NullString
 		err := rows.Scan(
 			&job.ID, &job.Name, &job.Status, &job.PrinterID, &job.PrinterName,
-			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.FileSize, &job.PageCount,
+			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.ContentHash, &job.FileSize, &job.PageCount,
 			&job.Copies, &job.PaperSize, &job.ColorMode, &job.DuplexMode,
 			&job.StartTime, &job.EndTime, &job.ErrorMessage, &job.RetryCount,
 			&job.MaxRetries, &job.CreatedAt, &job.UpdatedAt,
@@ -421,7 +421,7 @@ func (r *PrintJobRepository) ListPrintJobsWithTotal(limit, offset int, status, p
 func (r *PrintJobRepository) GetPendingJobsForRetry(minAge time.Duration) ([]*models.PrintJob, error) {
 	query := `
 		SELECT pj.id, pj.name, pj.status, pj.printer_id, p.name as printer_name, p.edge_node_id,
-			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.file_size, pj.page_count,
+			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.content_hash, pj.file_size, pj.page_count,
 			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode,
 			   pj.start_time, pj.end_time, pj.error_message, pj.retry_count,
 			   pj.max_retries, pj.created_at, pj.updated_at
@@ -447,7 +447,7 @@ func (r *PrintJobRepository) GetPendingJobsForRetry(minAge time.Duration) ([]*mo
 
 		err := rows.Scan(
 			&job.ID, &job.Name, &job.Status, &job.PrinterID, &job.PrinterName, &edgeNodeID,
-			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.FileSize, &job.PageCount,
+			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.ContentHash, &job.FileSize, &job.PageCount,
 			&job.Copies, &job.PaperSize, &job.ColorMode, &job.DuplexMode,
 			&job.StartTime, &job.EndTime, &job.ErrorMessage, &job.RetryCount,
 			&job.MaxRetries, &job.CreatedAt, &job.UpdatedAt,

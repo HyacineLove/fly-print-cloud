@@ -33,8 +33,8 @@ func (r *FileRepository) Create(file *models.File) error {
 
 	query := `
 		INSERT INTO files (
-			original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, content_hash
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, created_at`
 
 	return r.db.QueryRow(
@@ -48,12 +48,13 @@ func (r *FileRepository) Create(file *models.File) error {
 		file.StorageProvider,
 		file.StorageBucket,
 		file.ObjectKey,
+		file.ContentHash,
 	).Scan(&file.ID, &file.CreatedAt)
 }
 
 func (r *FileRepository) GetByID(id string) (*models.File, error) {
 	query := `
-		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, created_at
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, content_hash, created_at
 		FROM files WHERE id = $1`
 
 	file, err := scanFileRow(r.db.QueryRow(query, id))
@@ -71,7 +72,7 @@ func (r *FileRepository) GetByID(id string) (*models.File, error) {
 // ListOldFiles 列出早于指定时间创建的文件，用于清理任务
 func (r *FileRepository) ListOldFiles(cutoff time.Time) ([]*models.File, error) {
 	query := `
-		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, created_at
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, content_hash, created_at
 		FROM files WHERE created_at < $1`
 
 	rows, err := r.db.Query(query, cutoff)
@@ -107,7 +108,7 @@ func (r *FileRepository) DeleteByID(id string) error {
 
 func (r *FileRepository) ListByStorageProvider(provider string) ([]*models.File, error) {
 	query := `
-		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, created_at
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, content_hash, created_at
 		FROM files
 		WHERE COALESCE(NULLIF(storage_provider, ''), 'local') = $1
 		ORDER BY created_at ASC`
@@ -156,6 +157,7 @@ func scanFileRow(scanner fileScanner) (*models.File, error) {
 	var storageProvider sql.NullString
 	var storageBucket sql.NullString
 	var objectKey sql.NullString
+	var contentHash sql.NullString
 
 	if err := scanner.Scan(
 		&file.ID,
@@ -168,6 +170,7 @@ func scanFileRow(scanner fileScanner) (*models.File, error) {
 		&storageProvider,
 		&storageBucket,
 		&objectKey,
+		&contentHash,
 		&file.CreatedAt,
 	); err != nil {
 		return nil, err
@@ -188,6 +191,9 @@ func scanFileRow(scanner fileScanner) (*models.File, error) {
 	}
 	if file.FilePath == "" {
 		file.FilePath = file.ObjectKey
+	}
+	if contentHash.Valid {
+		file.ContentHash = contentHash.String
 	}
 
 	return file, nil

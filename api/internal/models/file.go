@@ -13,6 +13,7 @@ type File struct {
 	StorageProvider string    `json:"-" db:"storage_provider"`
 	StorageBucket   string    `json:"-" db:"storage_bucket"`
 	ObjectKey       string    `json:"-" db:"object_key"`
+	ContentHash     string    `json:"content_hash" db:"content_hash"`
 	MimeType        string    `json:"mime_type" db:"mime_type"`
 	Size            int64     `json:"size" db:"size"`
 	UploaderID      string    `json:"uploader_id" db:"uploader_id"`

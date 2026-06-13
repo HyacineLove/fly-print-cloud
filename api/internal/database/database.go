@@ -247,6 +247,7 @@ func (db *DB) InitTables() error {
 		-- 任务信息
 		file_path VARCHAR(500),
 		file_url VARCHAR(1000),
+		content_hash VARCHAR(64),
 		file_size BIGINT,
 		page_count INTEGER,
 		copies INTEGER DEFAULT 1,
@@ -271,6 +272,10 @@ func (db *DB) InitTables() error {
 
 	if _, err := db.Exec(printJobTableSQL); err != nil {
 		return fmt.Errorf("failed to create print_jobs table: %w", err)
+	}
+
+	if _, err := db.Exec("ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64);"); err != nil {
+		return fmt.Errorf("failed to migrate print_jobs table: %w", err)
 	}
 
 	// 创建打印任务更新时间触发器
@@ -396,6 +401,7 @@ func (db *DB) InitTables() error {
 		storage_provider VARCHAR(20) NOT NULL DEFAULT 'local',
 		storage_bucket VARCHAR(255),
 		object_key VARCHAR(512),
+		content_hash VARCHAR(64),
 		mime_type VARCHAR(100) NOT NULL,
 		size BIGINT NOT NULL,
 		uploader_id VARCHAR(100) NOT NULL,
@@ -410,6 +416,7 @@ func (db *DB) InitTables() error {
 		"ALTER TABLE files ADD COLUMN IF NOT EXISTS storage_provider VARCHAR(20);",
 		"ALTER TABLE files ADD COLUMN IF NOT EXISTS storage_bucket VARCHAR(255);",
 		"ALTER TABLE files ADD COLUMN IF NOT EXISTS object_key VARCHAR(512);",
+		"ALTER TABLE files ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64);",
 		"ALTER TABLE files ALTER COLUMN storage_provider SET DEFAULT 'local';",
 		"UPDATE files SET storage_provider = 'local' WHERE storage_provider IS NULL OR storage_provider = '';",
 		"UPDATE files SET object_key = file_path WHERE object_key IS NULL OR object_key = '';",

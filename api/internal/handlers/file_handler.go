@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -169,12 +170,15 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 	defer uploadFile.Close()
 
-	if _, err := h.storage.Put(c.Request.Context(), objectKey, uploadFile, storage.PutOptions{
+	hasher := sha256.New()
+	uploadReader := io.TeeReader(uploadFile, hasher)
+	if _, err := h.storage.Put(c.Request.Context(), objectKey, uploadReader, storage.PutOptions{
 		ContentType: fileHeader.Header.Get("Content-Type"),
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
 		return
 	}
+	contentHash := fmt.Sprintf("%x", hasher.Sum(nil))
 
 	// 第二阶段：所有验证通过后，真正验证并消耗Token
 	if token != "" {
@@ -201,6 +205,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		StorageProvider: h.config.Provider,
 		StorageBucket:   h.config.MinIO.Bucket,
 		ObjectKey:       objectKey,
+		ContentHash:     contentHash,
 		MimeType:        fileHeader.Header.Get("Content-Type"),
 		Size:            fileHeader.Size,
 		UploaderID:      uploaderID,
@@ -218,7 +223,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	// Check if node_id is provided for preview
 	if nodeID != "" {
 		// Dispatch preview command
-		if err := h.wsManager.DispatchPreviewFile(nodeID, file.ID, file.URL, file.OriginalName, file.Size, file.MimeType); err != nil {
+		if err := h.wsManager.DispatchPreviewFile(nodeID, file.ID, file.URL, file.OriginalName, file.Size, file.MimeType, file.ContentHash); err != nil {
 			// Log error but continue
 			fmt.Printf("Failed to dispatch preview to node %s: %v\n", nodeID, err)
 		}

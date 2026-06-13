@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -344,6 +345,10 @@ func TestFileHandlerStorageUploadUsesStorageBackend(t *testing.T) {
 	}
 	if repo.created == nil {
 		t.Fatalf("repo.Create() was not called")
+	}
+	expectedHash := fmt.Sprintf("%x", sha256.Sum256(samplePNGBytes()))
+	if repo.created.ContentHash != expectedHash {
+		t.Fatalf("repo.Create() content_hash = %q, want %q", repo.created.ContentHash, expectedHash)
 	}
 	if repo.created.FilePath != store.lastPutKey {
 		t.Fatalf("repo.Create() file path = %q, want %q", repo.created.FilePath, store.lastPutKey)
