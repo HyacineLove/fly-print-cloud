@@ -344,16 +344,17 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 
 	// 创建打印任务
 	job := &models.PrintJob{
-		Name:       file.OriginalName,
-		Status:     "pending",
-		PrinterID:  payload.PrinterID,
-		UserID:     file.UploaderID,
-		UserName:   getUserDisplayName(file.UploaderID), // 从用户ID获取显示名称
-		FilePath:   file.FilePath,
-		FileURL:    file.URL,
-		FileSize:   file.Size,
-		Copies:     1,
-		MaxRetries: 3,
+		Name:        file.OriginalName,
+		Status:      "pending",
+		PrinterID:   payload.PrinterID,
+		UserID:      file.UploaderID,
+		UserName:    getUserDisplayName(file.UploaderID), // 从用户ID获取显示名称
+		FilePath:    file.FilePath,
+		FileURL:     file.URL,
+		ContentHash: file.ContentHash,
+		FileSize:    file.Size,
+		Copies:      1,
+		MaxRetries:  3,
 	}
 
 	// 设置 Options

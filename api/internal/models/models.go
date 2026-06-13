@@ -99,6 +99,7 @@ type PrintJob struct {
 	// 任务信息
 	FilePath     string    `json:"file_path"`     // 文件路径（本地文件）
 	FileURL      string    `json:"file_url"`      // 文件URL（第三方API使用）
+	ContentHash  string    `json:"content_hash"`  // file sha256 content hash
 	FileSize     int64     `json:"file_size"`     // 文件大小
 	PageCount    int       `json:"page_count"`    // 页数
 	Copies       int       `json:"copies"`        // 份数

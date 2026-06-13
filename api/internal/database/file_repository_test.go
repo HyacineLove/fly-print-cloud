@@ -30,13 +30,14 @@ func TestFileRepositoryCreatePersistsObjectMetadata(t *testing.T) {
 		StorageProvider: "minio",
 		StorageBucket:   "fly-print-files",
 		ObjectKey:       "uploads/generated.pdf",
+		ContentHash:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}
 
 	rows := sqlmock.NewRows([]string{"id", "created_at"}).AddRow("file-1", time.Unix(1, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		INSERT INTO files (
-			original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, content_hash
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, created_at`)).
 		WithArgs(
 			file.OriginalName,
@@ -48,6 +49,7 @@ func TestFileRepositoryCreatePersistsObjectMetadata(t *testing.T) {
 			file.StorageProvider,
 			file.StorageBucket,
 			file.ObjectKey,
+			file.ContentHash,
 		).
 		WillReturnRows(rows)
 
@@ -73,7 +75,7 @@ func TestFileRepositoryGetByIDReadsObjectMetadata(t *testing.T) {
 
 	repo := NewFileRepository(&DB{db})
 	rows := sqlmock.NewRows([]string{
-		"id", "original_name", "file_name", "file_path", "mime_type", "size", "uploader_id", "storage_provider", "storage_bucket", "object_key", "created_at",
+		"id", "original_name", "file_name", "file_path", "mime_type", "size", "uploader_id", "storage_provider", "storage_bucket", "object_key", "content_hash", "created_at",
 	}).AddRow(
 		"file-1",
 		"report.pdf",
@@ -85,10 +87,11 @@ func TestFileRepositoryGetByIDReadsObjectMetadata(t *testing.T) {
 		"minio",
 		"fly-print-files",
 		"uploads/generated.pdf",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		time.Unix(1, 0),
 	)
 	mock.ExpectQuery(regexp.QuoteMeta(`
-		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, created_at
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, content_hash, created_at
 		FROM files WHERE id = $1`)).
 		WithArgs("file-1").
 		WillReturnRows(rows)
@@ -109,6 +112,9 @@ func TestFileRepositoryGetByIDReadsObjectMetadata(t *testing.T) {
 	if file.ObjectKey != "uploads/generated.pdf" {
 		t.Fatalf("ObjectKey = %q, want %q", file.ObjectKey, "uploads/generated.pdf")
 	}
+	if file.ContentHash != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("ContentHash = %q, want content hash", file.ContentHash)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("ExpectationsWereMet() error = %v", err)
 	}
@@ -125,7 +131,7 @@ func TestFileRepositoryGetByIDFallsBackForLegacyRows(t *testing.T) {
 
 	repo := NewFileRepository(&DB{db})
 	rows := sqlmock.NewRows([]string{
-		"id", "original_name", "file_name", "file_path", "mime_type", "size", "uploader_id", "storage_provider", "storage_bucket", "object_key", "created_at",
+		"id", "original_name", "file_name", "file_path", "mime_type", "size", "uploader_id", "storage_provider", "storage_bucket", "object_key", "content_hash", "created_at",
 	}).AddRow(
 		"file-1",
 		"report.pdf",
@@ -137,10 +143,11 @@ func TestFileRepositoryGetByIDFallsBackForLegacyRows(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		time.Unix(1, 0),
 	)
 	mock.ExpectQuery(regexp.QuoteMeta(`
-		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, created_at
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, content_hash, created_at
 		FROM files WHERE id = $1`)).
 		WithArgs("file-1").
 		WillReturnRows(rows)
@@ -177,7 +184,7 @@ func TestFileRepositoryListByStorageProvider(t *testing.T) {
 
 	repo := NewFileRepository(&DB{db})
 	rows := sqlmock.NewRows([]string{
-		"id", "original_name", "file_name", "file_path", "mime_type", "size", "uploader_id", "storage_provider", "storage_bucket", "object_key", "created_at",
+		"id", "original_name", "file_name", "file_path", "mime_type", "size", "uploader_id", "storage_provider", "storage_bucket", "object_key", "content_hash", "created_at",
 	}).AddRow(
 		"file-1",
 		"report.pdf",
@@ -189,10 +196,11 @@ func TestFileRepositoryListByStorageProvider(t *testing.T) {
 		"local",
 		nil,
 		"legacy/generated.pdf",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		time.Unix(1, 0),
 	)
 	mock.ExpectQuery(regexp.QuoteMeta(`
-		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, created_at
+		SELECT id, original_name, file_name, file_path, mime_type, size, uploader_id, storage_provider, storage_bucket, object_key, content_hash, created_at
 		FROM files
 		WHERE COALESCE(NULLIF(storage_provider, ''), 'local') = $1
 		ORDER BY created_at ASC`)).

@@ -220,15 +220,16 @@ func (m *ConnectionManager) GetConnectionCount() int {
 }
 
 // DispatchPreviewFile 发送预览文件命令
-func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string) error {
+func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string, contentHash string) error {
 	logger.Debug("Preparing to dispatch preview file to node", zap.String("node_id", nodeID), zap.String("file_name", fileName), zap.String("file_id", fileID))
 
 	payload := PreviewFilePayload{
-		FileID:   fileID,
-		FileURL:  fileURL,
-		FileName: fileName,
-		FileSize: fileSize,
-		FileType: fileType,
+		FileID:      fileID,
+		FileURL:     fileURL,
+		FileName:    fileName,
+		FileSize:    fileSize,
+		FileType:    fileType,
+		ContentHash: contentHash,
 	}
 
 	// 生成文件访问凭证（用于预览）
@@ -274,6 +275,7 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 		PrinterName: printerName,
 		FilePath:    job.FilePath,
 		FileURL:     job.FileURL,
+		ContentHash: job.ContentHash,
 		FileSize:    job.FileSize,
 		PageCount:   job.PageCount,
 		Copies:      job.Copies,
