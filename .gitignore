@@ -1,5 +1,6 @@
 .env
 .vscode
+.claude/
 config.yaml
 go.sum
 uploads/
