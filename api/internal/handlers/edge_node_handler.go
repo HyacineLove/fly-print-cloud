@@ -20,16 +20,18 @@ type EdgeNodeHandler struct {
 	printerRepo    *database.PrinterRepository
 	wsManager      *websocket.ConnectionManager
 	tokenUsageRepo *database.TokenUsageRepository
+	alertRepo      *database.OperationalAlertRepository
 }
 
 // NewEdgeNodeHandler 创建 Edge Node 管理处理器
-func NewEdgeNodeHandler(db *database.DB, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository) *EdgeNodeHandler {
+func NewEdgeNodeHandler(db *database.DB, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository, alertRepo *database.OperationalAlertRepository) *EdgeNodeHandler {
 	return &EdgeNodeHandler{
 		db:             db,
 		edgeNodeRepo:   edgeNodeRepo,
 		printerRepo:    printerRepo,
 		wsManager:      wsManager,
 		tokenUsageRepo: tokenUsageRepo,
+		alertRepo:      alertRepo,
 	}
 }
 
@@ -67,10 +69,27 @@ type UpdateEdgeNodeRequest struct {
 	Latency           int      `json:"latency"`
 }
 
+type UpdateEdgeNodeAliasRequest struct {
+	Alias string `json:"alias" binding:"max=100"`
+}
+type UpdateEdgeNodeEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 // EdgeNodeInfo Edge Node 信息响应
+// ProvisionEdgeNodeRequest creates the server-side identity before an Edge is
+// installed. The administrator then creates one OAuth client bound to the
+// returned ID; this avoids any shared-credential registration bootstrap.
+type ProvisionEdgeNodeRequest struct {
+	Name     string `json:"name" binding:"required,min=1,max=100"`
+	Location string `json:"location"`
+}
+
 type EdgeNodeInfo struct {
 	ID                string    `json:"id"`
 	Name              string    `json:"name"`
+	Alias             string    `json:"alias,omitempty"`
+	RegistrationState string    `json:"registration_state"`
 	ConnectionStatus  string    `json:"connection_status"`
 	HealthStatus      string    `json:"health_status"`
 	HealthReasonCode  string    `json:"health_reason_code,omitempty"`
@@ -98,6 +117,41 @@ type EdgeNodeInfo struct {
 // RegisterEdgeNode 注册 Edge Node
 // 服务端生成 node_id (UUID)，状态默认为 offline
 // Edge 端需保存返回的 node_id，避免重复注册
+// ProvisionEdgeNode is an administrator-only bootstrap path. It deliberately
+// does not accept hardware facts from a browser; Edge supplies those only
+// after it has authenticated with its node-bound credential.
+func (h *EdgeNodeHandler) ProvisionEdgeNode(c *gin.Context) {
+	var req ProvisionEdgeNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ValidationErrorResponse(c, err)
+		return
+	}
+
+	node := &models.EdgeNode{
+		ID:               uuid.NewString(),
+		Name:             req.Name,
+		Location:         req.Location,
+		ConnectionStatus: "offline",
+		HealthStatus:     "unknown",
+		Enabled:          true,
+		LastHeartbeat:    time.Now(),
+		Version:          "provisioned",
+	}
+	if err := h.edgeNodeRepo.CreateEdgeNode(node); err != nil {
+		logger.Error("Failed to provision Edge node", zap.Error(err))
+		InternalErrorResponse(c, "failed to provision Edge node")
+		return
+	}
+
+	logger.Info("Edge Node provisioned", zap.String("node_id", node.ID), zap.String("node_name", node.Name))
+	CreatedResponse(c, gin.H{
+		"id":       node.ID,
+		"name":     node.Name,
+		"location": node.Location,
+		"enabled":  node.Enabled,
+	})
+}
+
 func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 	var req RegisterEdgeNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -134,6 +188,8 @@ func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 	nodeInfo := EdgeNodeInfo{
 		ID:                node.ID,
 		Name:              node.Name,
+		Alias:             node.Alias,
+		RegistrationState: node.RegistrationState,
 		ConnectionStatus:  node.ConnectionStatus,
 		HealthStatus:      node.HealthStatus,
 		HealthReasonCode:  node.HealthReasonCode,
@@ -222,6 +278,8 @@ func (h *EdgeNodeHandler) ListEdgeNodes(c *gin.Context) {
 		nodeInfos[i] = EdgeNodeInfo{
 			ID:                node.ID,
 			Name:              node.Name,
+			Alias:             node.Alias,
+			RegistrationState: node.RegistrationState,
 			ConnectionStatus:  node.ConnectionStatus,
 			HealthStatus:      node.HealthStatus,
 			HealthReasonCode:  node.HealthReasonCode,
@@ -273,6 +331,8 @@ func (h *EdgeNodeHandler) GetEdgeNode(c *gin.Context) {
 	nodeInfo := EdgeNodeInfo{
 		ID:                node.ID,
 		Name:              node.Name,
+		Alias:             node.Alias,
+		RegistrationState: node.RegistrationState,
 		ConnectionStatus:  node.ConnectionStatus,
 		HealthStatus:      node.HealthStatus,
 		HealthReasonCode:  node.HealthReasonCode,
@@ -367,6 +427,8 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 	nodeInfo := EdgeNodeInfo{
 		ID:                node.ID,
 		Name:              node.Name,
+		Alias:             node.Alias,
+		RegistrationState: node.RegistrationState,
 		ConnectionStatus:  node.ConnectionStatus,
 		HealthStatus:      node.HealthStatus,
 		HealthReasonCode:  node.HealthReasonCode,
@@ -392,6 +454,42 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 
 	logger.Info("Edge Node updated successfully", zap.String("node_name", node.Name))
 	SuccessResponse(c, nodeInfo)
+}
+
+// UpdateAlias keeps the operator-owned alias separate from the name reported
+// by Edge. An empty value intentionally clears the alias.
+func (h *EdgeNodeHandler) UpdateAlias(c *gin.Context) {
+	var req UpdateEdgeNodeAliasRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ValidationErrorResponse(c, err)
+		return
+	}
+	if err := h.edgeNodeRepo.UpdateAlias(c.Param("id"), req.Alias); err != nil {
+		NotFoundResponse(c, "Edge Node 不存在")
+		return
+	}
+	node, err := h.edgeNodeRepo.GetEdgeNodeByID(c.Param("id"))
+	if err != nil {
+		NotFoundResponse(c, "Edge Node 不存在")
+		return
+	}
+	SuccessResponse(c, gin.H{"id": node.ID, "name": node.Name, "alias": node.Alias})
+}
+
+func (h *EdgeNodeHandler) UpdateEnabled(c *gin.Context) {
+	var req UpdateEdgeNodeEnabledRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ValidationErrorResponse(c, err)
+		return
+	}
+	if err := h.edgeNodeRepo.UpdateEnabled(c.Param("id"), req.Enabled); err != nil {
+		NotFoundResponse(c, "Edge Node 不存在")
+		return
+	}
+	if !req.Enabled && h.tokenUsageRepo != nil {
+		_, _ = h.tokenUsageRepo.RevokeTokensByNodeAndType("upload", c.Param("id"))
+	}
+	SuccessResponse(c, gin.H{"id": c.Param("id"), "enabled": req.Enabled})
 }
 
 // DeleteEdgeNode 删除 Edge Node
@@ -429,6 +527,13 @@ func (h *EdgeNodeHandler) DeleteEdgeNode(c *gin.Context) {
 
 	// 1. 级联删除该节点下的所有打印机（硬删除）
 	// 由于节点是软删除，数据库的 ON DELETE CASCADE 不会触发，需要手动删除打印机
+	if h.alertRepo != nil {
+		if err := h.alertRepo.DeleteForNodeTx(tx, nodeID); err != nil {
+			logger.Error("Failed to delete alerts for node", zap.String("node_id", nodeID), zap.Error(err))
+			InternalErrorResponse(c, "鍒犻櫎鑺傜偣鍛婅澶辫触")
+			return
+		}
+	}
 	if h.printerRepo != nil {
 		if err := h.printerRepo.DeletePrintersByEdgeNodeTx(tx, nodeID); err != nil {
 			logger.Error("Failed to delete printers for node", zap.String("node_id", nodeID), zap.Error(err))

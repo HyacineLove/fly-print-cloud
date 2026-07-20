@@ -1,9 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Form, Input, InputNumber, Space, Typography, message } from 'antd';
-import { ReloadOutlined, SaveOutlined } from '@ant-design/icons';
+import { Button, Card, Col, Form, Input, InputNumber, Row, message } from 'antd';
+import { SaveOutlined } from '@ant-design/icons';
 import { buildApiUrl, buildAuthUrl } from '../../config';
-
-const { Title, Paragraph } = Typography;
 
 interface BusinessSettingsPayload {
   upload_max_size_bytes: number;
@@ -133,18 +131,6 @@ const BusinessSettings: React.FC = () => {
 
   return (
     <div>
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }} align="start">
-        <div>
-          <Title level={2} style={{ marginBottom: 4 }}>业务配置</Title>
-          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            管理上传策略和凭证有效期，新请求会读取最新配置。
-          </Paragraph>
-        </div>
-        <Button icon={<ReloadOutlined />} onClick={() => loadSettings()} disabled={!token || loading}>
-          刷新
-        </Button>
-      </Space>
-
       <Card loading={loading}>
         <Form
           form={form}
@@ -158,45 +144,27 @@ const BusinessSettings: React.FC = () => {
             allowed_extensions: '.pdf, .doc, .docx, .jpg, .jpeg, .png, .gif, .bmp, .tiff',
           }}
         >
-          <Form.Item
-            label="上传大小上限（MB）"
-            name="upload_size_mb"
-            rules={[{ required: true, type: 'number', min: 0.01, message: '请输入大于 0 的大小上限' }]}
-          >
-            <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
-          </Form.Item>
-
-          <Form.Item
-            label="文档页数上限"
-            name="max_document_pages"
-            rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的页数上限' }]}
-          >
-            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
-          </Form.Item>
-
-          <Form.Item
-            label="上传凭证有效期（秒）"
-            name="upload_token_ttl_seconds"
-            rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的上传凭证有效期' }]}
-          >
-            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
-          </Form.Item>
-
-          <Form.Item
-            label="下载凭证有效期（秒）"
-            name="download_token_ttl_seconds"
-            rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的下载凭证有效期' }]}
-          >
-            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
-          </Form.Item>
-
-          <Form.Item
-            label="允许上传扩展名"
-            name="allowed_extensions"
-            rules={[{ required: true, message: '请输入允许上传的扩展名' }]}
-          >
-            <Input.TextArea rows={3} />
-          </Form.Item>
+          <Row gutter={24}>
+            <Col xs={24} lg={12}>
+              <Form.Item label="上传大小上限（MB）" name="upload_size_mb" rules={[{ required: true, type: 'number', min: 0.01, message: '请输入大于 0 的大小上限' }]}>
+                <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item label="文档页数上限" name="max_document_pages" rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的页数上限' }]}>
+                <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item label="允许上传扩展名" name="allowed_extensions" rules={[{ required: true, message: '请输入允许上传的扩展名' }]}>
+                <Input.TextArea rows={3} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} lg={12}>
+              <Form.Item label="上传凭证有效期（秒）" name="upload_token_ttl_seconds" rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的上传凭证有效期' }]}>
+                <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item label="下载凭证有效期（秒）" name="download_token_ttl_seconds" rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的下载凭证有效期' }]}>
+                <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saving}>
             保存配置

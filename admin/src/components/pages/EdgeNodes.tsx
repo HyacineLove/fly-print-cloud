@@ -1,604 +1,90 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Tag, Space, Row, Col, Statistic, message, Modal, Form, Input, Button } from 'antd';
-import type { TableProps } from 'antd';
-import type { SorterResult } from 'antd/es/table/interface';
-import type { ColumnType } from 'antd/es/table';
-import { 
-  CheckCircleOutlined,
-  ExclamationCircleOutlined,
-  StopOutlined,
-  PrinterOutlined,
-  CloudServerOutlined,
-  EditOutlined,
-  SearchOutlined,
-  ReloadOutlined
-} from '@ant-design/icons';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Button, Card, Input, Modal, Space, Switch, Table, Tag, Tooltip, Typography, message } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { buildApiUrl, buildAuthUrl } from '../../config';
+import { DateTimeValue, TwoLineValue } from '../DisplayValue';
 
-// 边缘节点接口（适配后端数据模型）
 interface EdgeNode {
-  id: string;
-  name: string;
-  location: string;
-  connection_status: 'online' | 'unstable' | 'offline';
-  health_status: 'healthy' | 'degraded' | 'critical' | 'unknown';
-  health_message?: string;
-  enabled: boolean;
-  last_heartbeat: string;
-  version: string;
-  printer_count: number;  // 后端返回的打印机数量字段
-  key?: string;
+  id: string; name: string; alias?: string; location?: string; connection_status: string;
+  health_status: string; health_message?: string; enabled: boolean; last_heartbeat?: string;
+  version?: string; registration_state: string;
 }
 
-// Edge Nodes 服务类
-class EdgeNodesService {
-  private async getToken(): Promise<string | null> {
-    try {
-      const response = await fetch(buildAuthUrl('me'));
-      const result = await response.json();
-      
-      if (result.code === 200 && result.data.access_token) {
-        return result.data.access_token;
-      }
-    } catch (error) {
-      console.error('获取 token 失败:', error);
-    }
-    
-    return null;
-  }
-
-  async getEdgeNodes(params?: {
-    search?: string;
-    sort_by?: string;
-    sort_order?: string;
-  }): Promise<EdgeNode[]> {
-    try {
-      const token = await this.getToken();
-      
-      // 构建 URL 查询参数
-      let url = buildApiUrl('/admin/edge-nodes?page=1&page_size=100');
-      if (params?.search) {
-        url += `&search=${encodeURIComponent(params.search)}`;
-      }
-      if (params?.sort_by) {
-        url += `&sort_by=${params.sort_by}`;
-      }
-      if (params?.sort_order) {
-        url += `&sort_order=${params.sort_order}`;
-      }
-      
-      const response = await fetch(url, {
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        console.log('🔄 [DEBUG] API响应数据:', result);
-        
-        // 适配后端数据格式：result.data.items
-        return result?.data?.items || [];
-      } else {
-        console.error('💥 [DEBUG] API响应状态:', response.status, response.statusText);
-      }
-    } catch (error) {
-      console.error('💥 [DEBUG] 网络请求异常:', error);
-    }
-    
-    console.log('🔄 [DEBUG] API调用失败，返回空数据');
-    return [];
-  }
-
-  async updateEdgeNode(id: string, name: string): Promise<boolean> {
-    try {
-      const token = await this.getToken();
-      const response = await fetch(buildApiUrl(`/admin/edge-nodes/${id}`), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-        body: JSON.stringify({ name: name.trim() }),
-      });
-      
-      return response.ok;
-    } catch (error) {
-      console.error('更新Edge Node失败:', error);
-      return false;
-    }
-  }
-
-  async updateEdgeNodeEnabled(id: string, enabled: boolean): Promise<boolean> {
-    try {
-      const token = await this.getToken();
-      // 先获取当前的Edge Node信息
-      const nodes = await this.getEdgeNodes();
-      const currentNode = nodes.find(node => node.id === id);
-      if (!currentNode) {
-        console.error('Edge Node not found:', id);
-        return false;
-      }
-
-      const response = await fetch(buildApiUrl(`/admin/edge-nodes/${id}`), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-        body: JSON.stringify({ name: currentNode.name, enabled }),
-      });
-      
-      return response.ok;
-    } catch (error) {
-      console.error('更新Edge Node启用状态失败:', error);
-      return false;
-    }
-  }
-
-  async deleteEdgeNode(id: string): Promise<boolean> {
-    try {
-      const token = await this.getToken();
-      const response = await fetch(buildApiUrl(`/admin/edge-nodes/${id}`), {
-        method: 'DELETE',
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-      });
-
-      return response.ok;
-    } catch (error) {
-      console.error('删除Edge Node失败:', error);
-      return false;
-    }
-  }
+async function request(path: string, init?: RequestInit) {
+  const me = await fetch(buildAuthUrl('me'));
+  const token = (await me.json())?.data?.access_token;
+  const response = await fetch(buildApiUrl(path), {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init?.headers || {}) },
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json())?.data;
 }
 
-const edgeNodesService = new EdgeNodesService();
+const statusTag = (status: string) => <Tag color={status === 'online' ? 'success' : status === 'unstable' ? 'warning' : 'default'}>{status === 'online' ? '在线' : status === 'unstable' ? '连接不稳定' : '离线'}</Tag>;
+const healthTag = (status: string) => <Tag color={status === 'healthy' ? 'success' : status === 'critical' ? 'error' : status === 'degraded' ? 'warning' : 'default'}>{status === 'healthy' ? '健康' : status === 'critical' ? '严重' : status === 'degraded' ? '降级' : '未知'}</Tag>;
 
-// Edge Nodes 组件
 const EdgeNodes: React.FC = () => {
-  const [edgeNodes, setEdgeNodes] = useState<EdgeNode[]>([]);
+  const [nodes, setNodes] = useState<EdgeNode[]>([]);
   const [loading, setLoading] = useState(true);
-  
-  // 搜索和排序状态
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [sortField, setSortField] = useState<string>('');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | ''>('');
-  
-  // 编辑相关状态
-  const [editModalVisible, setEditModalVisible] = useState(false);
-  const [editingNode, setEditingNode] = useState<EdgeNode | null>(null);
-  const [form] = Form.useForm();
+  const [editing, setEditing] = useState<string | null>(null);
+  const [alias, setAlias] = useState('');
+  const [activation, setActivation] = useState<{ code: string; expiresAt: string } | null>(null);
 
-  // 定时刷新间隔（30秒）
-  const REFRESH_INTERVAL = 30000;
+  const load = useCallback(async () => {
+    try { const data = await request('/admin/edge-nodes?page=1&page_size=100'); setNodes(data?.items || []); }
+    catch { message.error('节点信息加载失败'); }
+    finally { setLoading(false); }
+  }, []);
 
-  // 加载边缘节点数据
-  const loadEdgeNodes = useCallback(async () => {
-    try {
-      setLoading(true);
-      const nodes = await edgeNodesService.getEdgeNodes({
-        search: searchKeyword || undefined,
-        sort_by: sortField || undefined,
-        sort_order: sortOrder || undefined,
-      });
-      setEdgeNodes(nodes.map(node => ({ ...node, key: node.id })));
-    } catch (error) {
-      console.error('加载边缘节点失败:', error);
-      setEdgeNodes([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [searchKeyword, sortField, sortOrder]);
-
-  // 初始加载和定时刷新
+  useEffect(() => { load(); const timer = window.setInterval(load, 30000); return () => window.clearInterval(timer); }, [load]);
   useEffect(() => {
-    loadEdgeNodes();
-    
-    // 设置定时器
-    const timer = setInterval(() => {
-      // 编辑弹窗打开时不刷新，避免数据冲突
-      if (!editModalVisible) {
-        loadEdgeNodes();
-      }
-    }, REFRESH_INTERVAL);
-    
-    // 清理定时器
-    return () => clearInterval(timer);
-  }, [loadEdgeNodes, editModalVisible]);
+    if (!editing) return undefined;
+    const closeEditor = (event: MouseEvent) => { if (!(event.target as HTMLElement).closest('.inline-name-editor')) setEditing(null); };
+    document.addEventListener('mousedown', closeEditor);
+    return () => document.removeEventListener('mousedown', closeEditor);
+  }, [editing]);
 
-  // 搜索/排序变化时重新加载（已通过 useCallback 依赖实现）
-
-  // 编辑Edge Node名称
-  const handleEditNode = (node: EdgeNode) => {
-    setEditingNode(node);
-    form.setFieldsValue({ name: node.name });
-    setEditModalVisible(true);
+  const saveAlias = async (node: EdgeNode) => {
+    try { await request(`/admin/edge-nodes/${node.id}/alias`, { method: 'PATCH', body: JSON.stringify({ alias: alias.trim() }) }); message.success('名称已保存'); setEditing(null); load(); }
+    catch { message.error('名称保存失败'); }
   };
-
-  // 提交名称修改
-  const handleEditSubmit = async (values: { name: string }) => {
-    if (!editingNode) return;
-
-    try {
-      const success = await edgeNodesService.updateEdgeNode(editingNode.id, values.name);
-      if (success) {
-        message.success('Edge Node名称修改成功');
-        setEditModalVisible(false);
-        setEditingNode(null);
-        form.resetFields();
-        loadEdgeNodes(); // 重新加载数据
-      } else {
-        message.error('修改失败，请稍后重试');
-      }
-    } catch (error) {
-      console.error('修改Edge Node名称失败:', error);
-      message.error('修改失败，请稍后重试');
-    }
+  const createActivation = async () => {
+    try { const data = await request('/admin/edge-nodes/activations', { method: 'POST', body: '{}' }); setActivation({ code: data.activation_code, expiresAt: data.expires_at }); load(); }
+    catch { message.error('创建待激活终端失败'); }
   };
-
-  // 切换启用/禁用状态
-  const handleToggleEnabled = async (node: EdgeNode) => {
-    try {
-      const newEnabled = !node.enabled;
-      const success = await edgeNodesService.updateEdgeNodeEnabled(node.id, newEnabled);
-      if (success) {
-        message.success(`Edge Node已${newEnabled ? '启用' : '禁用'}`);
-        loadEdgeNodes(); // 重新加载数据
-      } else {
-        message.error('操作失败，请稍后重试');
-      }
-    } catch (error) {
-      console.error('切换Edge Node状态失败:', error);
-      message.error('操作失败，请稍后重试');
-    }
+  const toggle = async (node: EdgeNode, enabled: boolean) => {
+    try { await request(`/admin/edge-nodes/${node.id}/enabled`, { method: 'PATCH', body: JSON.stringify({ enabled }) }); load(); }
+    catch { message.error('状态更新失败'); }
   };
+  const remove = (node: EdgeNode) => Modal.confirm({
+    title: '删除节点？', content: `删除后该节点的专属凭据将失效，节点需要重新激活。\n${node.id}`,
+    okText: '删除', okType: 'danger', cancelText: '取消',
+    onOk: async () => { try { await request(`/admin/edge-nodes/${node.id}`, { method: 'DELETE' }); message.success('节点已删除'); load(); } catch { message.error('删除失败'); } },
+  });
 
-  // 删除 Edge Node（软删除）
-  const handleDeleteNode = (node: EdgeNode) => {
-    Modal.confirm({
-      title: '确认删除该边缘节点？',
-      icon: <ExclamationCircleOutlined />,
-      content: (
-        <div>
-          <div>节点名称：{node.name}</div>
-          <div>节点ID：{node.id}</div>
-          <div style={{ marginTop: 8, color: '#888' }}>删除为软删除操作，节点将从列表中移除，但相关历史记录不会被物理删除。</div>
-        </div>
-      ),
-      okText: '删除',
-      okType: 'danger',
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          const success = await edgeNodesService.deleteEdgeNode(node.id);
-          if (success) {
-            message.success('删除 Edge Node 成功');
-            loadEdgeNodes();
-          } else {
-            message.error('删除失败，请稍后重试');
-          }
-        } catch (error) {
-          console.error('删除Edge Node失败:', error);
-          message.error('删除失败，请稍后重试');
-        }
-      },
-    });
-  };
-
-  // 状态图标映射
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'online':
-        return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
-	  case 'unstable':
-		return <ExclamationCircleOutlined style={{ color: '#faad14' }} />;
-      case 'offline':
-        return <StopOutlined style={{ color: '#8c8c8c' }} />;
-      case 'error':
-        return <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />;
-      default:
-        return <StopOutlined style={{ color: '#8c8c8c' }} />;
-    }
-  };
-
-  // 状态标签映射
-  const getStatusTag = (status: string) => {
-    switch (status) {
-      case 'online':
-        return <Tag color="success">在线</Tag>;
-	  case 'unstable':
-		return <Tag color="warning">连接不稳定</Tag>;
-      case 'offline':
-        return <Tag color="default">离线</Tag>;
-      case 'error':
-        return <Tag color="error">错误</Tag>;
-      default:
-        return <Tag color="default">未知</Tag>;
-    }
-  };
-
-  // 处理搜索
-  const handleSearch = (value: string) => {
-    setSearchKeyword(value);
-  };
-
-  // 处理表格排序变化
-  const handleTableChange: TableProps<EdgeNode>['onChange'] = (pagination, filters, sorter) => {
-    const sortInfo = sorter as SorterResult<EdgeNode>;
-    if (sortInfo.field && sortInfo.order) {
-      setSortField(sortInfo.field as string);
-      setSortOrder(sortInfo.order === 'ascend' ? 'asc' : 'desc');
-    } else {
-      setSortField('');
-      setSortOrder('');
-    }
-  };
-
-  // 表格列定义
-  const columns: ColumnType<EdgeNode>[] = [
-    {
-      title: '节点ID',
-      dataIndex: 'id',
-      key: 'id',
-      render: (text: string) => text || '-',
-      width: 220,
-    },
-    {
-      title: '节点名称',
-      dataIndex: 'name',
-      key: 'name',
-      render: (text: string) => (
-        <Space>
-          <CloudServerOutlined />
-          {text}
-        </Space>
-      ),
-    },
-    {
-      title: '位置',
-      dataIndex: 'location',
-      key: 'location',
-      render: (text: string) => text || '-',
-    },
-    {
-      title: '状态',
-	  dataIndex: 'connection_status',
-	  key: 'connection_status',
-      render: (status: string) => (
-        <Space>
-          {getStatusIcon(status)}
-          {getStatusTag(status)}
-        </Space>
-      ),
-    },
-	{
-	  title: '健康状态',
-	  dataIndex: 'health_status',
-	  key: 'health_status',
-	  render: (status: EdgeNode['health_status'], record: EdgeNode) => <Space direction="vertical" size={0}>
-		<Tag color={status === 'healthy' ? 'success' : status === 'critical' ? 'error' : status === 'degraded' ? 'warning' : 'default'}>
-		  {status === 'healthy' ? '健康' : status === 'critical' ? '严重' : status === 'degraded' ? '降级' : '未知'}
-		</Tag>
-		{record.health_message && <span style={{fontSize: 12, color: '#888'}}>{record.health_message}</span>}
-	  </Space>,
-	},
-    {
-      title: '最后心跳',
-      dataIndex: 'last_heartbeat',
-      key: 'last_heartbeat',
-      sorter: true,
-      sortOrder: sortField === 'last_heartbeat' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
-      render: (time: string) => {
-        if (!time) return '-';
-        const date = new Date(time);
-        return date.toLocaleString('zh-CN');
-      },
-    },
-    {
-      title: '版本',
-      dataIndex: 'version',
-      key: 'version',
-      render: (text: string) => text || '-',
-    },
-    {
-      title: '打印机数量',
-      dataIndex: 'printer_count',
-      key: 'printer_count',
-      sorter: true,
-      sortOrder: sortField === 'printer_count' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
-      render: (count: number) => (
-        <Space>
-          <PrinterOutlined />
-          {count || 0}
-        </Space>
-      ),
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 180,
-      render: (_, record: EdgeNode) => (
-        <Space size="small">
-          <Button 
-            type="text" 
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => handleEditNode(record)}
-          >
-            编辑名称
-          </Button>
-          <Button 
-            type="text" 
-            size="small"
-            onClick={() => handleToggleEnabled(record)}
-            style={{ 
-              color: record.enabled ? '#ff4d4f' : '#52c41a' 
-            }}
-          >
-            {record.enabled ? '禁用' : '启用'}
-          </Button>
-          <Button
-            type="text"
-            size="small"
-            danger
-            onClick={() => handleDeleteNode(record)}
-          >
-            删除
-          </Button>
-        </Space>
-      ),
-    },
+  const columns: ColumnsType<EdgeNode> = [
+    { title: '节点 ID', dataIndex: 'id', width: 245, render: (_, node) => <TwoLineValue id={node.id} name={node.alias || node.name} /> },
+    { title: '节点名称', width: 260, render: (_, node) => editing === node.id ? <Space.Compact className="inline-name-editor"><Input autoFocus value={alias} onChange={event => setAlias(event.target.value)} onPressEnter={() => saveAlias(node)} placeholder="留空以清除别名" /><Button type="primary" onClick={() => saveAlias(node)}>保存</Button></Space.Compact> : <span onClick={() => { setEditing(node.id); setAlias(node.alias || node.name || ''); }} style={{ cursor: 'pointer' }}><div>{node.alias || node.name || '待激活终端'}</div>{node.alias && <div style={{ color: '#8c8c8c', fontSize: 12 }}>（{node.name || '待上报'}）</div>}</span> },
+    { title: '节点位置', dataIndex: 'location', render: value => value || '-' },
+    { title: '节点状态', dataIndex: 'connection_status', render: statusTag },
+    { title: '节点健康状态', render: (_, node) => <Tooltip title={node.health_message}>{healthTag(node.health_status)}</Tooltip> },
+    { title: '节点最后心跳', dataIndex: 'last_heartbeat', width: 175, render: value => <DateTimeValue value={value} /> },
+    { title: '节点版本', dataIndex: 'version', render: value => value || '-' },
+    { title: '节点启用状态', width: 105, render: (_, node) => <Switch checked={node.enabled} disabled={node.registration_state === 'pending_activation'} onChange={value => toggle(node, value)} /> },
+    { title: '', width: 70, render: (_, node) => <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => remove(node)} /> },
   ];
 
-  // 计算统计数据
-  const onlineNodes = edgeNodes.filter(node => node.connection_status === 'online').length;
-  const offlineNodes = edgeNodes.filter(node => node.connection_status === 'offline').length;
-  const errorNodes = edgeNodes.filter(node => node.health_status === 'critical').length;
-  const totalPrinters = edgeNodes.reduce((sum, node) => sum + (node.printer_count || 0), 0);
-
-  return (
-    <div style={{ padding: '24px' }}>
-      <h2>边缘节点管理</h2>
-      
-      {/* 统计卡片 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        <Col xs={12} sm={6}>
-          <Card>
-            <Statistic
-              title="总节点数"
-              value={edgeNodes.length}
-              prefix={<CloudServerOutlined />}
-              valueStyle={{ color: '#1890ff' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} sm={6}>
-          <Card>
-            <Statistic
-              title="在线节点"
-              value={onlineNodes}
-              prefix={<CheckCircleOutlined />}
-              valueStyle={{ color: '#52c41a' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} sm={6}>
-          <Card>
-            <Statistic
-              title="离线节点"
-              value={offlineNodes}
-              prefix={<StopOutlined />}
-              valueStyle={{ color: '#8c8c8c' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} sm={6}>
-          <Card>
-            <Statistic
-              title="总打印机数"
-              value={totalPrinters}
-              prefix={<PrinterOutlined />}
-              valueStyle={{ color: '#722ed1' }}
-            />
-          </Card>
-        </Col>
-      </Row>
-
-      {/* 边缘节点列表 */}
-      <Card 
-        title="边缘节点列表"
-        extra={
-          <Space>
-            <Input.Search
-              placeholder="搜索节点名称"
-              allowClear
-              onSearch={handleSearch}
-              style={{ width: 250 }}
-              prefix={<SearchOutlined />}
-            />
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={loadEdgeNodes}
-              loading={loading}
-            >
-              刷新
-            </Button>
-          </Space>
-        }
-      >
-        <Table
-          columns={columns}
-          dataSource={edgeNodes}
-          loading={loading}
-          onChange={handleTableChange}
-          pagination={{
-            total: edgeNodes.length,
-            pageSize: 10,
-            showSizeChanger: true,
-            showQuickJumper: true,
-            showTotal: (total, range) =>
-              `第 ${range[0]}-${range[1]} 条，共 ${total} 条`,
-          }}
-          size="middle"
-        />
-      </Card>
-
-      {/* 编辑Edge Node名称模态框 */}
-      <Modal
-        title="编辑Edge Node名称"
-        open={editModalVisible}
-        onCancel={() => {
-          setEditModalVisible(false);
-          setEditingNode(null);
-          form.resetFields();
-        }}
-        footer={null}
-        width={500}
-      >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={handleEditSubmit}
-        >
-          <Form.Item
-            name="name"
-            label="节点名称"
-            rules={[
-              { required: true, message: '请输入节点名称' },
-              { max: 100, message: '名称不能超过100个字符' }
-            ]}
-          >
-            <Input placeholder="输入节点名称" />
-          </Form.Item>
-          
-          {editingNode && (
-            <div style={{ marginBottom: 16, padding: 12, backgroundColor: '#f5f5f5', borderRadius: 6 }}>
-              <div><strong>节点ID：</strong>{editingNode.id}</div>
-			  <div><strong>连接状态：</strong>{editingNode.connection_status}</div>
-			  <div><strong>健康状态：</strong>{editingNode.health_status}</div>
-            </div>
-          )}
-
-          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space>
-              <Button onClick={() => {
-                setEditModalVisible(false);
-                setEditingNode(null);
-                form.resetFields();
-              }}>
-                取消
-              </Button>
-              <Button type="primary" htmlType="submit">
-                保存
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
-      </Modal>
-    </div>
-  );
+  return <div>
+    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={createActivation}>创建待激活终端</Button></div>
+    <Card><Table rowKey="id" loading={loading} dataSource={nodes} columns={columns} scroll={{ x: 1320 }} pagination={{ pageSize: 20, showSizeChanger: false }} /></Card>
+    <Modal open={!!activation} footer={<Button type="primary" onClick={() => setActivation(null)}>我已保存</Button>} closable={false} title="一次性激活码">
+      <Typography.Paragraph>请在 Edge 的初始激活界面填写 Cloud URL 和以下激活码。激活码仅显示一次，10 分钟后失效。</Typography.Paragraph>
+      <Typography.Title level={3} copyable={{ text: activation?.code }}>{activation?.code}</Typography.Title>
+      <Space align="start"><Typography.Text type="secondary">失效时间：</Typography.Text><DateTimeValue value={activation?.expiresAt} /></Space>
+    </Modal>
+  </div>;
 };
 
 export default EdgeNodes;

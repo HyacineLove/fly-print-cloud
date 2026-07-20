@@ -25,6 +25,17 @@ type OperationalAlertSummary struct {
 	UnavailablePrinters int `json:"unavailable_printers"`
 }
 
+// DeviceOverview is intentionally separate from alert counts: a connected
+// node can still be faulty, and the Admin UI must be able to show both facts.
+type DeviceOverview struct {
+	FaultNodes     int `json:"fault_nodes"`
+	OnlineNodes    int `json:"online_nodes"`
+	TotalNodes     int `json:"total_nodes"`
+	FaultPrinters  int `json:"fault_printers"`
+	OnlinePrinters int `json:"online_printers"`
+	TotalPrinters  int `json:"total_printers"`
+}
+
 func NewOperationalAlertRepository(db *DB) *OperationalAlertRepository {
 	return &OperationalAlertRepository{db: db}
 }
@@ -114,9 +125,10 @@ func (r *OperationalAlertRepository) List(status, resourceType, nodeID, printerI
 		COALESCE(a.node_id,''), COALESCE(a.printer_id::text,''), COALESCE(a.job_id::text,''),
 		a.reason_code, a.category, a.title, a.status,
 		a.details, a.occurrence_count, a.first_seen_at, a.last_seen_at, a.resolved_at,
-		COALESCE(n.name,''), COALESCE(p.display_name, p.name, '')
+		COALESCE(n.alias, n.name, ''), COALESCE(p.display_name, p.name, ''), COALESCE(j.name, '')
 		FROM operational_alerts a LEFT JOIN edge_nodes n ON n.id=a.node_id
-		LEFT JOIN printers p ON p.id=a.printer_id`+where+fmt.Sprintf(" ORDER BY a.last_seen_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+		LEFT JOIN printers p ON p.id=a.printer_id
+		LEFT JOIN print_jobs j ON j.id=a.job_id`+where+fmt.Sprintf(" ORDER BY a.last_seen_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -128,7 +140,7 @@ func (r *OperationalAlertRepository) List(status, resourceType, nodeID, printerI
 		var resolved sql.NullTime
 		if err := rows.Scan(&a.ID, &a.ResourceType, &a.ResourceID, &a.NodeID, &a.PrinterID, &a.JobID,
 			&a.ReasonCode, &a.Category, &a.Title, &a.Status,
-			&details, &a.OccurrenceCount, &a.FirstSeenAt, &a.LastSeenAt, &resolved, &a.NodeName, &a.PrinterName); err != nil {
+			&details, &a.OccurrenceCount, &a.FirstSeenAt, &a.LastSeenAt, &resolved, &a.NodeName, &a.PrinterName, &a.JobName); err != nil {
 			return nil, 0, err
 		}
 		_ = json.Unmarshal(details, &a.Details)
@@ -141,6 +153,33 @@ func (r *OperationalAlertRepository) List(status, resourceType, nodeID, printerI
 		alerts = append(alerts, a)
 	}
 	return alerts, total, rows.Err()
+}
+
+func (r *OperationalAlertRepository) DeviceOverview() (DeviceOverview, error) {
+	var overview DeviceOverview
+	err := r.db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM edge_nodes WHERE deleted_at IS NULL AND enabled=true
+			AND registration_state <> 'pending_activation'
+			AND status='online' AND health_status IN ('degraded','critical')),
+		(SELECT COUNT(*) FROM edge_nodes WHERE deleted_at IS NULL AND enabled=true
+			AND registration_state <> 'pending_activation' AND status='online'),
+		(SELECT COUNT(*) FROM edge_nodes WHERE deleted_at IS NULL AND registration_state <> 'pending_activation'),
+		(SELECT COUNT(*) FROM printers p JOIN edge_nodes n ON n.id=p.edge_node_id
+			WHERE p.deleted_at IS NULL AND p.enabled=true AND n.deleted_at IS NULL AND (
+				NOT n.enabled OR n.status <> 'online' OR p.status_received_at IS NULL OR
+				p.status_received_at < CURRENT_TIMESTAMP - INTERVAL '90 seconds' OR
+				p.status NOT IN ('idle','printing')
+			)),
+		(SELECT COUNT(*) FROM printers p JOIN edge_nodes n ON n.id=p.edge_node_id
+			WHERE p.deleted_at IS NULL AND p.enabled=true AND n.deleted_at IS NULL AND n.enabled=true
+				AND n.status='online' AND p.status IN ('idle','printing')
+				AND p.status_received_at IS NOT NULL
+				AND p.status_received_at >= CURRENT_TIMESTAMP - INTERVAL '90 seconds'),
+		(SELECT COUNT(*) FROM printers WHERE deleted_at IS NULL)`).Scan(
+		&overview.FaultNodes, &overview.OnlineNodes, &overview.TotalNodes,
+		&overview.FaultPrinters, &overview.OnlinePrinters, &overview.TotalPrinters,
+	)
+	return overview, err
 }
 
 func (r *OperationalAlertRepository) Summary() (OperationalAlertSummary, error) {
@@ -162,6 +201,59 @@ func (r *OperationalAlertRepository) Summary() (OperationalAlertSummary, error) 
 func (r *OperationalAlertRepository) CleanupResolved(retention time.Duration) (int64, error) {
 	result, err := r.db.Exec(`DELETE FROM operational_alerts WHERE status='resolved'
 		AND resolved_at < CURRENT_TIMESTAMP - ($1 * INTERVAL '1 second')`, int64(retention.Seconds()))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// DeleteForNodeTx removes alerts owned by a node and its printers before the
+// node's soft-delete and printer cascade are committed.
+func (r *OperationalAlertRepository) DeleteForNodeTx(tx *Tx, nodeID string) error {
+	_, err := tx.Exec(`DELETE FROM operational_alerts
+		WHERE node_id = $1
+		   OR (resource_type = 'node' AND resource_id = $1)
+		   OR printer_id IN (SELECT id FROM printers WHERE edge_node_id = $1)`, nodeID)
+	return err
+}
+
+func (r *OperationalAlertRepository) DeleteForPrinter(printerID string) error {
+	_, err := r.db.Exec(`DELETE FROM operational_alerts
+		WHERE printer_id = $1::uuid
+		   OR (resource_type = 'printer' AND resource_id = $1)`, printerID)
+	return err
+}
+
+func (r *OperationalAlertRepository) DeleteForJob(jobID string) error {
+	_, err := r.db.Exec(`DELETE FROM operational_alerts
+		WHERE job_id = $1::uuid
+		   OR (resource_type = 'job' AND resource_id = $1)`, jobID)
+	return err
+}
+
+// CleanupOrphaned removes alerts whose owning resource was deleted. Older
+// deployments did not have foreign-key cascades for operational alerts, so
+// this also repairs orphan rows already present in the database.
+func (r *OperationalAlertRepository) CleanupOrphaned() (int64, error) {
+	result, err := r.db.Exec(`DELETE FROM operational_alerts a
+		WHERE (a.node_id IS NOT NULL AND NOT EXISTS (
+			SELECT 1 FROM edge_nodes n WHERE n.id = a.node_id AND n.deleted_at IS NULL
+		))
+		OR (a.printer_id IS NOT NULL AND NOT EXISTS (
+			SELECT 1 FROM printers p WHERE p.id = a.printer_id AND p.deleted_at IS NULL
+		))
+		OR (a.job_id IS NOT NULL AND NOT EXISTS (
+			SELECT 1 FROM print_jobs j WHERE j.id = a.job_id
+		))
+		OR (a.resource_type = 'node' AND NOT EXISTS (
+			SELECT 1 FROM edge_nodes n WHERE n.id::text = a.resource_id AND n.deleted_at IS NULL
+		))
+		OR (a.resource_type = 'printer' AND NOT EXISTS (
+			SELECT 1 FROM printers p WHERE p.id::text = a.resource_id AND p.deleted_at IS NULL
+		))
+		OR (a.resource_type = 'job' AND NOT EXISTS (
+			SELECT 1 FROM print_jobs j WHERE j.id::text = a.resource_id
+		))`)
 	if err != nil {
 		return 0, err
 	}

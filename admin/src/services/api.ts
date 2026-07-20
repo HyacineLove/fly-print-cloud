@@ -1,5 +1,4 @@
 // API 基础服务
-import { ErrorHandler } from '../utils/errorHandler';
 import { buildApiUrl, buildAuthUrl } from '../config';
 
 export interface ApiResponse<T = any> {

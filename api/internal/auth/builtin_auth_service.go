@@ -24,7 +24,7 @@ type TokenResponse struct {
 // UserInfoResponse UserInfo 端点响应
 type UserInfoResponse struct {
 	Sub               string      `json:"sub"`
-	PreferredUsername  string      `json:"preferred_username"`
+	PreferredUsername string      `json:"preferred_username"`
 	Email             string      `json:"email"`
 	Name              string      `json:"name,omitempty"`
 	RealmAccess       RealmAccess `json:"realm_access,omitempty"`
@@ -96,8 +96,26 @@ func (s *BuiltinAuthService) handleClientCredentials(clientID, clientSecret, req
 		grantedScope = client.AllowedScopes
 	}
 
-	// 生成 JWT
-	tokenString, expiresIn, err := s.GenerateJWT(client.ClientID, client.ClientID, client.ClientID+"@edge.local", grantedScope)
+	if client.ClientType == "edge_node" && (client.EdgeNodeID == nil || *client.EdgeNodeID == "") {
+		return nil, fmt.Errorf("invalid_client: edge_node client is not bound to a node")
+	}
+	if client.ClientType == "edge_node" {
+		usable, err := s.clientRepo.IsBoundEdgeNodeUsable(client.ClientID)
+		if err != nil {
+			return nil, fmt.Errorf("server_error: failed to verify edge node state")
+		}
+		if !usable {
+			return nil, fmt.Errorf("invalid_client: edge node is disabled or deleted")
+		}
+	}
+
+	// Device credentials carry the immutable node claim. Human and third-party
+	// client credentials never acquire a node identity.
+	nodeID := ""
+	if client.EdgeNodeID != nil {
+		nodeID = *client.EdgeNodeID
+	}
+	tokenString, expiresIn, err := s.GenerateJWTForNode(client.ClientID, client.ClientID, client.ClientID+"@edge.local", grantedScope, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("server_error: failed to generate token")
 	}
@@ -151,6 +169,12 @@ func (s *BuiltinAuthService) handlePasswordGrant(username, password, requestedSc
 
 // GenerateJWT 生成 JWT token
 func (s *BuiltinAuthService) GenerateJWT(sub, username, email, scope string) (string, int64, error) {
+	return s.GenerateJWTForNode(sub, username, email, scope, "")
+}
+
+// GenerateJWTForNode emits a signed device token. nodeID is intentionally
+// optional for human users but mandatory for Edge device clients.
+func (s *BuiltinAuthService) GenerateJWTForNode(sub, username, email, scope, nodeID string) (string, int64, error) {
 	now := time.Now()
 	expiresIn := int64(s.tokenExpiry)
 
@@ -167,6 +191,9 @@ func (s *BuiltinAuthService) GenerateJWT(sub, username, email, scope string) (st
 		"iat": now.Unix(),
 		"exp": now.Add(time.Duration(s.tokenExpiry) * time.Second).Unix(),
 	}
+	if nodeID != "" {
+		claims["node_id"] = nodeID
+	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(s.signingSecret)
@@ -179,30 +206,41 @@ func (s *BuiltinAuthService) GenerateJWT(sub, username, email, scope string) (st
 
 // HandleUserInfo 处理 /auth/userinfo 请求
 func (s *BuiltinAuthService) HandleUserInfo(tokenString string) (*UserInfoResponse, error) {
-	// 解析 JWT（不验证签名，与 middleware 一致）
-	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
-	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
+	claims := jwt.MapClaims{}
+	parser := jwt.NewParser(
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(s.issuer),
+		jwt.WithExpirationRequired(),
+	)
+	token, err := parser.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return s.signingSecret, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
+	if !token.Valid {
+		return nil, fmt.Errorf("invalid token")
+	}
+	parsedClaims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
 		return nil, fmt.Errorf("invalid token claims")
 	}
 
 	resp := &UserInfoResponse{}
-	if sub, ok := claims["sub"].(string); ok {
+	if sub, ok := parsedClaims["sub"].(string); ok {
 		resp.Sub = sub
 	}
-	if username, ok := claims["preferred_username"].(string); ok {
+	if username, ok := parsedClaims["preferred_username"].(string); ok {
 		resp.PreferredUsername = username
 		resp.Name = username
 	}
-	if email, ok := claims["email"].(string); ok {
+	if email, ok := parsedClaims["email"].(string); ok {
 		resp.Email = email
 	}
-	if scope, ok := claims["scope"].(string); ok {
+	if scope, ok := parsedClaims["scope"].(string); ok {
 		resp.RealmAccess.Roles = strings.Fields(scope)
 	}
 

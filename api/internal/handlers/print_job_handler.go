@@ -24,15 +24,17 @@ type PrintJobHandler struct {
 	edgeNodeRepo  *database.EdgeNodeRepository
 	wsManager     *websocket.ConnectionManager
 	statusService *operations.StatusService
+	alertRepo     *database.OperationalAlertRepository
 }
 
-func NewPrintJobHandler(printJobRepo *database.PrintJobRepository, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, wsManager *websocket.ConnectionManager, statusService *operations.StatusService) *PrintJobHandler {
+func NewPrintJobHandler(printJobRepo *database.PrintJobRepository, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, wsManager *websocket.ConnectionManager, statusService *operations.StatusService, alertRepo *database.OperationalAlertRepository) *PrintJobHandler {
 	return &PrintJobHandler{
 		printJobRepo:  printJobRepo,
 		printerRepo:   printerRepo,
 		edgeNodeRepo:  edgeNodeRepo,
 		wsManager:     wsManager,
 		statusService: statusService,
+		alertRepo:     alertRepo,
 	}
 }
 
@@ -463,6 +465,13 @@ func (h *PrintJobHandler) DeletePrintJob(c *gin.Context) {
 		return
 	}
 
+	if h.alertRepo != nil {
+		if err := h.alertRepo.DeleteForJob(id); err != nil {
+			logger.Error("Failed to delete alerts for print job", zap.String("job_id", id), zap.Error(err))
+			InternalErrorResponse(c, "failed to delete print job alerts")
+			return
+		}
+	}
 	logger.Info("Print job deleted by admin", zap.String("job_id", id))
 	SuccessResponse(c, gin.H{"message": "打印任务已删除"})
 }

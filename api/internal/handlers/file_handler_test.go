@@ -421,7 +421,7 @@ func TestFileHandlerStorageDownloadStreamsFromStorage(t *testing.T) {
 
 	router := gin.New()
 	router.GET("/files/:id", func(c *gin.Context) {
-		c.Set("external_id", "user-2")
+		c.Set("external_id", "user-1")
 		c.Set("roles", []string{"file:read"})
 		handler.Download(c)
 	})

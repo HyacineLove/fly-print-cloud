@@ -17,6 +17,7 @@ type Config struct {
 	Admin    AdminConfig    `mapstructure:"admin"`
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Security SecurityConfig `mapstructure:"security"`
+	Integration IntegrationConfig `mapstructure:"integration"`
 }
 
 // AppConfig 应用配置
@@ -39,9 +40,11 @@ type DatabaseConfig struct {
 
 // ServerConfig 服务器配置
 type ServerConfig struct {
-	Port           int      `mapstructure:"port"`
-	Host           string   `mapstructure:"host"`
-	AllowedOrigins []string `mapstructure:"allowed_origins"` // CORS允许的来源列表
+	Port              int      `mapstructure:"port"`
+	Host              string   `mapstructure:"host"`
+	PublicBaseURL     string   `mapstructure:"public_base_url"`
+	AllowedOrigins    []string `mapstructure:"allowed_origins"` // CORS允许的来源列表
+	TrustedProxyCIDRs []string `mapstructure:"trusted_proxy_cidrs"`
 }
 
 // OAuth2Config OAuth2配置
@@ -58,6 +61,8 @@ type OAuth2Config struct {
 	AuthURL                string `mapstructure:"auth_url"`
 	TokenURL               string `mapstructure:"token_url"`
 	UserInfoURL            string `mapstructure:"userinfo_url"`
+	JWKSURL                string `mapstructure:"jwks_url"`
+	Audience               string `mapstructure:"audience"`
 	RedirectURI            string `mapstructure:"redirect_uri"`
 	LogoutURL              string `mapstructure:"logout_url"`
 	LogoutRedirectURIParam string `mapstructure:"logout_redirect_uri_param"`
@@ -100,6 +105,11 @@ type SecurityConfig struct {
 	DownloadTokenTTL               int    `mapstructure:"download_token_ttl"`
 }
 
+// IntegrationConfig holds shared security infrastructure for third-party APIs.
+type IntegrationConfig struct {
+	RedisURL string `mapstructure:"redis_url"`
+}
+
 // Load 加载配置
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
@@ -133,6 +143,11 @@ func Load() (*Config, error) {
 	if raw := viper.Get("server.allowed_origins"); raw != nil {
 		if v, ok := raw.(string); ok && v != "" {
 			config.Server.AllowedOrigins = splitTrim(v, ",")
+		}
+	}
+	if raw := viper.Get("server.trusted_proxy_cidrs"); raw != nil {
+		if v, ok := raw.(string); ok && v != "" {
+			config.Server.TrustedProxyCIDRs = splitTrim(v, ",")
 		}
 	}
 
@@ -199,6 +214,12 @@ func (c *Config) Validate() error {
 		if c.OAuth2.UserInfoURL == "" {
 			return fmt.Errorf("oauth2.userinfo_url is required for keycloak mode")
 		}
+		if c.OAuth2.JWKSURL == "" {
+			return fmt.Errorf("oauth2.jwks_url is required for keycloak mode")
+		}
+		if c.OAuth2.Audience == "" {
+			return fmt.Errorf("oauth2.audience is required for keycloak mode")
+		}
 	}
 
 	// 警告：生产环境不应使用默认密钥
@@ -220,8 +241,8 @@ func (c *Config) Validate() error {
 	if len(c.Security.FileAccessSecret) < 32 {
 		return fmt.Errorf("SECURITY WARNING: file_access_secret must be at least 32 characters long")
 	}
-	if c.OAuth2.IsBuiltinMode() && c.Security.OAuthClientSecretEncryptionKey == "" {
-		return fmt.Errorf("security.oauth_client_secret_encryption_key is required in builtin OAuth2 mode")
+	if c.Security.OAuthClientSecretEncryptionKey == "" {
+		return fmt.Errorf("security.oauth_client_secret_encryption_key is required to encrypt service credentials")
 	}
 
 	// 验证存储配置
@@ -291,6 +312,7 @@ func setDefaults() {
 		"http://localhost:8080",
 		"http://localhost:8012", // 与 .env.example 默认 HTTP_PORT 一致，便于一键启动
 	})
+	viper.SetDefault("server.trusted_proxy_cidrs", []string{})
 
 	// OAuth2 默认值
 	viper.SetDefault("oauth2.mode", "builtin")
@@ -329,6 +351,7 @@ func setDefaults() {
 	viper.SetDefault("security.oauth_client_secret_encryption_key", "")
 	viper.SetDefault("security.upload_token_ttl", 180)   // 3分钟
 	viper.SetDefault("security.download_token_ttl", 180) // 3分钟
+	viper.SetDefault("integration.redis_url", "")
 }
 
 // GetDSN 获取数据库连接字符串

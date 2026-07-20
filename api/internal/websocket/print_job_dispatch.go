@@ -14,7 +14,18 @@ import (
 // DispatchPrintJobAndRecord is the single Cloud-side transition from a newly
 // created job to an acknowledged, failed, or unconfirmed dispatch result.
 func DispatchPrintJobAndRecord(manager *ConnectionManager, printJobRepo *database.PrintJobRepository, statusService *operations.StatusService, job *models.PrintJob, nodeID, printerName string) {
-	err := manager.DispatchPrintJob(nodeID, job, printerName)
+	// A delivery is accepted only after Edge has durably recorded it. The same
+	// job ID is intentionally sent again with a new message ID when that ACK is
+	// missing; Edge's inbox turns those deliveries into one physical print.
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		err = manager.DispatchPrintJob(nodeID, job, printerName)
+		if err == nil || !errors.Is(err, ErrAckTimeout) || attempt == 3 {
+			break
+		}
+		logger.Warn("Print job delivery ACK timed out; retrying",
+			zap.String("job_id", job.ID), zap.Int("attempt", attempt))
+	}
 	if err == nil {
 		if updateErr := printJobRepo.MarkDispatched(job.ID); updateErr != nil {
 			logger.Error("Failed to update job status to dispatched", zap.String("job_id", job.ID), zap.Error(updateErr))

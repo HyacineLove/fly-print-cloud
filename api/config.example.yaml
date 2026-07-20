@@ -20,6 +20,9 @@ database:
 server:
   host: "0.0.0.0"
   port: 8080
+  # Public HTTPS origin used in terminal QR codes. Do not point this at an
+  # Edge LAN address; mobile browsers must reach the Cloud entry page.
+  public_base_url: "https://print.example.com"
   # CORS允许的来源列表（支持的前端域名）
   allowed_origins:
     - "https://admin.fly-print.local"
@@ -33,6 +36,10 @@ oauth2:
   jwt_signing_secret: "your-secret-key-change-in-production"
   jwt_token_expiry: 86400  # JWT Token 有效期（秒）
   jwt_issuer: "fly-print-cloud"
+  # Required when mode is keycloak. The server verifies OIDC JWTs locally
+  # using this key set; UserInfo is not an authorization decision point.
+  jwks_url: "https://keycloak.example.com/realms/flyprint/protocol/openid-connect/certs"
+  audience: "fly-print-cloud"
 
 # 管理控制台配置
 admin:

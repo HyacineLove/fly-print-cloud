@@ -7,7 +7,9 @@ import (
 // EdgeNode Edge节点
 type EdgeNode struct {
 	ID                      string     `json:"id"`
-	Name                    string     `json:"name"`              // 用户友好的显示名称（可修改）
+	Name                    string     `json:"name"`            // Edge 上报的原始名称
+	Alias                   string     `json:"alias,omitempty"` // Cloud 运维别名
+	RegistrationState       string     `json:"registration_state"`
 	ConnectionStatus        string     `json:"connection_status"` // online/unstable/offline
 	HealthStatus            string     `json:"health_status"`     // healthy/degraded/critical/unknown
 	HealthReasonCode        string     `json:"health_reason_code,omitempty"`
@@ -98,6 +100,7 @@ type PrintJob struct {
 	PrinterID   string `json:"printer_id"`
 	PrinterName string `json:"printer_name,omitempty"` // 打印机名称 (非DB字段，仅用于API返回或内部逻辑)
 	EdgeNodeID  string `json:"edge_node_id,omitempty"` // 所属节点ID（查询时填充）
+	NodeName    string `json:"node_name,omitempty"`    // 节点显示名称（别名优先）
 	UserID      string `json:"user_id"`                // 提交用户
 	UserName    string `json:"user_name"`              // 提交用户名
 
@@ -124,6 +127,13 @@ type PrintJob struct {
 	RetryCount int `json:"retry_count"`
 	MaxRetries int `json:"max_retries"`
 
+	// Terminal context is populated only for integration jobs and is carried to
+	// Edge without adding third-party fields to the print_jobs table.
+	TerminalSessionID    string `json:"terminal_session_id,omitempty"`
+	TerminalTicketHash   string `json:"terminal_ticket_hash,omitempty"`
+	IntegrationRequestID string `json:"integration_request_id,omitempty"`
+	InitiatorName        string `json:"initiator_name,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -147,6 +157,7 @@ type OperationalAlert struct {
 	DurationSeconds int64                  `json:"duration_seconds,omitempty"`
 	NodeName        string                 `json:"node_name,omitempty"`
 	PrinterName     string                 `json:"printer_name,omitempty"`
+	JobName         string                 `json:"job_name,omitempty"`
 }
 
 // User 用户

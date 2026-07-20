@@ -39,6 +39,8 @@ type Connection struct {
 	NodeID        string
 	Conn          *websocket.Conn
 	Send          chan []byte
+	done          chan struct{}
+	closeOnce     sync.Once
 	Manager       *ConnectionManager
 	PrinterRepo   *database.PrinterRepository
 	EdgeNodeRepo  *database.EdgeNodeRepository
@@ -46,6 +48,8 @@ type Connection struct {
 	FileRepo      *database.FileRepository
 	TokenManager  *security.TokenManager
 	StatusService *operations.StatusService
+	TerminalSessions *database.TerminalSessionRepository
+	Callbacks *database.IntegrationCallbackRepository
 
 	// ACK 机制相关
 	pendingAcks map[string]chan struct{}
@@ -53,11 +57,12 @@ type Connection struct {
 }
 
 // NewConnection 创建新连接
-func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService) *Connection {
+func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository) *Connection {
 	return &Connection{
 		NodeID:        nodeID,
 		Conn:          conn,
 		Send:          make(chan []byte, 256),
+		done:          make(chan struct{}),
 		Manager:       manager,
 		PrinterRepo:   printerRepo,
 		EdgeNodeRepo:  edgeNodeRepo,
@@ -65,7 +70,34 @@ func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManag
 		FileRepo:      fileRepo,
 		TokenManager:  tokenManager,
 		StatusService: statusService,
+		TerminalSessions: terminalSessions,
+		Callbacks: callbacks,
 		pendingAcks:   make(map[string]chan struct{}),
+	}
+}
+
+// Close is the only lifecycle exit for a connection. The send queue is never
+// closed: producers can therefore observe done instead of racing a close.
+func (c *Connection) Close() {
+	c.closeOnce.Do(func() {
+		close(c.done)
+		_ = c.Conn.Close()
+	})
+}
+
+func (c *Connection) enqueue(message []byte) error {
+	select {
+	case <-c.done:
+		return ErrConnectionClosed
+	default:
+	}
+	select {
+	case <-c.done:
+		return ErrConnectionClosed
+	case c.Send <- message:
+		return nil
+	default:
+		return ErrConnectionQueueFull
 	}
 }
 
@@ -73,7 +105,7 @@ func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManag
 func (c *Connection) ReadPump() {
 	defer func() {
 		c.Manager.unregister <- c
-		c.Conn.Close()
+		c.Close()
 	}()
 
 	c.Conn.SetReadLimit(maxMessageSize)
@@ -92,8 +124,6 @@ func (c *Connection) ReadPump() {
 			}
 			break
 		}
-
-		logger.Debug("WebSocket received raw message", zap.String("node_id", c.NodeID), zap.String("message", string(messageBytes)))
 
 		// 先解析消息类型
 		var msg Message
@@ -124,17 +154,18 @@ func (c *Connection) WritePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
-		c.Conn.Close()
+		c.Close()
 	}()
 
 	for {
 		select {
-		case message, ok := <-c.Send:
+		case <-c.done:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
+			_ = c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+			return
+
+		case message := <-c.Send:
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 
 			w, err := c.Conn.NextWriter(websocket.TextMessage)
 			if err != nil {
@@ -146,7 +177,13 @@ func (c *Connection) WritePump() {
 			n := len(c.Send)
 			for i := 0; i < n; i++ {
 				w.Write([]byte{'\n'})
-				w.Write(<-c.Send)
+				select {
+				case queued := <-c.Send:
+					w.Write(queued)
+				case <-c.done:
+					_ = w.Close()
+					return
+				}
 			}
 
 			if err := w.Close(); err != nil {
@@ -196,10 +233,38 @@ func (c *Connection) handleMessage(msg *Message) {
 		c.handleSubmitPrintParams(msg)
 	case MsgTypeRequestUploadToken:
 		c.handleRequestUploadToken(msg)
+	case MsgTypeTerminalSessionState:
+		c.handleTerminalSessionState(msg)
 	case MsgTypeAck:
 		c.handleAck(msg)
 	default:
 		logger.Warn("Unknown message type from node", zap.String("type", msg.Type), zap.String("node_id", c.NodeID))
+	}
+}
+
+func (c *Connection) handleTerminalSessionState(msg *Message) {
+	if c.TerminalSessions == nil {
+		logger.Error("Terminal session repository unavailable", zap.String("node_id", c.NodeID))
+		return
+	}
+	var payload TerminalSessionStateData
+	data, err := json.Marshal(msg.Data)
+	if err != nil || json.Unmarshal(data, &payload) != nil {
+		logger.Warn("Invalid terminal session state", zap.String("node_id", c.NodeID))
+		return
+	}
+	if payload.TerminalTicketHash != "" && len(payload.TerminalTicketHash) != 64 {
+		logger.Warn("Invalid terminal ticket hash in session state", zap.String("node_id", c.NodeID))
+		return
+	}
+	if payload.IntegrationRequestID != "" {
+		if _, err := uuid.Parse(payload.IntegrationRequestID); err != nil {
+			logger.Warn("Invalid integration request ID in session state", zap.String("node_id", c.NodeID))
+			return
+		}
+	}
+	if err := c.TerminalSessions.Report(c.NodeID, payload.TerminalSessionID, payload.TerminalTicketHash, payload.EntryType, payload.IntegrationRequestID, time.Now()); err != nil {
+		logger.Error("Failed to persist terminal session state", zap.String("node_id", c.NodeID), zap.Error(err))
 	}
 }
 
@@ -532,7 +597,10 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 		return
 	}
 
-	c.Send <- responseBytes
+	if err := c.enqueue(responseBytes); err != nil {
+		logger.Warn("Unable to send upload token response", zap.String("node_id", c.NodeID), zap.Error(err))
+		return
+	}
 	logger.Info("Upload token generated", zap.String("node_id", c.NodeID), zap.String("printer_id", payload.PrinterID), zap.String("api_url", apiUploadURL), zap.String("web_url", webUploadURL))
 }
 
@@ -559,7 +627,9 @@ func (c *Connection) sendRequestError(code, message, printerID, requestID string
 	}
 
 	errorBytes, _ := json.Marshal(errorMsg)
-	c.Send <- errorBytes
+	if err := c.enqueue(errorBytes); err != nil {
+		logger.Warn("Unable to send error to edge node", zap.String("node_id", c.NodeID), zap.Error(err))
+	}
 }
 
 // handleJobUpdate 处理任务状态更新
@@ -597,6 +667,13 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 		logger.Warn("Job not found when handling status update", zap.String("job_id", jobData.JobID))
 		return
 	}
+	if c.Callbacks != nil {
+		matched, err := c.Callbacks.ValidateJobContext(jobData.JobID, jobData.TerminalSessionID, jobData.TerminalTicketHash, jobData.IntegrationRequestID)
+		if err != nil || !matched {
+			logger.Warn("Ignoring job update with invalid integration terminal context", zap.String("job_id", jobData.JobID), zap.String("node_id", c.NodeID))
+			return
+		}
+	}
 	dispatchUnconfirmed := existingJob.Status == "unconfirmed" && existingJob.ErrorCode == "dispatch_ack_timeout"
 	if (existingJob.Status == "completed" || existingJob.Status == "failed" || existingJob.Status == "canceled" || existingJob.Status == "unconfirmed") && !dispatchUnconfirmed {
 		logger.Debug("Ignoring late status update for terminal job", zap.String("job_id", jobData.JobID), zap.String("current_status", existingJob.Status), zap.String("incoming_status", jobData.Status))
@@ -611,6 +688,10 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 		logger.Error("Failed to update job status", zap.String("job_id", jobData.JobID), zap.Error(err))
 		return
 	}
+	if c.Callbacks != nil {
+		integrationStatus := map[string]string{"processing":"printing","completed":"completed","failed":"failed","canceled":"cancelled","unconfirmed":"failed"}[jobData.Status]
+		if integrationStatus != "" { _ = c.Callbacks.TransitionForJob(jobData.JobID, integrationStatus, jobData.ErrorCode, errMsg) }
+	}
 
 	logger.Info("Successfully updated job status", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status))
 }
@@ -622,13 +703,7 @@ func (c *Connection) SendCommand(cmd *Command) error {
 		return err
 	}
 
-	select {
-	case c.Send <- data:
-		return nil
-	default:
-		close(c.Send)
-		return err
-	}
+	return c.enqueue(data)
 }
 
 // getUserDisplayName 从用户ID获取显示名称

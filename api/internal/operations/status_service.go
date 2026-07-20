@@ -98,7 +98,7 @@ func (s *StatusService) ApplyHeartbeat(nodeID string, h HeartbeatSnapshot) error
 			}
 		}
 	}
-	managed := []string{"node_offline", "disk_usage_critical", "memory_usage_critical"}
+			managed := []string{"disk_usage_critical", "memory_usage_critical"}
 	if err = s.alerts.ResolveReasonsTx(tx, "node", nodeID, managed, active); err != nil {
 		return err
 	}
@@ -257,12 +257,8 @@ func (s *StatusService) Sweep(now time.Time) error {
 			health_message=CASE WHEN $2::varchar='offline' THEN NULL ELSE health_message END WHERE id=$1`, item.id, connection)
 		active := []string{}
 		if txErr == nil && connection == "offline" && item.enabled {
-			policy, _ := alertPolicy("node_offline")
-			txErr = s.alerts.OpenTx(tx, "node", item.id, item.id, "", "", "node_offline", policy.AlertSpec, nil)
-			active = append(active, "node_offline")
-			if txErr == nil {
-				txErr = s.coordinator.SuppressPrinterConnections(tx, item.id)
-			}
+			// Offline is an availability state, not an operational alert.
+			txErr = s.coordinator.SuppressPrinterConnections(tx, item.id)
 		} else if txErr == nil && connection == "online" && item.enabled && item.printerCount > 0 &&
 			((item.printerSync == nil && now.Sub(item.created) > statusFreshness) || (item.printerSync != nil && now.Sub(*item.printerSync) > statusFreshness)) {
 			policy, _ := alertPolicy("printer_status_sync_interrupted")
@@ -276,7 +272,7 @@ func (s *StatusService) Sweep(now time.Time) error {
 			_, txErr = tx.Exec(`UPDATE edge_nodes SET health_status='healthy',health_reason_code=NULL,health_message=NULL WHERE id=$1 AND health_reason_code='printer_status_sync_interrupted'`, item.id)
 		}
 		if txErr == nil {
-			txErr = s.alerts.ResolveReasonsTx(tx, "node", item.id, []string{"node_offline", "printer_status_sync_interrupted"}, active)
+			txErr = s.alerts.ResolveReasonsTx(tx, "node", item.id, []string{"printer_status_sync_interrupted"}, active)
 		}
 		if txErr != nil {
 			tx.Rollback()

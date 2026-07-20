@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"fly-print-cloud/api/internal/config"
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,7 @@ import (
 // OAuth2TokenInfo OAuth2 token 信息
 type OAuth2TokenInfo struct {
 	Sub               string   `json:"sub"`
+	NodeID            string   `json:"node_id,omitempty"`
 	PreferredUsername string   `json:"preferred_username"`
 	Email             string   `json:"email"`
 	Groups            []string `json:"groups,omitempty"`           // OIDC 标准 groups claim
@@ -25,6 +27,31 @@ type OAuth2TokenInfo struct {
 	ResourceAccess    map[string]struct {
 		Roles []string `json:"roles"`
 	} `json:"resource_access,omitempty"`                           // Keycloak client roles
+}
+
+var oauth2ValidatorConfig struct {
+	sync.RWMutex
+	value *config.OAuth2Config
+}
+
+// ConfigureOAuth2 installs the immutable authentication settings used by HTTP
+// middleware and the WebSocket handshake. It must be called during startup;
+// failing closed is safer than accepting an unverifiable token.
+func ConfigureOAuth2(cfg config.OAuth2Config) {
+	oauth2ValidatorConfig.Lock()
+	defer oauth2ValidatorConfig.Unlock()
+	copy := cfg
+	oauth2ValidatorConfig.value = &copy
+}
+
+func currentOAuth2Config() (*config.OAuth2Config, error) {
+	oauth2ValidatorConfig.RLock()
+	defer oauth2ValidatorConfig.RUnlock()
+	if oauth2ValidatorConfig.value == nil {
+		return nil, fmt.Errorf("OAuth2 validator is not configured")
+	}
+	copy := *oauth2ValidatorConfig.value
+	return &copy, nil
 }
 
 // OAuth2ResourceServer OAuth2 资源服务器中间件（AND逻辑）
@@ -90,6 +117,7 @@ func OAuth2ResourceServer(requiredScopes ...string) gin.HandlerFunc {
 		// 将用户信息存储到 context 中
 		c.Set("oauth2_token", token)
 		c.Set("external_id", tokenInfo.Sub)
+		c.Set("node_id", tokenInfo.NodeID)
 		c.Set("username", tokenInfo.PreferredUsername)
 		c.Set("email", tokenInfo.Email)
 		c.Set("roles", userRoles)
@@ -105,29 +133,47 @@ func ValidateOAuth2Token(token string) (*OAuth2TokenInfo, error) {
 
 // validateOAuth2Token 验证 OAuth2 token 有效性（内部方法）
 func validateOAuth2Token(token string) (*OAuth2TokenInfo, error) {
-	// 首先尝试解析 JWT token（用于 Client Credentials Flow）
-	if tokenInfo, err := parseJWTToken(token); err == nil {
-		return tokenInfo, nil
+	cfg, err := currentOAuth2Config()
+	if err != nil {
+		return nil, err
 	}
-	
-	// 如果 JWT 解析失败，回退到 UserInfo 端点验证（用于 Authorization Code Flow）
-	return validateTokenViaUserInfo(token)
+	if cfg.IsBuiltinMode() {
+		return parseJWTToken(token, cfg)
+	}
+	return parseOIDCToken(token, cfg)
 }
 
-// parseJWTToken 解析 JWT token（不验证签名，仅提取 claims）
-func parseJWTToken(tokenString string) (*OAuth2TokenInfo, error) {
-	// 解析 JWT token（跳过签名验证）
-	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
-	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse JWT: %w", err)
+// parseJWTToken validates a builtin HS256 JWT before any claim is used.
+func parseJWTToken(tokenString string, cfg *config.OAuth2Config) (*OAuth2TokenInfo, error) {
+	if cfg == nil || cfg.JWTSigningSecret == "" || cfg.JWTIssuer == "" {
+		return nil, fmt.Errorf("builtin JWT validation is not configured")
 	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
+	claims := jwt.MapClaims{}
+	parser := jwt.NewParser(
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(cfg.JWTIssuer),
+		jwt.WithExpirationRequired(),
+	)
+	token, err := parser.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, fmt.Errorf("unexpected JWT signing method %q", token.Method.Alg())
+		}
+		return []byte(cfg.JWTSigningSecret), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("invalid JWT: %w", err)
+	}
+	if !token.Valid {
+		return nil, fmt.Errorf("invalid JWT")
+	}
+	parsedClaims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
 		return nil, fmt.Errorf("invalid JWT claims")
 	}
+	return tokenInfoFromClaims(parsedClaims), nil
+}
 
+func tokenInfoFromClaims(claims jwt.MapClaims) *OAuth2TokenInfo {
 	tokenInfo := &OAuth2TokenInfo{}
 	
 	// 提取标准 claims
@@ -142,6 +188,9 @@ func parseJWTToken(tokenString string) (*OAuth2TokenInfo, error) {
 	}
 	if scope, ok := claims["scope"].(string); ok {
 		tokenInfo.Scope = scope
+	}
+	if nodeID, ok := claims["node_id"].(string); ok {
+		tokenInfo.NodeID = nodeID
 	}
 
 	// 提取 realm_access roles
@@ -177,13 +226,11 @@ func parseJWTToken(tokenString string) (*OAuth2TokenInfo, error) {
 		}
 	}
 
-	return tokenInfo, nil
+	return tokenInfo
 }
 
 // validateTokenViaUserInfo 通过 UserInfo 端点验证 token
-func validateTokenViaUserInfo(token string) (*OAuth2TokenInfo, error) {
-	// 从配置中获取 UserInfo URL
-	userInfoURL := config.GetOAuth2UserInfoURL()
+func validateTokenViaUserInfo(token, userInfoURL string) (*OAuth2TokenInfo, error) {
 	if userInfoURL == "" {
 		return nil, fmt.Errorf("OAuth2 UserInfo URL not configured")
 	}
@@ -355,6 +402,7 @@ func OptionalOAuth2ResourceServer() gin.HandlerFunc {
 		// 将用户信息存储到 context 中
 		c.Set("oauth2_token", token)
 		c.Set("external_id", tokenInfo.Sub)
+		c.Set("node_id", tokenInfo.NodeID)
 		c.Set("username", tokenInfo.PreferredUsername)
 		c.Set("email", tokenInfo.Email)
 		c.Set("roles", userRoles)

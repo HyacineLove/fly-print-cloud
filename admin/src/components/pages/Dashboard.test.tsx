@@ -35,14 +35,17 @@ describe('Dashboard empty state', () => {
           code: 200,
           data: {
             items: [], total: 0, page: 1, page_size: 20,
-            summary: { high: 0, offline_nodes: 0, unavailable_printers: 0 },
+            summary: {
+              fault_nodes: 0, online_nodes: 0, total_nodes: 0,
+              fault_printers: 0, online_printers: 0, total_printers: 0,
+            },
           },
         }),
       }) as jest.Mock;
 
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
 
-    expect(await screen.findByText('当前没有需要立即处理的问题')).toBeTruthy();
+    expect(await screen.findByText('暂无当前告警')).toBeTruthy();
     await waitFor(() => expect(errorToast).not.toHaveBeenCalled());
   });
 });

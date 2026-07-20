@@ -507,6 +507,7 @@ func (db *DB) InitTables() error {
 		return fmt.Errorf("failed to create oauth2_clients table: %w", err)
 	}
 
+
 	// 创建 OAuth2 客户端更新时间触发器
 	oauth2ClientsTriggerSQL := `
 	DROP TRIGGER IF EXISTS update_oauth2_clients_updated_at ON oauth2_clients;

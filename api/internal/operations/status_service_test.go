@@ -84,11 +84,25 @@ func TestConnectionScopedReasonsOnlyContainConnectivityFailures(t *testing.T) {
 	for _, reason := range connectionScopedPrinterReasons() {
 		reasons[reason] = true
 	}
-	if !reasons["ipp_unreachable"] || !reasons["printer_state_unknown"] {
-		t.Fatal("connectivity reasons must be suppressible under node offline")
+	if !reasons["ipp_unreachable"] {
+		t.Fatal("IPP connectivity failures must be suppressible under node offline")
+	}
+	if _, ok := alertPolicy("printer_offline"); ok {
+		t.Fatal("offline state must not be treated as a printer alert")
+	}
+	if _, ok := alertPolicy("printer_state_unknown"); ok {
+		t.Fatal("unknown state must not be treated as a printer alert")
 	}
 	if reasons["printer_out_of_paper"] || reasons["printer_jammed"] {
 		t.Fatal("physical faults must remain visible under node offline")
+	}
+}
+
+func TestOfflineStatesDoNotCreateAlertPolicies(t *testing.T) {
+	for _, reason := range []string{"node_offline", "printer_offline", "printer_state_unknown"} {
+		if _, ok := alertPolicy(reason); ok {
+			t.Fatalf("offline state %q must not create an operational alert", reason)
+		}
 	}
 }
 

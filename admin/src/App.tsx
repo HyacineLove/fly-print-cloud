@@ -9,8 +9,8 @@ import {
   UserOutlined,
   LogoutOutlined,
   SettingOutlined,
-  KeyOutlined,
-  ControlOutlined
+  ControlOutlined,
+  ApiOutlined
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 
@@ -19,12 +19,10 @@ import Dashboard from './components/pages/Dashboard';
 import EdgeNodes from './components/pages/EdgeNodes';
 import Printers from './components/pages/Printers';
 import PrintJobs from './components/pages/PrintJobs';
-import Users from './components/pages/Users';
-import Settings from './components/pages/Settings';
 import PublicUpload from './components/pages/PublicUpload';
 import Login from './components/pages/Login';
-import OAuth2Clients from './components/pages/OAuth2Clients';
 import BusinessSettings from './components/pages/BusinessSettings';
+import IntegrationProviders from './components/pages/IntegrationProviders';
 
 // 导入错误边界和工具
 import ErrorBoundary from './components/ErrorBoundary';
@@ -104,43 +102,32 @@ const AdminApp: React.FC = () => {
     {
       key: '/',
       icon: <DashboardOutlined />,
-      label: 'Dashboard',
+      label: '总仪表盘',
     },
     {
       key: '/edge-nodes',
       icon: <CloudServerOutlined />,
-      label: 'Edge Nodes',
+      label: '节点信息',
     },
     {
       key: '/printers',
       icon: <PrinterOutlined />,
-      label: 'Printers',
+      label: '打印机信息',
     },
     {
       key: '/print-jobs',
       icon: <FileTextOutlined />,
-      label: 'Print Jobs',
-    },
-    // Files 菜单项已移除，因为文件上传功能现在是独立的页面
-    {
-      key: '/users',
-      icon: <UserOutlined />,
-      label: 'Users',
-    },
-    {
-      key: '/oauth2-clients',
-      icon: <KeyOutlined />,
-      label: 'OAuth2 Clients',
+      label: '打印任务',
     },
     {
       key: '/business-settings',
       icon: <ControlOutlined />,
-      label: 'Business Settings',
+      label: '业务配置',
     },
     {
-      key: '/settings',
-      icon: <SettingOutlined />,
-      label: 'Settings',
+      key: '/integration-providers',
+      icon: <ApiOutlined />,
+      label: '三方接入',
     },
   ];
 
@@ -190,7 +177,7 @@ const AdminApp: React.FC = () => {
         }}
       >
         <div style={{
-          height: 32,
+          height: 48,
           margin: 16,
           background: 'rgba(255, 255, 255, 0.3)',
           borderRadius: 6,
@@ -199,8 +186,10 @@ const AdminApp: React.FC = () => {
           justifyContent: 'center',
           color: 'white',
           fontWeight: 'bold',
+          whiteSpace: 'nowrap',
+          fontSize: 16,
         }}>
-          {collapsed ? 'FP' : 'FlyPrint'}
+          {collapsed ? 'FP' : '飞印服务管理中心'}
         </div>
         <Menu
           theme="dark"
@@ -250,10 +239,8 @@ const AdminApp: React.FC = () => {
               <Route path="/edge-nodes" element={<EdgeNodes />} />
               <Route path="/printers" element={<Printers />} />
               <Route path="/print-jobs" element={<PrintJobs />} />
-              <Route path="/users" element={<Users />} />
-              <Route path="/oauth2-clients" element={<OAuth2Clients />} />
               <Route path="/business-settings" element={<BusinessSettings />} />
-              <Route path="/settings" element={<Settings />} />
+              <Route path="/integration-providers" element={<IntegrationProviders />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>

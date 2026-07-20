@@ -19,6 +19,31 @@ func NewEdgeNodeRepository(db *DB) *EdgeNodeRepository {
 	return &EdgeNodeRepository{db: db}
 }
 
+// UpdateAlias updates only the Cloud-owned display alias. Edge-reported facts
+// remain outside this method so a local report can never overwrite an operator alias.
+func (r *EdgeNodeRepository) UpdateAlias(id, alias string) error {
+	result, err := r.db.Exec(`UPDATE edge_nodes SET alias=NULLIF($2, '') WHERE id=$1 AND deleted_at IS NULL`, id, alias)
+	if err != nil {
+		return fmt.Errorf("update edge node alias: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return fmt.Errorf("edge node not found")
+	}
+	return nil
+}
+
+// UpdateEnabled changes only the Cloud-owned availability switch.
+func (r *EdgeNodeRepository) UpdateEnabled(id string, enabled bool) error {
+	result, err := r.db.Exec(`UPDATE edge_nodes SET enabled=$2, registration_state=CASE WHEN $2 AND registration_state='disabled' THEN 'active' WHEN NOT $2 THEN 'disabled' ELSE registration_state END WHERE id=$1 AND deleted_at IS NULL`, id, enabled)
+	if err != nil {
+		return fmt.Errorf("update edge node enabled: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return fmt.Errorf("edge node not found")
+	}
+	return nil
+}
+
 // CreateEdgeNode 创建 Edge Node
 func (r *EdgeNodeRepository) CreateEdgeNode(node *models.EdgeNode) error {
 	query := `
@@ -105,7 +130,7 @@ func (r *EdgeNodeRepository) UpsertEdgeNode(node *models.EdgeNode) error {
 func (r *EdgeNodeRepository) GetEdgeNodeByID(id string) (*models.EdgeNode, error) {
 	node := &models.EdgeNode{}
 	query := `
-		SELECT id, name, status, enabled, version, last_heartbeat,
+		SELECT id, name, COALESCE(alias,''), registration_state, status, enabled, version, last_heartbeat,
 			   location, latitude, longitude,
 			   ip_address, mac_address, network_interface,
 			   os_version, cpu_info, memory_info, disk_info,
@@ -123,7 +148,7 @@ func (r *EdgeNodeRepository) GetEdgeNodeByID(id string) (*models.EdgeNode, error
 	var deletedAt sql.NullTime
 
 	err := r.db.QueryRow(query, id).Scan(
-		&node.ID, &node.Name, &node.ConnectionStatus, &node.Enabled, &version, &lastHeartbeat,
+		&node.ID, &node.Name, &node.Alias, &node.RegistrationState, &node.ConnectionStatus, &node.Enabled, &version, &lastHeartbeat,
 		&location, &latitude, &longitude,
 		&ipAddress, &macAddress, &networkInterface,
 		&osVersion, &cpuInfo, &memoryInfo, &diskInfo,
@@ -234,6 +259,12 @@ func (r *EdgeNodeRepository) DeleteEdgeNode(id string) error {
 
 // DeleteEdgeNodeTx 删除 Edge Node（软删除，使用事务）
 func (r *EdgeNodeRepository) DeleteEdgeNodeTx(tx *Tx, id string) error {
+	// A deleted node must not leave a usable device credential behind. Node
+	// deletion is the explicit identity-reset operation; disable/enable keeps it.
+	if _, err := tx.Exec(`DELETE FROM oauth2_clients WHERE edge_node_id = $1`, id); err != nil {
+		return fmt.Errorf("failed to revoke edge node client in transaction: %w", err)
+	}
+
 	query := `UPDATE edge_nodes SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL`
 
 	_, err := tx.Exec(query, id)
@@ -310,7 +341,7 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 
 	// 查询数据
 	query := fmt.Sprintf(`
-		SELECT id, name, status, enabled, version, last_heartbeat,
+		SELECT id, name, COALESCE(alias,''), registration_state, status, enabled, version, last_heartbeat,
 			   location, latitude, longitude,
 			   ip_address, mac_address, network_interface,
 			   os_version, cpu_info, memory_info, disk_info,
@@ -340,7 +371,7 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 
 		var deletedAt sql.NullTime
 		err := rows.Scan(
-			&node.ID, &node.Name, &node.ConnectionStatus, &node.Enabled, &version, &lastHeartbeat,
+			&node.ID, &node.Name, &node.Alias, &node.RegistrationState, &node.ConnectionStatus, &node.Enabled, &version, &lastHeartbeat,
 			&location, &latitude, &longitude,
 			&ipAddress, &macAddress, &networkInterface,
 			&osVersion, &cpuInfo, &memoryInfo, &diskInfo,

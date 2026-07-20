@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"net/http"
 	"strconv"
 	"time"
 
@@ -36,7 +35,7 @@ func (h *DashboardHandler) GetMaintenance(c *gin.Context) {
 		InternalErrorResponse(c, "查询当前告警失败")
 		return
 	}
-	summary, err := h.alertRepo.Summary()
+	summary, err := h.alertRepo.DeviceOverview()
 	if err != nil {
 		InternalErrorResponse(c, "查询告警统计失败")
 		return
@@ -75,43 +74,15 @@ func (h *DashboardHandler) GetAlertHistory(c *gin.Context) {
 
 // GetTrends 获取打印任务趋势数据
 func (h *DashboardHandler) GetTrends(c *gin.Context) {
-	// 获取最近7天的日期
-	dates := make([]string, 7)
-	completed := make([]int, 7)
-	failed := make([]int, 7)
-
-	now := time.Now()
-	for i := 6; i >= 0; i-- {
-		date := now.AddDate(0, 0, -i)
-		dateStr := date.Format("01-02")
-		dates[6-i] = dateStr
-
-		// 查询当天完成和失败的任务数量
-		startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
-		endOfDay := startOfDay.Add(24 * time.Hour)
-
-		completedCount, err := h.printJobRepo.CountJobsByStatusAndDate("completed", startOfDay, endOfDay)
-		if err != nil {
-			InternalErrorResponse(c, "查询完成任务数量失败")
-			return
-		}
-
-		failedCount, err := h.printJobRepo.CountJobsByStatusAndDate("failed", startOfDay, endOfDay)
-		if err != nil {
-			InternalErrorResponse(c, "查询失败任务数量失败")
-			return
-		}
-
-		completed[6-i] = completedCount
-		failed[6-i] = failedCount
+	period := c.DefaultQuery("period", "day")
+	if period != "day" && period != "month" && period != "year" {
+		BadRequestResponse(c, "period 仅支持 day、month 或 year")
+		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code": 200,
-		"data": gin.H{
-			"dates":     dates,
-			"completed": completed,
-			"failed":    failed,
-		},
-	})
+	buckets, err := h.printJobRepo.TrendBuckets(period, time.Now())
+	if err != nil {
+		InternalErrorResponse(c, "查询打印趋势失败")
+		return
+	}
+	SuccessResponse(c, gin.H{"period": period, "buckets": buckets})
 }

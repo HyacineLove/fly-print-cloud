@@ -110,9 +110,15 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode, 
 			   pj.start_time, pj.end_time, COALESCE(pj.error_message, ''), pj.error_code, pj.retry_count,
 			   pj.max_retries, pj.created_at, pj.updated_at,
-			   COALESCE(p.edge_node_id, '') as edge_node_id
+			   COALESCE(p.display_name, p.name, '') as printer_name,
+			   COALESCE(n.alias, n.name, '') as node_name,
+			   COALESCE(p.edge_node_id, '') as edge_node_id,
+			   COALESCE(provider.display_name, '主系统') AS initiator_name
 		FROM print_jobs pj
 		LEFT JOIN printers p ON pj.printer_id = p.id
+		LEFT JOIN edge_nodes n ON p.edge_node_id = n.id AND n.deleted_at IS NULL
+		LEFT JOIN integration_print_requests integration_request ON integration_request.print_job_id = pj.id
+		LEFT JOIN integration_providers provider ON provider.code = integration_request.provider_code
 		WHERE 1=1`
 
 	args := []interface{}{}
@@ -177,6 +183,8 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 	for rows.Next() {
 		job := &models.PrintJob{}
 		var userID sql.NullString
+		var printerName sql.NullString
+		var nodeName sql.NullString
 		var edgeNodeID sql.NullString
 		var errorCode sql.NullString
 		err := rows.Scan(
@@ -185,7 +193,7 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 			&job.Copies, &job.PaperSize, &job.ColorMode, &job.DuplexMode,
 			&job.StartTime, &job.EndTime, &job.ErrorMessage, &errorCode, &job.RetryCount,
 			&job.MaxRetries, &job.CreatedAt, &job.UpdatedAt,
-			&edgeNodeID,
+			&printerName, &nodeName, &edgeNodeID, &job.InitiatorName,
 		)
 		if err != nil {
 			return nil, err
@@ -194,6 +202,12 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 		// 有值就设置，没值就空着
 		if userID.Valid {
 			job.UserID = userID.String
+		}
+		if printerName.Valid {
+			job.PrinterName = printerName.String
+		}
+		if nodeName.Valid {
+			job.NodeName = nodeName.String
 		}
 		if edgeNodeID.Valid {
 			job.EdgeNodeID = edgeNodeID.String
@@ -379,6 +393,60 @@ func (r *PrintJobRepository) CountJobsByStatusAndDate(status string, startDate, 
 	var count int
 	err := r.db.DB.QueryRow(query, status, startDate, endDate).Scan(&count)
 	return count, err
+}
+
+// TrendBuckets returns one database-aggregated row for every requested time
+// bucket. The period is deliberately closed to the three Admin choices so no
+// SQL date expression is ever assembled from request input.
+type TrendBucket struct {
+	Bucket    time.Time `json:"bucket"`
+	Label     string    `json:"label"`
+	Completed int       `json:"completed"`
+	Failed    int       `json:"failed"`
+}
+
+func (r *PrintJobRepository) TrendBuckets(period string, now time.Time) ([]TrendBucket, error) {
+	var start, end time.Time
+	var step, label string
+	productLocation := time.FixedZone("GMT+8", 8*60*60)
+	localNow := now.In(productLocation)
+	switch period {
+	case "day":
+		localStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, productLocation)
+		start, end, step, label = localStart.UTC(), localStart.AddDate(0, 0, 1).UTC(), "hour", "HH24:00"
+	case "month":
+		localStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, productLocation)
+		start, end, step, label = localStart.UTC(), localStart.AddDate(0, 1, 0).UTC(), "day", "MM-DD"
+	case "year":
+		localStart := time.Date(localNow.Year(), time.January, 1, 0, 0, 0, 0, productLocation)
+		start, end, step, label = localStart.UTC(), localStart.AddDate(1, 0, 0).UTC(), "month", "YYYY-MM"
+	default:
+		return nil, fmt.Errorf("unsupported trend period: %s", period)
+	}
+	query := fmt.Sprintf(`
+		WITH buckets AS (
+			SELECT generate_series($1::timestamp, $2::timestamp - interval '1 %s', interval '1 %s') AS bucket
+		)
+		SELECT b.bucket, to_char(b.bucket + interval '8 hours', $3),
+			COUNT(pj.id) FILTER (WHERE pj.status='completed')::int,
+			COUNT(pj.id) FILTER (WHERE pj.status IN ('failed','cancelled','unconfirmed'))::int
+		FROM buckets b LEFT JOIN print_jobs pj ON pj.created_at >= b.bucket
+			AND pj.created_at < b.bucket + interval '1 %s'
+		GROUP BY b.bucket ORDER BY b.bucket`, step, step, step)
+	rows, err := r.db.Query(query, start, end, label)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]TrendBucket, 0)
+	for rows.Next() {
+		var item TrendBucket
+		if err := rows.Scan(&item.Bucket, &item.Label, &item.Completed, &item.Failed); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 // CountActiveJobsByPrinter 统计指定打印机的活动任务数（pending, dispatched, processing 状态）

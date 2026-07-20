@@ -1,4 +1,19 @@
 services:
+  redis:
+    image: ${REDIS_IMAGE_MIRROR:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io}/library/redis:7-alpine
+    container_name: fly-print-redis
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-change-me}"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - fly-print-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-change-me} ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
   postgres:
     image: ${COMPOSE_LIBRARY_MIRROR:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io}/library/postgres:15
     container_name: fly-print-postgres
@@ -84,6 +99,7 @@ services:
       - FLY_PRINT_DATABASE_USER=${POSTGRES_USER:-postgres}
       - FLY_PRINT_DATABASE_PASSWORD=${POSTGRES_PASSWORD:-your-secure-password-here}
       - FLY_PRINT_SERVER_ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:8012,http://127.0.0.1:8012,http://192.168.*.*,http://10.*.*.*,http://172.16.*.*,http://172.17.*.*,http://172.18.*.*,http://172.19.*.*,http://172.2*.*.*,http://172.3*.*.*}
+      - FLY_PRINT_SERVER_PUBLIC_BASE_URL=${EXTERNAL_API_URL:-http://localhost:8012}
       - FLY_PRINT_CREATE_DEFAULT_ADMIN=${CREATE_DEFAULT_ADMIN:-true}
       - FLY_PRINT_DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123}
       - FLY_PRINT_OAUTH2_MODE=${OAUTH2_MODE:-builtin}
@@ -112,11 +128,15 @@ services:
       - FLY_PRINT_SECURITY_OAUTH_CLIENT_SECRET_ENCRYPTION_KEY=${OAUTH_CLIENT_SECRET_ENCRYPTION_KEY}
       - FLY_PRINT_SECURITY_UPLOAD_TOKEN_TTL=${UPLOAD_TOKEN_TTL:-300}
       - FLY_PRINT_SECURITY_DOWNLOAD_TOKEN_TTL=${DOWNLOAD_TOKEN_TTL:-300}
+
+      - FLY_PRINT_INTEGRATION_REDIS_URL=${INTEGRATION_REDIS_URL:-redis://:${REDIS_PASSWORD:-change-me}@redis:6379/0}
     depends_on:
       postgres:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     volumes:
       - file_uploads:/root/uploads
     networks:
@@ -177,6 +197,7 @@ volumes:
   admin_build:
   file_uploads:
   minio_data:
+  redis_data:
 
 networks:
   fly-print-network:

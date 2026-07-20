@@ -16,6 +16,7 @@ const (
 	MsgTypeJobUpdate          = "job_update"
 	MsgTypeSubmitPrintParams  = "submit_print_params"
 	MsgTypeRequestUploadToken = "request_upload_token" // 请求上传凭证
+	MsgTypeTerminalSessionState = "terminal_session_state"
 	MsgTypeAck                = "ack"                  // 确认消息
 )
 
@@ -103,6 +104,9 @@ type JobUpdateData struct {
 	Status       string  `json:"status"`
 	ErrorCode    string  `json:"error_code"`
 	ErrorMessage *string `json:"error_message"`
+	TerminalSessionID string `json:"terminal_session_id,omitempty"`
+	TerminalTicketHash string `json:"terminal_ticket_hash,omitempty"`
+	IntegrationRequestID string `json:"integration_request_id,omitempty"`
 }
 
 // 打印任务分发数据
@@ -123,12 +127,25 @@ type PrintJobData struct {
 	ColorMode                string     `json:"color_mode"`
 	DuplexMode               string     `json:"duplex_mode"`
 	MaxRetries               int        `json:"max_retries"`
+	TerminalSessionID         string     `json:"terminal_session_id,omitempty"`
+	TerminalTicketHash        string     `json:"terminal_ticket_hash,omitempty"`
+	IntegrationRequestID      string     `json:"integration_request_id,omitempty"`
 }
 
 // RequestUploadTokenPayload 请求上传凭证载荷 (Edge -> Cloud)
 type RequestUploadTokenPayload struct {
 	RequestID string `json:"request_id"`
 	PrinterID string `json:"printer_id"` // 目标打印机ID
+}
+
+// TerminalSessionStateData is reported whenever the kiosk creates or clears a
+// local interactive session. Empty fields explicitly mean Edge has no active
+// session (including immediately after restart).
+type TerminalSessionStateData struct {
+	TerminalSessionID    string `json:"terminal_session_id"`
+	TerminalTicketHash   string `json:"terminal_ticket_hash"`
+	EntryType            string `json:"entry_type"`
+	IntegrationRequestID string `json:"integration_request_id"`
 }
 
 // UploadTokenResponsePayload 上传凭证响应载荷 (Cloud -> Edge)

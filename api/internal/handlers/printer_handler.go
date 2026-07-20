@@ -23,9 +23,10 @@ type PrinterHandler struct {
 	wsManager      *websocket.ConnectionManager
 	tokenUsageRepo *database.TokenUsageRepository
 	statusService  *operations.StatusService
+	alertRepo      *database.OperationalAlertRepository
 }
 
-func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository, statusService *operations.StatusService) *PrinterHandler {
+func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository, statusService *operations.StatusService, alertRepo *database.OperationalAlertRepository) *PrinterHandler {
 	return &PrinterHandler{
 		printerRepo:    printerRepo,
 		edgeNodeRepo:   edgeNodeRepo,
@@ -33,6 +34,7 @@ func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *da
 		wsManager:      wsManager,
 		tokenUsageRepo: tokenUsageRepo,
 		statusService:  statusService,
+		alertRepo:      alertRepo,
 	}
 }
 
@@ -51,8 +53,8 @@ type UpdatePrinterRequest struct {
 
 // AdminUpdatePrinterRequest 管理界面更新打印机请求
 type AdminUpdatePrinterRequest struct {
-	DisplayName string `json:"display_name" binding:"omitempty,max=100"`
-	Enabled     *bool  `json:"enabled"` // 使用指针类型以区分未设置和false
+	DisplayName *string `json:"display_name" binding:"omitempty,max=100"`
+	Enabled     *bool   `json:"enabled"` // 使用指针类型以区分未设置和false
 }
 
 // PrinterWithStatus 包含实际状态的打印机信息
@@ -254,8 +256,10 @@ func (h *PrinterHandler) UpdatePrinter(c *gin.Context) {
 	if err := c.ShouldBindJSON(&adminReq); err == nil {
 		// 管理界面更新（仅更新display_name和enabled）
 		oldEnabled := printer.Enabled
-		if adminReq.DisplayName != "" {
-			printer.DisplayName = adminReq.DisplayName
+		if adminReq.DisplayName != nil {
+			// display_name is the Cloud-owned alias. A deliberate empty value
+			// clears it and restores the Edge-reported name in the Admin UI.
+			printer.DisplayName = strings.TrimSpace(*adminReq.DisplayName)
 		}
 		if adminReq.Enabled != nil {
 			printer.Enabled = *adminReq.Enabled
@@ -349,6 +353,13 @@ func (h *PrinterHandler) DeletePrinter(c *gin.Context) {
 	// 打印机删除不再通过 WebSocket 通知 Edge 端
 	// Edge 端请求时会收到 printer_not_found 错误，然后触发重新注册
 
+	if h.alertRepo != nil {
+		if err := h.alertRepo.DeleteForPrinter(printerID); err != nil {
+			logger.Error("Failed to delete alerts for printer", zap.String("printer_id", printerID), zap.Error(err))
+			InternalErrorResponse(c, "failed to delete printer alerts")
+			return
+		}
+	}
 	logger.Info("Printer deleted successfully", zap.String("printer_id", printerID))
 	SuccessResponse(c, gin.H{"message": "打印机删除成功"})
 }

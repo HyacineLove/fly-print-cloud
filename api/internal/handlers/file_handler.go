@@ -42,6 +42,7 @@ type FileHandler struct {
 	settingsProvider businessSettingsProvider
 	edgeNodeRepo     edgeNodeLookup
 	printerRepo      printerLookup
+	terminalUploadSessions terminalUploadSessionBinder
 }
 
 type businessSettingsProvider interface {
@@ -61,6 +62,10 @@ type printerLookup interface {
 	GetPrinterByID(id string) (*models.Printer, error)
 }
 
+type terminalUploadSessionBinder interface {
+	BindFile(rawToken, fileID string, now time.Time) error
+}
+
 func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager, settingsProvider businessSettingsProvider, edgeNodeRepo edgeNodeLookup, printerRepo printerLookup) *FileHandler {
 	return &FileHandler{
 		repo:             repo,
@@ -72,6 +77,12 @@ func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageServi
 		edgeNodeRepo:     edgeNodeRepo,
 		printerRepo:      printerRepo,
 	}
+}
+
+// SetTerminalUploadSessionBinder enables the Cloud entry bridge without
+// changing the existing upload HTTP protocol.
+func (h *FileHandler) SetTerminalUploadSessionBinder(binder terminalUploadSessionBinder) {
+	h.terminalUploadSessions = binder
 }
 
 // Upload 上传文件
@@ -217,6 +228,13 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		_ = h.storage.Delete(c.Request.Context(), objectKey)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata"})
 		return
+	}
+	if token != "" && h.terminalUploadSessions != nil {
+		if err := h.terminalUploadSessions.BindFile(token, file.ID, time.Now()); err != nil {
+			_ = h.storage.Delete(c.Request.Context(), objectKey)
+			c.JSON(http.StatusConflict, gin.H{"error": "terminal_upload_session_unavailable"})
+			return
+		}
 	}
 
 	// Generate URL (relative path for API)
@@ -390,20 +408,19 @@ func (h *FileHandler) Download(c *gin.Context) {
 		rolesSlice, _ := roles.([]string)
 
 		hasAdmin := false
-		hasReadScope := false
 		for _, r := range rolesSlice {
 			if r == "admin" || r == "fly-print-admin" {
 				hasAdmin = true
-			}
-			if r == "file:read" {
-				hasReadScope = true
 			}
 		}
 
 		currentUser, _ := c.Get("external_id")
 		isOwner := currentUser == file.UploaderID
 
-		if !hasAdmin && !hasReadScope && !isOwner {
+		// file:read is only a capability to use the file API. It does not grant
+		// access to every object in storage; a caller must own the file, be an
+		// administrator, or present a download ticket bound to this file.
+		if !hasAdmin && !isOwner {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 			return
 		}

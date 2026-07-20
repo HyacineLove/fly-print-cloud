@@ -25,10 +25,12 @@ type WebSocketHandler struct {
 	tokenManager   *security.TokenManager
 	allowedOrigins []string // 允许的Origin列表
 	statusService  *operations.StatusService
+	terminalSessions *database.TerminalSessionRepository
+	callbacks *database.IntegrationCallbackRepository
 }
 
 // NewWebSocketHandler 创建 WebSocket 处理器
-func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, allowedOrigins []string, statusService *operations.StatusService) *WebSocketHandler {
+func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, allowedOrigins []string, statusService *operations.StatusService, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository) *WebSocketHandler {
 	return &WebSocketHandler{
 		manager:        manager,
 		printerRepo:    printerRepo,
@@ -38,6 +40,8 @@ func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.Print
 		tokenManager:   tokenManager,
 		allowedOrigins: allowedOrigins,
 		statusService:  statusService,
+		terminalSessions: terminalSessions,
+		callbacks: callbacks,
 	}
 }
 
@@ -80,15 +84,14 @@ func (h *WebSocketHandler) HandleConnection(c *gin.Context) {
 		return
 	}
 
-	// 优先从 query parameter 获取 node_id
+	// The query is retained for protocol compatibility, but it must exactly
+	// match the signed credential claim. A device can never select its target
+	// node through a URL parameter.
 	nodeID := c.Query("node_id")
-	if nodeID == "" {
-		// 如果 URL 参数中没有 node_id，尝试从 token 获取
-		nodeID = h.extractNodeIDFromTokenInfo(tokenInfo)
-		if nodeID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing node_id"})
-			return
-		}
+	if nodeID == "" || tokenInfo.NodeID == "" || nodeID != tokenInfo.NodeID {
+		logger.Warn("WebSocket node identity mismatch", zap.String("query_node_id", nodeID), zap.String("token_node_id", tokenInfo.NodeID))
+		c.JSON(http.StatusForbidden, gin.H{"error": "edge_node_identity_mismatch"})
+		return
 	}
 
 	logger.Info("WebSocket connection request from node", zap.String("node_id", nodeID), zap.String("user", tokenInfo.Sub))
@@ -137,7 +140,7 @@ func (h *WebSocketHandler) HandleConnection(c *gin.Context) {
 	}
 
 	// 创建连接对象
-	connection := NewConnection(nodeID, conn, h.manager, h.printerRepo, h.edgeNodeRepo, h.printJobRepo, h.fileRepo, h.tokenManager, h.statusService)
+	connection := NewConnection(nodeID, conn, h.manager, h.printerRepo, h.edgeNodeRepo, h.printJobRepo, h.fileRepo, h.tokenManager, h.statusService, h.terminalSessions, h.callbacks)
 
 	// 注册连接
 	h.manager.register <- connection

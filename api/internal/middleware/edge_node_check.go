@@ -10,6 +10,23 @@ import (
 	"go.uber.org/zap"
 )
 
+// EdgeNodeIdentityMatch rejects attempts to use a valid device token against a
+// different node path. OAuth2ResourceServer places the signed node_id claim in
+// the Gin context before this middleware runs.
+func EdgeNodeIdentityMatch() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tokenNodeID := c.GetString("node_id")
+		pathNodeID := c.Param("node_id")
+		if tokenNodeID == "" || pathNodeID == "" || tokenNodeID != pathNodeID {
+			logger.Warn("Edge node identity mismatch", zap.String("token_node_id", tokenNodeID), zap.String("path_node_id", pathNodeID))
+			c.JSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "error": "edge_node_identity_mismatch", "message": "token is not bound to this Edge node"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 // EdgeNodeEnabledCheck 检查 Edge 节点是否被禁用
 // 如果节点被禁用，返回 403 Forbidden 错误
 // 用于保护 Edge 相关的 API 端点

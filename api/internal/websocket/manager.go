@@ -60,7 +60,7 @@ func (m *ConnectionManager) registerConnection(conn *Connection) {
 	// 如果已有连接，先关闭旧连接
 	if existingConn, exists := m.connections[conn.NodeID]; exists {
 		logger.Info("Replacing existing connection for node", zap.String("node_id", conn.NodeID))
-		close(existingConn.Send)
+		existingConn.Close()
 	}
 
 	m.connections[conn.NodeID] = conn
@@ -86,28 +86,23 @@ func (m *ConnectionManager) unregisterConnection(conn *Connection) {
 			logger.Debug("Ignored unregister request for replaced connection of node", zap.String("node_id", conn.NodeID))
 		}
 
-		// 安全关闭channel，避免重复关闭
-		select {
-		case <-conn.Send:
-			// channel已经关闭
-		default:
-			close(conn.Send)
-		}
 	}
+	conn.Close()
 }
 
 // broadcastMessage 广播消息到所有连接
 func (m *ConnectionManager) broadcastMessage(message []byte) {
 	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
+	connections := make(map[string]*Connection, len(m.connections))
 	for nodeID, conn := range m.connections {
-		select {
-		case conn.Send <- message:
-		default:
-			logger.Warn("Failed to send broadcast message to node, closing connection", zap.String("node_id", nodeID))
-			close(conn.Send)
-			delete(m.connections, nodeID)
+		connections[nodeID] = conn
+	}
+	m.mutex.RUnlock()
+
+	for nodeID, conn := range connections {
+		if err := conn.enqueue(message); err != nil {
+			logger.Warn("Failed to send broadcast message to node", zap.String("node_id", nodeID), zap.Error(err))
+			m.unregisterConnection(conn)
 		}
 	}
 }
@@ -115,19 +110,18 @@ func (m *ConnectionManager) broadcastMessage(message []byte) {
 // SendToNode 发送消息到指定节点
 func (m *ConnectionManager) SendToNode(nodeID string, message []byte) error {
 	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
 	conn, exists := m.connections[nodeID]
+	m.mutex.RUnlock()
 	if !exists {
 		return ErrNodeNotConnected
 	}
-
-	select {
-	case conn.Send <- message:
-		return nil
-	default:
-		return ErrConnectionClosed
+	if err := conn.enqueue(message); err != nil {
+		if err == ErrConnectionQueueFull {
+			m.unregisterConnection(conn)
+		}
+		return err
 	}
+	return nil
 }
 
 // GetConnectedNodes 获取已连接的节点列表
@@ -171,19 +165,15 @@ func (m *ConnectionManager) DisconnectNode(nodeID string) error {
 		},
 	}
 	if msgBytes, err := json.Marshal(closeMsg); err == nil {
-		select {
-		case conn.Send <- msgBytes:
+		if err := conn.enqueue(msgBytes); err == nil {
 			// 消息发送成功，等待一小段时间让 Edge 端接收
 			time.Sleep(100 * time.Millisecond)
-		default:
-			// 发送失败，直接关闭
 		}
 	}
 
 	// 关闭连接
 	delete(m.connections, nodeID)
-	close(conn.Send)
-	conn.Conn.Close()
+	conn.Close()
 
 	logger.Info("Forcefully disconnected Edge Node (node deleted)", zap.String("node_id", nodeID), zap.Int("total_connections", len(m.connections)))
 	return nil
@@ -261,6 +251,9 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 		ColorMode:   job.ColorMode,
 		DuplexMode:  job.DuplexMode,
 		MaxRetries:  job.MaxRetries,
+		TerminalSessionID: job.TerminalSessionID,
+		TerminalTicketHash: job.TerminalTicketHash,
+		IntegrationRequestID: job.IntegrationRequestID,
 	}
 
 	// 如果有文件URL，生成一次性下载凭证

@@ -26,6 +26,7 @@ func NewOAuth2ClientHandler(clientRepo *database.OAuth2ClientRepository, secretC
 type createOAuth2ClientRequest struct {
 	ClientID      string `json:"client_id" binding:"required"`
 	ClientType    string `json:"client_type" binding:"required"`
+	EdgeNodeID    string `json:"edge_node_id"`
 	AllowedScopes string `json:"allowed_scopes" binding:"required"`
 	Description   string `json:"description"`
 }
@@ -83,6 +84,14 @@ func (h *OAuth2ClientHandler) Create(c *gin.Context) {
 		BadRequestResponse(c, "client_type 必须是 edge_node 或 third_party")
 		return
 	}
+	if req.ClientType == "edge_node" && req.EdgeNodeID == "" {
+		BadRequestResponse(c, "edge_node 客户端必须指定 edge_node_id")
+		return
+	}
+	if req.ClientType != "edge_node" && req.EdgeNodeID != "" {
+		BadRequestResponse(c, "仅 edge_node 客户端可以绑定 edge_node_id")
+		return
+	}
 
 	// 生成随机密钥
 	rawSecret, err := auth.GenerateClientSecret()
@@ -112,6 +121,9 @@ func (h *OAuth2ClientHandler) Create(c *gin.Context) {
 		Description:           req.Description,
 		Enabled:               true,
 	}
+	if req.EdgeNodeID != "" {
+		client.EdgeNodeID = &req.EdgeNodeID
+	}
 
 	if err := h.clientRepo.Create(client); err != nil {
 		InternalErrorResponse(c, "创建客户端失败")
@@ -122,6 +134,7 @@ func (h *OAuth2ClientHandler) Create(c *gin.Context) {
 		"id":             client.ID,
 		"client_id":      client.ClientID,
 		"client_type":    client.ClientType,
+		"edge_node_id":  client.EdgeNodeID,
 		"allowed_scopes": client.AllowedScopes,
 		"description":    client.Description,
 		"enabled":        client.Enabled,
