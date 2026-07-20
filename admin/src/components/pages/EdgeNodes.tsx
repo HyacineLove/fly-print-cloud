@@ -20,7 +20,9 @@ interface EdgeNode {
   id: string;
   name: string;
   location: string;
-  status: 'online' | 'offline' | 'error';
+  connection_status: 'online' | 'unstable' | 'offline';
+  health_status: 'healthy' | 'degraded' | 'critical' | 'unknown';
+  health_message?: string;
   enabled: boolean;
   last_heartbeat: string;
   version: string;
@@ -290,6 +292,8 @@ const EdgeNodes: React.FC = () => {
     switch (status) {
       case 'online':
         return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
+	  case 'unstable':
+		return <ExclamationCircleOutlined style={{ color: '#faad14' }} />;
       case 'offline':
         return <StopOutlined style={{ color: '#8c8c8c' }} />;
       case 'error':
@@ -304,6 +308,8 @@ const EdgeNodes: React.FC = () => {
     switch (status) {
       case 'online':
         return <Tag color="success">在线</Tag>;
+	  case 'unstable':
+		return <Tag color="warning">连接不稳定</Tag>;
       case 'offline':
         return <Tag color="default">离线</Tag>;
       case 'error':
@@ -358,8 +364,8 @@ const EdgeNodes: React.FC = () => {
     },
     {
       title: '状态',
-      dataIndex: 'status',
-      key: 'status',
+	  dataIndex: 'connection_status',
+	  key: 'connection_status',
       render: (status: string) => (
         <Space>
           {getStatusIcon(status)}
@@ -367,6 +373,17 @@ const EdgeNodes: React.FC = () => {
         </Space>
       ),
     },
+	{
+	  title: '健康状态',
+	  dataIndex: 'health_status',
+	  key: 'health_status',
+	  render: (status: EdgeNode['health_status'], record: EdgeNode) => <Space direction="vertical" size={0}>
+		<Tag color={status === 'healthy' ? 'success' : status === 'critical' ? 'error' : status === 'degraded' ? 'warning' : 'default'}>
+		  {status === 'healthy' ? '健康' : status === 'critical' ? '严重' : status === 'degraded' ? '降级' : '未知'}
+		</Tag>
+		{record.health_message && <span style={{fontSize: 12, color: '#888'}}>{record.health_message}</span>}
+	  </Space>,
+	},
     {
       title: '最后心跳',
       dataIndex: 'last_heartbeat',
@@ -436,9 +453,9 @@ const EdgeNodes: React.FC = () => {
   ];
 
   // 计算统计数据
-  const onlineNodes = edgeNodes.filter(node => node.status === 'online').length;
-  const offlineNodes = edgeNodes.filter(node => node.status === 'offline').length;
-  const errorNodes = edgeNodes.filter(node => node.status === 'error').length;
+  const onlineNodes = edgeNodes.filter(node => node.connection_status === 'online').length;
+  const offlineNodes = edgeNodes.filter(node => node.connection_status === 'offline').length;
+  const errorNodes = edgeNodes.filter(node => node.health_status === 'critical').length;
   const totalPrinters = edgeNodes.reduce((sum, node) => sum + (node.printer_count || 0), 0);
 
   return (
@@ -559,7 +576,8 @@ const EdgeNodes: React.FC = () => {
           {editingNode && (
             <div style={{ marginBottom: 16, padding: 12, backgroundColor: '#f5f5f5', borderRadius: 6 }}>
               <div><strong>节点ID：</strong>{editingNode.id}</div>
-              <div><strong>当前状态：</strong>{editingNode.status}</div>
+			  <div><strong>连接状态：</strong>{editingNode.connection_status}</div>
+			  <div><strong>健康状态：</strong>{editingNode.health_status}</div>
             </div>
           )}
 

@@ -11,6 +11,7 @@ import (
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/operations"
 	"fly-print-cloud/api/internal/websocket"
 
 	"github.com/gin-gonic/gin"
@@ -18,18 +19,20 @@ import (
 )
 
 type PrintJobHandler struct {
-	printJobRepo *database.PrintJobRepository
-	printerRepo  *database.PrinterRepository
-	edgeNodeRepo *database.EdgeNodeRepository
-	wsManager    *websocket.ConnectionManager
+	printJobRepo  *database.PrintJobRepository
+	printerRepo   *database.PrinterRepository
+	edgeNodeRepo  *database.EdgeNodeRepository
+	wsManager     *websocket.ConnectionManager
+	statusService *operations.StatusService
 }
 
-func NewPrintJobHandler(printJobRepo *database.PrintJobRepository, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, wsManager *websocket.ConnectionManager) *PrintJobHandler {
+func NewPrintJobHandler(printJobRepo *database.PrintJobRepository, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, wsManager *websocket.ConnectionManager, statusService *operations.StatusService) *PrintJobHandler {
 	return &PrintJobHandler{
-		printJobRepo: printJobRepo,
-		printerRepo:  printerRepo,
-		edgeNodeRepo: edgeNodeRepo,
-		wsManager:    wsManager,
+		printJobRepo:  printJobRepo,
+		printerRepo:   printerRepo,
+		edgeNodeRepo:  edgeNodeRepo,
+		wsManager:     wsManager,
+		statusService: statusService,
 	}
 }
 
@@ -177,6 +180,10 @@ func (h *PrintJobHandler) CreatePrintJob(c *gin.Context) {
 		ForbiddenWithCode(c, ErrCodeEdgeNodeDisabled)
 		return
 	}
+	if reason := operations.ValidatePrinterDispatch(printer, edgeNode, time.Now()); reason != "" {
+		BadRequestResponse(c, reason)
+		return
+	}
 
 	// 检查节点是否在线（通过WebSocket连接状态判断）
 	if !h.wsManager.IsNodeConnected(printer.EdgeNodeID) {
@@ -198,19 +205,7 @@ func (h *PrintJobHandler) CreatePrintJob(c *gin.Context) {
 
 	// 打印机信息已在上面获取并校验过
 
-	// 分发任务到Edge Node
-	err = h.wsManager.DispatchPrintJob(printer.EdgeNodeID, job, printer.Name)
-	if err != nil {
-		logger.Error("Failed to dispatch print job to node", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID), zap.Error(err))
-		// 任务已创建，但分发失败，保持pending状态
-	} else {
-		logger.Info("Print job dispatched to node", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID))
-		// 更新任务状态为已分发
-		job.Status = "dispatched"
-		if updateErr := h.printJobRepo.UpdatePrintJob(job); updateErr != nil {
-			logger.Error("Failed to update job status to dispatched", zap.Error(updateErr))
-		}
-	}
+	go websocket.DispatchPrintJobAndRecord(h.wsManager, h.printJobRepo, h.statusService, job, printer.EdgeNodeID, printer.Name)
 
 	c.JSON(http.StatusCreated, job)
 }
@@ -344,14 +339,19 @@ func (h *PrintJobHandler) UpdatePrintJob(c *gin.Context) {
 		job.Name = *req.Name
 	}
 	if req.Status != nil {
+		allowed := map[string]bool{"pending": true, "dispatched": true, "processing": true, "completed": true, "failed": true, "canceled": true, "unconfirmed": true}
+		if !allowed[*req.Status] {
+			BadRequestResponse(c, "无效的任务状态")
+			return
+		}
 		job.Status = *req.Status
 		// 状态变更时设置时间
-		if *req.Status == "printing" && job.StartTime == nil {
+		if *req.Status == "processing" && job.StartTime == nil {
 			now := time.Now()
 			job.StartTime = &now
 		}
 		// 注意：新任务流程不再使用 cancelled 状态，仅 completed 和 failed 为终态
-		if (*req.Status == "completed" || *req.Status == "failed") && job.EndTime == nil {
+		if (*req.Status == "completed" || *req.Status == "failed" || *req.Status == "canceled" || *req.Status == "unconfirmed") && job.EndTime == nil {
 			now := time.Now()
 			job.EndTime = &now
 		}
@@ -451,7 +451,7 @@ func (h *PrintJobHandler) DeletePrintJob(c *gin.Context) {
 	}
 
 	// 检查任务状态，仅允许删除已完成或失败的任务
-	if job.Status != "completed" && job.Status != "failed" {
+	if job.Status != "completed" && job.Status != "failed" && job.Status != "canceled" && job.Status != "unconfirmed" {
 		BadRequestResponse(c, "只能删除已完成或失败的打印任务")
 		return
 	}
@@ -483,15 +483,15 @@ func (h *PrintJobHandler) CancelPrintJob(c *gin.Context) {
 		return
 	}
 
-	// 检查任务状态，只能取消pending、dispatched、printing状态的任务
-	if job.Status == "completed" || job.Status == "failed" {
+	// 检查任务状态，只能取消 pending、dispatched、processing 状态的任务
+	if job.Status == "completed" || job.Status == "failed" || job.Status == "canceled" || job.Status == "unconfirmed" {
 		BadRequestResponse(c, "无法取消已完成或已失败的任务")
 		return
 	}
 
 	// 更新任务状态为failed，标记为用户取消。
 	// 按产品策略，取消仅在云端生效，不再通知Edge执行取消。
-	job.Status = "failed"
+	job.Status = "canceled"
 	job.ErrorMessage = "Task cancelled by user"
 	now := time.Now()
 	if job.StartTime == nil {

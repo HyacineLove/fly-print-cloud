@@ -85,7 +85,8 @@ type CommandAck struct {
 
 // 心跳数据
 type HeartbeatData struct {
-	SystemInfo SystemInfo `json:"system_info"`
+	SystemInfo SystemInfo             `json:"system_info"`
+	Components map[string]interface{} `json:"components"`
 }
 
 type SystemInfo struct {
@@ -100,7 +101,7 @@ type SystemInfo struct {
 type JobUpdateData struct {
 	JobID        string  `json:"job_id"`
 	Status       string  `json:"status"`
-	Progress     int     `json:"progress"`
+	ErrorCode    string  `json:"error_code"`
 	ErrorMessage *string `json:"error_message"`
 }
 
@@ -126,11 +127,13 @@ type PrintJobData struct {
 
 // RequestUploadTokenPayload 请求上传凭证载荷 (Edge -> Cloud)
 type RequestUploadTokenPayload struct {
+	RequestID string `json:"request_id"`
 	PrinterID string `json:"printer_id"` // 目标打印机ID
 }
 
 // UploadTokenResponsePayload 上传凭证响应载荷 (Cloud -> Edge)
 type UploadTokenResponsePayload struct {
+	RequestID string    `json:"request_id"`
 	Token     string    `json:"token"`      // 一次性上传凭证
 	ExpiresAt time.Time `json:"expires_at"` // 过期时间
 	UploadURL string    `json:"upload_url"` // API上传URL（用于程序化上传，POST请求）

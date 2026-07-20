@@ -51,7 +51,6 @@ type RegisterEdgeNodeRequest struct {
 // UpdateEdgeNodeRequest Edge Node 更新请求
 type UpdateEdgeNodeRequest struct {
 	Name              string   `json:"name" binding:"required,min=1,max=100"`
-	Status            string   `json:"status" binding:"omitempty,oneof=online offline maintenance"`
 	Enabled           *bool    `json:"enabled"` // 使用指针类型以区分未设置和false
 	Version           string   `json:"version"`
 	Location          string   `json:"location"`
@@ -72,7 +71,10 @@ type UpdateEdgeNodeRequest struct {
 type EdgeNodeInfo struct {
 	ID                string    `json:"id"`
 	Name              string    `json:"name"`
-	Status            string    `json:"status"`
+	ConnectionStatus  string    `json:"connection_status"`
+	HealthStatus      string    `json:"health_status"`
+	HealthReasonCode  string    `json:"health_reason_code,omitempty"`
+	HealthMessage     string    `json:"health_message,omitempty"`
 	Enabled           bool      `json:"enabled"`
 	Version           string    `json:"version"`
 	LastHeartbeat     time.Time `json:"last_heartbeat"`
@@ -107,8 +109,9 @@ func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 	node := &models.EdgeNode{
 		ID:               uuid.New().String(), // 服务端生成 UUID
 		Name:             req.Name,
-		Status:           "offline", // 默认为 offline，通过 WebSocket 心跳变为 online
-		Enabled:          true,      // 注册完成后默认启用节点
+		ConnectionStatus: "offline",
+		HealthStatus:     "unknown",
+		Enabled:          true, // 注册完成后默认启用节点
 		LastHeartbeat:    time.Now(),
 		MACAddress:       req.MACAddress,
 		OSVersion:        req.OSVersion,
@@ -131,7 +134,10 @@ func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 	nodeInfo := EdgeNodeInfo{
 		ID:                node.ID,
 		Name:              node.Name,
-		Status:            node.Status,
+		ConnectionStatus:  node.ConnectionStatus,
+		HealthStatus:      node.HealthStatus,
+		HealthReasonCode:  node.HealthReasonCode,
+		HealthMessage:     node.HealthMessage,
 		Enabled:           node.Enabled,
 		Version:           node.Version,
 		LastHeartbeat:     node.LastHeartbeat,
@@ -160,7 +166,7 @@ func (h *EdgeNodeHandler) RegisterEdgeNode(c *gin.Context) {
 func (h *EdgeNodeHandler) ListEdgeNodes(c *gin.Context) {
 	// 获取分页参数
 	page, pageSize, _ := ParsePaginationParams(c)
-	status := c.Query("status")
+	status := c.Query("connection_status")
 
 	// 获取排序参数
 	sortBy := c.DefaultQuery("sort_by", "created_at")
@@ -216,7 +222,10 @@ func (h *EdgeNodeHandler) ListEdgeNodes(c *gin.Context) {
 		nodeInfos[i] = EdgeNodeInfo{
 			ID:                node.ID,
 			Name:              node.Name,
-			Status:            node.Status,
+			ConnectionStatus:  node.ConnectionStatus,
+			HealthStatus:      node.HealthStatus,
+			HealthReasonCode:  node.HealthReasonCode,
+			HealthMessage:     node.HealthMessage,
 			Enabled:           node.Enabled,
 			Version:           node.Version,
 			LastHeartbeat:     node.LastHeartbeat,
@@ -264,7 +273,10 @@ func (h *EdgeNodeHandler) GetEdgeNode(c *gin.Context) {
 	nodeInfo := EdgeNodeInfo{
 		ID:                node.ID,
 		Name:              node.Name,
-		Status:            node.Status,
+		ConnectionStatus:  node.ConnectionStatus,
+		HealthStatus:      node.HealthStatus,
+		HealthReasonCode:  node.HealthReasonCode,
+		HealthMessage:     node.HealthMessage,
 		Enabled:           node.Enabled,
 		Version:           node.Version,
 		LastHeartbeat:     node.LastHeartbeat,
@@ -313,9 +325,6 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 	node.Name = req.Name
 
 	// 只有当Status字段不为空时才更新
-	if req.Status != "" {
-		node.Status = req.Status
-	}
 
 	// 处理Enabled字段更新（逻辑级联，不修改printer的enable状态）
 	oldEnabled := node.Enabled
@@ -358,7 +367,10 @@ func (h *EdgeNodeHandler) UpdateEdgeNode(c *gin.Context) {
 	nodeInfo := EdgeNodeInfo{
 		ID:                node.ID,
 		Name:              node.Name,
-		Status:            node.Status,
+		ConnectionStatus:  node.ConnectionStatus,
+		HealthStatus:      node.HealthStatus,
+		HealthReasonCode:  node.HealthReasonCode,
+		HealthMessage:     node.HealthMessage,
 		Enabled:           node.Enabled,
 		Version:           node.Version,
 		LastHeartbeat:     node.LastHeartbeat,

@@ -22,12 +22,12 @@ func NewOAuth2ClientRepository(db *DB) *OAuth2ClientRepository {
 func (r *OAuth2ClientRepository) GetByClientID(clientID string) (*models.OAuth2Client, error) {
 	client := &models.OAuth2Client{}
 	query := `
-		SELECT id, client_id, client_secret_hash, client_type, allowed_scopes,
+		SELECT id, client_id, client_secret_hash, client_secret_encrypted, client_type, allowed_scopes,
 		       description, enabled, created_at, updated_at
 		FROM oauth2_clients WHERE client_id = $1`
 
 	err := r.db.QueryRow(query, clientID).Scan(
-		&client.ID, &client.ClientID, &client.ClientSecretHash,
+		&client.ID, &client.ClientID, &client.ClientSecretHash, &client.ClientSecretEncrypted,
 		&client.ClientType, &client.AllowedScopes, &client.Description,
 		&client.Enabled, &client.CreatedAt, &client.UpdatedAt,
 	)
@@ -44,12 +44,12 @@ func (r *OAuth2ClientRepository) GetByClientID(clientID string) (*models.OAuth2C
 func (r *OAuth2ClientRepository) GetByID(id string) (*models.OAuth2Client, error) {
 	client := &models.OAuth2Client{}
 	query := `
-		SELECT id, client_id, client_secret_hash, client_type, allowed_scopes,
+		SELECT id, client_id, client_secret_hash, client_secret_encrypted, client_type, allowed_scopes,
 		       description, enabled, created_at, updated_at
 		FROM oauth2_clients WHERE id = $1`
 
 	err := r.db.QueryRow(query, id).Scan(
-		&client.ID, &client.ClientID, &client.ClientSecretHash,
+		&client.ID, &client.ClientID, &client.ClientSecretHash, &client.ClientSecretEncrypted,
 		&client.ClientType, &client.AllowedScopes, &client.Description,
 		&client.Enabled, &client.CreatedAt, &client.UpdatedAt,
 	)
@@ -65,12 +65,12 @@ func (r *OAuth2ClientRepository) GetByID(id string) (*models.OAuth2Client, error
 // Create 创建客户端（client_secret_hash 必须预先通过 bcrypt 哈希）
 func (r *OAuth2ClientRepository) Create(client *models.OAuth2Client) error {
 	query := `
-		INSERT INTO oauth2_clients (client_id, client_secret_hash, client_type, allowed_scopes, description, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO oauth2_clients (client_id, client_secret_hash, client_secret_encrypted, client_type, allowed_scopes, description, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at, updated_at`
 
 	err := r.db.QueryRow(query,
-		client.ClientID, client.ClientSecretHash, client.ClientType,
+		client.ClientID, client.ClientSecretHash, client.ClientSecretEncrypted, client.ClientType,
 		client.AllowedScopes, client.Description, client.Enabled,
 	).Scan(&client.ID, &client.CreatedAt, &client.UpdatedAt)
 	if err != nil {
@@ -97,9 +97,9 @@ func (r *OAuth2ClientRepository) Update(client *models.OAuth2Client) error {
 }
 
 // UpdateSecret 更新客户端密钥
-func (r *OAuth2ClientRepository) UpdateSecret(id, secretHash string) error {
-	query := `UPDATE oauth2_clients SET client_secret_hash = $2 WHERE id = $1`
-	result, err := r.db.Exec(query, id, secretHash)
+func (r *OAuth2ClientRepository) UpdateSecret(id, secretHash, encryptedSecret string) error {
+	query := `UPDATE oauth2_clients SET client_secret_hash = $2, client_secret_encrypted = $3 WHERE id = $1`
+	result, err := r.db.Exec(query, id, secretHash, encryptedSecret)
 	if err != nil {
 		return fmt.Errorf("failed to update oauth2 client secret: %w", err)
 	}

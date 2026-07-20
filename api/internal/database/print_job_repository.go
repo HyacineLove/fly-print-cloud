@@ -60,7 +60,7 @@ func (r *PrintJobRepository) GetPrintJobByID(id string) (*models.PrintJob, error
 		SELECT id, name, status, printer_id, 
 			   user_id, user_name, file_path, file_url, content_hash, file_size, page_count, 
 			   copies, paper_size, color_mode, duplex_mode, 
-			   start_time, end_time, error_message, retry_count, 
+			   start_time, end_time, COALESCE(error_message, ''), retry_count,
 			   max_retries, created_at, updated_at
 		FROM print_jobs WHERE id = $1`
 
@@ -85,8 +85,21 @@ func (r *PrintJobRepository) GetPrintJobByID(id string) (*models.PrintJob, error
 	if err != nil {
 		return nil, err
 	}
-
+	if err := r.loadErrorCode(job); err != nil {
+		return nil, err
+	}
 	return job, nil
+}
+
+func (r *PrintJobRepository) loadErrorCode(job *models.PrintJob) error {
+	var code sql.NullString
+	if err := r.db.QueryRow(`SELECT error_code FROM print_jobs WHERE id=$1`, job.ID).Scan(&code); err != nil {
+		return err
+	}
+	if code.Valid {
+		job.ErrorCode = code.String
+	}
+	return nil
 }
 
 // ListPrintJobs 获取打印任务列表
@@ -95,7 +108,7 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 		SELECT pj.id, pj.name, pj.status, pj.printer_id, 
 			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.content_hash, pj.file_size, pj.page_count, 
 			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode, 
-			   pj.start_time, pj.end_time, pj.error_message, pj.retry_count, 
+			   pj.start_time, pj.end_time, COALESCE(pj.error_message, ''), pj.error_code, pj.retry_count,
 			   pj.max_retries, pj.created_at, pj.updated_at,
 			   COALESCE(p.edge_node_id, '') as edge_node_id
 		FROM print_jobs pj
@@ -165,11 +178,12 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 		job := &models.PrintJob{}
 		var userID sql.NullString
 		var edgeNodeID sql.NullString
+		var errorCode sql.NullString
 		err := rows.Scan(
 			&job.ID, &job.Name, &job.Status, &job.PrinterID,
 			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.ContentHash, &job.FileSize, &job.PageCount,
 			&job.Copies, &job.PaperSize, &job.ColorMode, &job.DuplexMode,
-			&job.StartTime, &job.EndTime, &job.ErrorMessage, &job.RetryCount,
+			&job.StartTime, &job.EndTime, &job.ErrorMessage, &errorCode, &job.RetryCount,
 			&job.MaxRetries, &job.CreatedAt, &job.UpdatedAt,
 			&edgeNodeID,
 		)
@@ -183,6 +197,9 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 		}
 		if edgeNodeID.Valid {
 			job.EdgeNodeID = edgeNodeID.String
+		}
+		if errorCode.Valid {
+			job.ErrorCode = errorCode.String
 		}
 
 		jobs = append(jobs, job)
@@ -215,6 +232,14 @@ func (r *PrintJobRepository) UpdatePrintJob(job *models.PrintJob) error {
 	return err
 }
 
+// MarkDispatched records an acknowledged dispatch without overwriting a status
+// update that may already have arrived from Edge.
+func (r *PrintJobRepository) MarkDispatched(jobID string) error {
+	_, err := r.db.Exec(`UPDATE print_jobs SET status='dispatched',error_code=NULL,error_message=NULL,
+		updated_at=CURRENT_TIMESTAMP WHERE id=$1::uuid AND status='pending'`, jobID)
+	return err
+}
+
 // DeletePrintJob 删除打印任务
 func (r *PrintJobRepository) DeletePrintJob(id string) error {
 	query := `DELETE FROM print_jobs WHERE id = $1`
@@ -238,7 +263,7 @@ func (r *PrintJobRepository) GetPendingOrDispatchedJobsByEdgeNodeID(edgeNodeID s
 		SELECT pj.id, pj.name, pj.status, pj.printer_id, p.name,
 			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.content_hash, pj.file_size, pj.page_count, 
 			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode, 
-			   pj.start_time, pj.end_time, pj.error_message, pj.retry_count, 
+			   pj.start_time, pj.end_time, COALESCE(pj.error_message, ''), pj.retry_count,
 			   pj.max_retries, pj.created_at, pj.updated_at
 		FROM print_jobs pj
 		JOIN printers p ON pj.printer_id = p.id
@@ -284,8 +309,8 @@ func (r *PrintJobRepository) UpdateJobStatus(jobID, status string, progress int,
 			status = $2, 
 			error_message = $3,
 			updated_at = $4,
-			start_time = CASE WHEN $5 = 'printing' THEN $4 ELSE start_time END,
-			end_time = CASE WHEN $6 IN ('completed', 'failed', 'cancelled') THEN $4 ELSE end_time END
+			start_time = CASE WHEN $5 = 'processing' THEN $4 ELSE start_time END,
+			end_time = CASE WHEN $6 IN ('completed', 'failed', 'canceled', 'unconfirmed') THEN $4 ELSE end_time END
 		WHERE id = $1`
 
 	now := time.Now()
@@ -356,12 +381,12 @@ func (r *PrintJobRepository) CountJobsByStatusAndDate(status string, startDate, 
 	return count, err
 }
 
-// CountActiveJobsByPrinter 统计指定打印机的活动任务数（pending, dispatched, printing 状态）
+// CountActiveJobsByPrinter 统计指定打印机的活动任务数（pending, dispatched, processing 状态）
 func (r *PrintJobRepository) CountActiveJobsByPrinter(printerID string) (int, error) {
 	query := `
 		SELECT COUNT(*) 
 		FROM print_jobs 
-		WHERE printer_id = $1 AND status IN ('pending', 'dispatched', 'printing')`
+		WHERE printer_id = $1 AND status IN ('pending', 'dispatched', 'processing')`
 
 	var count int
 	err := r.db.DB.QueryRow(query, printerID).Scan(&count)
@@ -379,7 +404,7 @@ func (r *PrintJobRepository) CleanupStaleJobs(timeout time.Duration) (int64, err
 			error_message = 'Job timed out - Edge node did not report status',
 			end_time = $1,
 			updated_at = $1
-		WHERE status IN ('pending', 'dispatched', 'printing') 
+		WHERE status IN ('pending', 'dispatched')
 		AND updated_at < $2
 	`
 
@@ -423,7 +448,7 @@ func (r *PrintJobRepository) GetPendingJobsForRetry(minAge time.Duration) ([]*mo
 		SELECT pj.id, pj.name, pj.status, pj.printer_id, p.name as printer_name, p.edge_node_id,
 			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.content_hash, pj.file_size, pj.page_count,
 			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode,
-			   pj.start_time, pj.end_time, pj.error_message, pj.retry_count,
+			   pj.start_time, pj.end_time, COALESCE(pj.error_message, ''), pj.retry_count,
 			   pj.max_retries, pj.created_at, pj.updated_at
 		FROM print_jobs pj
 		JOIN printers p ON pj.printer_id = p.id

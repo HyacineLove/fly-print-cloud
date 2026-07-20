@@ -76,9 +76,10 @@ func validConfigForTest() *Config {
 			MaxDocumentPages: 5,
 		},
 		Security: SecurityConfig{
-			FileAccessSecret: "12345678901234567890123456789012",
-			UploadTokenTTL:   180,
-			DownloadTokenTTL: 180,
+			FileAccessSecret:               "12345678901234567890123456789012",
+			OAuthClientSecretEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			UploadTokenTTL:                 180,
+			DownloadTokenTTL:               180,
 		},
 	}
 }

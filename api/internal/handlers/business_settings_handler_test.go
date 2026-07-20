@@ -14,10 +14,35 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func newBusinessSettingsTestRouter(service businessSettingsService) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	handler := NewBusinessSettingsHandler(service)
+	router := gin.New()
+	router.GET("/api/v1/admin/business-settings", handler.Get)
+	router.PUT("/api/v1/admin/business-settings", handler.Update)
+	return router
+}
+
+func performBusinessSettingsRequest(
+	router *gin.Engine,
+	method string,
+	body []byte,
+) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(
+		method,
+		"/api/v1/admin/business-settings",
+		bytes.NewReader(body),
+	)
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	return recorder
+}
+
 func TestBusinessSettingsHandlerGet(t *testing.T) {
 	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
 
 	service := &stubBusinessSettingsService{
 		settings: business.Settings{
@@ -28,14 +53,8 @@ func TestBusinessSettingsHandlerGet(t *testing.T) {
 			AllowedExtensions:       []string{".pdf"},
 		},
 	}
-	handler := NewBusinessSettingsHandler(service)
-
-	router := gin.New()
-	router.GET("/api/v1/admin/business-settings", handler.Get)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/business-settings", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	router := newBusinessSettingsTestRouter(service)
+	rec := performBusinessSettingsRequest(router, http.MethodGet, nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -51,13 +70,8 @@ func TestBusinessSettingsHandlerGet(t *testing.T) {
 func TestBusinessSettingsHandlerUpdate(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
-
 	service := &stubBusinessSettingsService{}
-	handler := NewBusinessSettingsHandler(service)
-
-	router := gin.New()
-	router.PUT("/api/v1/admin/business-settings", handler.Update)
+	router := newBusinessSettingsTestRouter(service)
 
 	body, _ := json.Marshal(business.Settings{
 		UploadMaxSizeBytes:      2048,
@@ -66,10 +80,7 @@ func TestBusinessSettingsHandlerUpdate(t *testing.T) {
 		DownloadTokenTTLSeconds: 240,
 		AllowedExtensions:       []string{".pdf", ".png"},
 	})
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/business-settings", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	rec := performBusinessSettingsRequest(router, http.MethodPut, body)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -82,19 +93,11 @@ func TestBusinessSettingsHandlerUpdate(t *testing.T) {
 func TestBusinessSettingsHandlerUpdateValidationError(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
-
 	service := &stubBusinessSettingsService{updateErr: errors.New("upload_max_size_bytes must be greater than 0")}
-	handler := NewBusinessSettingsHandler(service)
-
-	router := gin.New()
-	router.PUT("/api/v1/admin/business-settings", handler.Update)
+	router := newBusinessSettingsTestRouter(service)
 
 	body := []byte(`{"upload_max_size_bytes":0,"max_document_pages":4,"upload_token_ttl_seconds":180,"download_token_ttl_seconds":240,"allowed_extensions":[".pdf"]}`)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/business-settings", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	rec := performBusinessSettingsRequest(router, http.MethodPut, body)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())

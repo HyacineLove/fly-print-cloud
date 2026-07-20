@@ -9,6 +9,7 @@ import (
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/operations"
 	"fly-print-cloud/api/internal/security"
 
 	"github.com/google/uuid"
@@ -35,15 +36,16 @@ const (
 
 // Connection 表示单个 WebSocket 连接
 type Connection struct {
-	NodeID       string
-	Conn         *websocket.Conn
-	Send         chan []byte
-	Manager      *ConnectionManager
-	PrinterRepo  *database.PrinterRepository
-	EdgeNodeRepo *database.EdgeNodeRepository
-	PrintJobRepo *database.PrintJobRepository
-	FileRepo     *database.FileRepository
-	TokenManager *security.TokenManager
+	NodeID        string
+	Conn          *websocket.Conn
+	Send          chan []byte
+	Manager       *ConnectionManager
+	PrinterRepo   *database.PrinterRepository
+	EdgeNodeRepo  *database.EdgeNodeRepository
+	PrintJobRepo  *database.PrintJobRepository
+	FileRepo      *database.FileRepository
+	TokenManager  *security.TokenManager
+	StatusService *operations.StatusService
 
 	// ACK 机制相关
 	pendingAcks map[string]chan struct{}
@@ -51,18 +53,19 @@ type Connection struct {
 }
 
 // NewConnection 创建新连接
-func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager) *Connection {
+func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService) *Connection {
 	return &Connection{
-		NodeID:       nodeID,
-		Conn:         conn,
-		Send:         make(chan []byte, 256),
-		Manager:      manager,
-		PrinterRepo:  printerRepo,
-		EdgeNodeRepo: edgeNodeRepo,
-		PrintJobRepo: printJobRepo,
-		FileRepo:     fileRepo,
-		TokenManager: tokenManager,
-		pendingAcks:  make(map[string]chan struct{}),
+		NodeID:        nodeID,
+		Conn:          conn,
+		Send:          make(chan []byte, 256),
+		Manager:       manager,
+		PrinterRepo:   printerRepo,
+		EdgeNodeRepo:  edgeNodeRepo,
+		PrintJobRepo:  printJobRepo,
+		FileRepo:      fileRepo,
+		TokenManager:  tokenManager,
+		StatusService: statusService,
+		pendingAcks:   make(map[string]chan struct{}),
 	}
 }
 
@@ -257,7 +260,7 @@ func (c *Connection) SendCommandWithAck(cmd *Command, timeout time.Duration) err
 	case <-ackCh:
 		return nil
 	case <-time.After(timeout):
-		return fmt.Errorf("timeout waiting for ACK for message %s", cmd.MsgID)
+		return fmt.Errorf("%w: message %s", ErrAckTimeout, cmd.MsgID)
 	}
 }
 
@@ -392,16 +395,8 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 
 	logger.Info("Print job created for file", zap.String("job_id", job.ID), zap.String("file_id", file.ID))
 
-	// 分发任务到打印机所属的 Edge Node
-	if err := c.Manager.DispatchPrintJob(printer.EdgeNodeID, job, printer.Name); err != nil {
-		logger.Error("Failed to dispatch print job to node", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID), zap.Error(err))
-	} else {
-		logger.Info("Print job dispatched to node", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID))
-		job.Status = "dispatched"
-		if updateErr := c.PrintJobRepo.UpdatePrintJob(job); updateErr != nil {
-			logger.Error("Failed to update job status to dispatched", zap.Error(updateErr))
-		}
-	}
+	// 分发必须离开读取循环执行，否则读取循环无法消费 Edge 返回的 ACK。
+	go DispatchPrintJobAndRecord(c.Manager, c.PrintJobRepo, c.StatusService, job, printer.EdgeNodeID, printer.Name)
 }
 
 // handleHeartbeat 处理心跳消息
@@ -409,28 +404,29 @@ func (c *Connection) handleHeartbeat(msg *Message) {
 	logger.Debug("Processing heartbeat from node", zap.String("node_id", c.NodeID))
 
 	// 更新 Edge Node 的最后心跳时间和状态
-	if err := c.EdgeNodeRepo.UpdateHeartbeat(c.NodeID); err != nil {
-		logger.Error("Failed to update heartbeat for node", zap.String("node_id", c.NodeID), zap.Error(err))
-		return
-	}
-	if err := c.EdgeNodeRepo.UpdateStatus(c.NodeID, "online"); err != nil {
-		logger.Error("Failed to update status for node", zap.String("node_id", c.NodeID), zap.Error(err))
-		return
-	}
 
 	// 解析心跳数据（可选）
-	if msg.Data != nil {
-		var heartbeatData HeartbeatData
-		dataBytes, err := json.Marshal(msg.Data)
-		if err == nil {
-			if err := json.Unmarshal(dataBytes, &heartbeatData); err == nil {
-				logger.Debug("Heartbeat data from node",
-					zap.String("node_id", c.NodeID),
-					zap.Float64("cpu_usage", heartbeatData.SystemInfo.CPUUsage),
-					zap.Float64("memory_usage", heartbeatData.SystemInfo.MemoryUsage),
-					zap.Float64("disk_usage", heartbeatData.SystemInfo.DiskUsage))
-			}
-		}
+	var heartbeatData HeartbeatData
+	dataBytes, err := json.Marshal(msg.Data)
+	if err != nil || json.Unmarshal(dataBytes, &heartbeatData) != nil {
+		logger.Warn("Invalid heartbeat payload", zap.String("node_id", c.NodeID))
+		return
+	}
+	if c.StatusService == nil {
+		logger.Error("Status service unavailable")
+		return
+	}
+	err = c.StatusService.ApplyHeartbeat(c.NodeID, operations.HeartbeatSnapshot{
+		CPUUsage:       heartbeatData.SystemInfo.CPUUsage,
+		MemoryUsage:    heartbeatData.SystemInfo.MemoryUsage,
+		DiskUsage:      heartbeatData.SystemInfo.DiskUsage,
+		NetworkQuality: heartbeatData.SystemInfo.NetworkQuality,
+		Latency:        heartbeatData.SystemInfo.Latency,
+		Components:     heartbeatData.Components,
+	})
+	if err != nil {
+		logger.Error("Failed to apply heartbeat", zap.String("node_id", c.NodeID), zap.Error(err))
+		return
 	}
 
 	logger.Debug("Successfully processed heartbeat from node", zap.String("node_id", c.NodeID))
@@ -461,7 +457,7 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	// 验证 printer_id 必填
 	if payload.PrinterID == "" {
 		logger.Warn("Missing printer_id in upload token request from node", zap.String("node_id", c.NodeID))
-		c.sendError("invalid_request", "printer_id is required", "")
+		c.sendRequestError("invalid_request", "printer_id is required", "", payload.RequestID)
 		return
 	}
 
@@ -469,26 +465,35 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	printer, err := c.PrinterRepo.GetPrinterByID(payload.PrinterID)
 	if err != nil {
 		logger.Error("Failed to get printer", zap.String("printer_id", payload.PrinterID), zap.Error(err))
-		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
+		c.sendRequestError("printer_not_found", "Printer not found", payload.PrinterID, payload.RequestID)
 		return
 	}
 	if printer == nil {
 		logger.Warn("Printer not found", zap.String("printer_id", payload.PrinterID))
-		c.sendError("printer_not_found", "Printer not found", payload.PrinterID)
+		c.sendRequestError("printer_not_found", "Printer not found", payload.PrinterID, payload.RequestID)
 		return
 	}
 
 	// 步骤4: 验证打印机是否属于该节点
 	if printer.EdgeNodeID != c.NodeID {
 		logger.Warn("Printer does not belong to node", zap.String("printer_id", payload.PrinterID), zap.String("node_id", c.NodeID))
-		c.sendError("printer_not_belong_to_node", "Printer does not belong to this node", payload.PrinterID)
+		c.sendRequestError("printer_not_belong_to_node", "Printer does not belong to this node", payload.PrinterID, payload.RequestID)
 		return
 	}
 
 	// 步骤5: 检查打印机是否被禁用
 	if !printer.Enabled {
 		logger.Warn("Printer disabled, rejecting upload token request", zap.String("printer_id", payload.PrinterID), zap.String("node_id", c.NodeID))
-		c.sendError("printer_disabled", "Printer has been disabled by administrator", payload.PrinterID)
+		c.sendRequestError("printer_disabled", "Printer has been disabled by administrator", payload.PrinterID, payload.RequestID)
+		return
+	}
+	node, err := c.EdgeNodeRepo.GetEdgeNodeByID(c.NodeID)
+	if err != nil || node == nil {
+		c.sendRequestError("node_not_found", "Edge node not found", payload.PrinterID, payload.RequestID)
+		return
+	}
+	if reason := operations.ValidatePrinterDispatch(printer, node, time.Now()); reason != "" {
+		c.sendRequestError(reason, "Printer cannot accept a new task", payload.PrinterID, payload.RequestID)
 		return
 	}
 
@@ -496,7 +501,7 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	token, expiresAt, err := c.TokenManager.GenerateUploadToken(c.NodeID, payload.PrinterID)
 	if err != nil {
 		logger.Error("Failed to generate upload token for node", zap.String("node_id", c.NodeID), zap.Error(err))
-		c.sendError("token_generation_failed", "Failed to generate upload token", "")
+		c.sendRequestError("token_generation_failed", "Failed to generate upload token", "", payload.RequestID)
 		return
 	}
 
@@ -511,6 +516,7 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	response := map[string]interface{}{
 		"type": CmdTypeUploadToken,
 		"data": UploadTokenResponsePayload{
+			RequestID: payload.RequestID,
 			Token:     token,
 			ExpiresAt: expiresAt,
 			UploadURL: apiUploadURL, // API上传端点
@@ -532,12 +538,19 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 
 // sendError 发送错误消息到 Edge 节点
 func (c *Connection) sendError(code, message, printerID string) {
+	c.sendRequestError(code, message, printerID, "")
+}
+
+func (c *Connection) sendRequestError(code, message, printerID, requestID string) {
 	errorData := map[string]interface{}{
 		"code":    code,
 		"message": message,
 	}
 	if printerID != "" {
 		errorData["printer_id"] = printerID
+	}
+	if requestID != "" {
+		errorData["request_id"] = requestID
 	}
 
 	errorMsg := map[string]interface{}{
@@ -571,7 +584,7 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 		errMsg = *jobData.ErrorMessage
 	}
 
-	logger.Debug("Job update data", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status), zap.Int("progress", jobData.Progress), zap.String("error", errMsg))
+	logger.Debug("Job update data", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status), zap.String("error_code", jobData.ErrorCode), zap.String("error", errMsg))
 
 	// 终态保护：任务已完成或已失败时，不再接受后续状态覆盖。
 	// 这可避免Edge迟到上报覆盖云端人工取消（failed）结果。
@@ -584,17 +597,22 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 		logger.Warn("Job not found when handling status update", zap.String("job_id", jobData.JobID))
 		return
 	}
-	if existingJob.Status == "completed" || existingJob.Status == "failed" {
+	dispatchUnconfirmed := existingJob.Status == "unconfirmed" && existingJob.ErrorCode == "dispatch_ack_timeout"
+	if (existingJob.Status == "completed" || existingJob.Status == "failed" || existingJob.Status == "canceled" || existingJob.Status == "unconfirmed") && !dispatchUnconfirmed {
 		logger.Debug("Ignoring late status update for terminal job", zap.String("job_id", jobData.JobID), zap.String("current_status", existingJob.Status), zap.String("incoming_status", jobData.Status))
 		return
 	}
 
-	if err := c.PrintJobRepo.UpdateJobStatus(jobData.JobID, jobData.Status, jobData.Progress, errMsg); err != nil {
+	if c.StatusService == nil {
+		logger.Error("Status service unavailable")
+		return
+	}
+	if err := c.StatusService.ApplyJobResult(jobData.JobID, c.NodeID, existingJob.PrinterID, jobData.Status, jobData.ErrorCode, map[string]interface{}{"message": errMsg}); err != nil {
 		logger.Error("Failed to update job status", zap.String("job_id", jobData.JobID), zap.Error(err))
 		return
 	}
 
-	logger.Info("Successfully updated job status", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status), zap.Int("progress", jobData.Progress))
+	logger.Info("Successfully updated job status", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status))
 }
 
 // SendCommand 发送指令到 Edge Node

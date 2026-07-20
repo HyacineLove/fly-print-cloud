@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -36,7 +37,7 @@ func (r *EdgeNodeRepository) CreateEdgeNode(node *models.EdgeNode) error {
 		)`
 
 	_, err := r.db.Exec(query,
-		node.ID, node.Name, node.Status, node.Enabled, node.Version, node.LastHeartbeat,
+		node.ID, node.Name, node.ConnectionStatus, node.Enabled, node.Version, node.LastHeartbeat,
 		node.Location, node.Latitude, node.Longitude,
 		node.IPAddress, node.MACAddress, node.NetworkInterface,
 		node.OSVersion, node.CPUInfo, node.MemoryInfo, node.DiskInfo,
@@ -86,7 +87,7 @@ func (r *EdgeNodeRepository) UpsertEdgeNode(node *models.EdgeNode) error {
 			deleted_at = NULL`
 
 	_, err := r.db.Exec(query,
-		node.ID, node.Name, node.Status, node.Version, node.LastHeartbeat,
+		node.ID, node.Name, node.ConnectionStatus, node.Version, node.LastHeartbeat,
 		node.Location, node.Latitude, node.Longitude,
 		node.IPAddress, node.MACAddress, node.NetworkInterface,
 		node.OSVersion, node.CPUInfo, node.MemoryInfo, node.DiskInfo,
@@ -122,7 +123,7 @@ func (r *EdgeNodeRepository) GetEdgeNodeByID(id string) (*models.EdgeNode, error
 	var deletedAt sql.NullTime
 
 	err := r.db.QueryRow(query, id).Scan(
-		&node.ID, &node.Name, &node.Status, &node.Enabled, &version, &lastHeartbeat,
+		&node.ID, &node.Name, &node.ConnectionStatus, &node.Enabled, &version, &lastHeartbeat,
 		&location, &latitude, &longitude,
 		&ipAddress, &macAddress, &networkInterface,
 		&osVersion, &cpuInfo, &memoryInfo, &diskInfo,
@@ -187,6 +188,9 @@ func (r *EdgeNodeRepository) GetEdgeNodeByID(id string) (*models.EdgeNode, error
 		node.DeletedAt = &deletedAt.Time
 	}
 
+	if err := r.loadRuntimeStatus(node); err != nil {
+		return nil, err
+	}
 	return node, nil
 }
 
@@ -202,7 +206,7 @@ func (r *EdgeNodeRepository) UpdateEdgeNode(node *models.EdgeNode) error {
 		WHERE id = $1`
 
 	_, err := r.db.Exec(query,
-		node.ID, node.Name, node.Status, node.Enabled, node.Version, node.LastHeartbeat,
+		node.ID, node.Name, node.ConnectionStatus, node.Enabled, node.Version, node.LastHeartbeat,
 		node.Location, node.Latitude, node.Longitude,
 		node.IPAddress, node.MACAddress, node.NetworkInterface,
 		node.OSVersion, node.CPUInfo, node.MemoryInfo, node.DiskInfo,
@@ -336,7 +340,7 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 
 		var deletedAt sql.NullTime
 		err := rows.Scan(
-			&node.ID, &node.Name, &node.Status, &node.Enabled, &version, &lastHeartbeat,
+			&node.ID, &node.Name, &node.ConnectionStatus, &node.Enabled, &version, &lastHeartbeat,
 			&location, &latitude, &longitude,
 			&ipAddress, &macAddress, &networkInterface,
 			&osVersion, &cpuInfo, &memoryInfo, &diskInfo,
@@ -397,6 +401,9 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 			node.DeletedAt = &deletedAt.Time
 		}
 
+		if err := r.loadRuntimeStatus(node); err != nil {
+			return nil, 0, err
+		}
 		nodes = append(nodes, node)
 	}
 
@@ -405,6 +412,31 @@ func (r *EdgeNodeRepository) ListEdgeNodes(offset, limit int, status, sortBy, so
 	}
 
 	return nodes, total, nil
+}
+
+func (r *EdgeNodeRepository) loadRuntimeStatus(node *models.EdgeNode) error {
+	var reason, message sql.NullString
+	var printerStatusAt sql.NullTime
+	var components []byte
+	err := r.db.QueryRow(`SELECT health_status,health_reason_code,health_message,
+		cpu_usage,memory_usage,disk_usage,components,printer_status_received_at FROM edge_nodes WHERE id=$1`, node.ID).Scan(
+		&node.HealthStatus, &reason, &message, &node.CPUUsage, &node.MemoryUsage, &node.DiskUsage, &components, &printerStatusAt)
+	if err != nil {
+		return fmt.Errorf("failed to load edge runtime status: %w", err)
+	}
+	if reason.Valid {
+		node.HealthReasonCode = reason.String
+	}
+	if message.Valid {
+		node.HealthMessage = message.String
+	}
+	if printerStatusAt.Valid {
+		node.PrinterStatusReceivedAt = &printerStatusAt.Time
+	}
+	if len(components) > 0 {
+		_ = json.Unmarshal(components, &node.Components)
+	}
+	return nil
 }
 
 // UpdateHeartbeat 更新心跳时间

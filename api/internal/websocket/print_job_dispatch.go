@@ -1,0 +1,33 @@
+package websocket
+
+import (
+	"errors"
+
+	"fly-print-cloud/api/internal/database"
+	"fly-print-cloud/api/internal/logger"
+	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/operations"
+
+	"go.uber.org/zap"
+)
+
+// DispatchPrintJobAndRecord is the single Cloud-side transition from a newly
+// created job to an acknowledged, failed, or unconfirmed dispatch result.
+func DispatchPrintJobAndRecord(manager *ConnectionManager, printJobRepo *database.PrintJobRepository, statusService *operations.StatusService, job *models.PrintJob, nodeID, printerName string) {
+	err := manager.DispatchPrintJob(nodeID, job, printerName)
+	if err == nil {
+		if updateErr := printJobRepo.MarkDispatched(job.ID); updateErr != nil {
+			logger.Error("Failed to update job status to dispatched", zap.String("job_id", job.ID), zap.Error(updateErr))
+		}
+		return
+	}
+	if errors.Is(err, ErrAckTimeout) {
+		if updateErr := statusService.ApplyDispatchUnconfirmed(job.ID, nodeID, job.PrinterID); updateErr != nil {
+			logger.Error("Failed to mark dispatch as unconfirmed", zap.String("job_id", job.ID), zap.Error(updateErr))
+		}
+		return
+	}
+	if updateErr := statusService.ApplyJobResult(job.ID, nodeID, job.PrinterID, "failed", "dispatch_failed", map[string]interface{}{"message": "打印任务未能发送到边缘节点"}); updateErr != nil {
+		logger.Error("Failed to record dispatch failure", zap.String("job_id", job.ID), zap.Error(updateErr))
+	}
+}

@@ -2,12 +2,12 @@ package websocket
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/operations"
 	"fly-print-cloud/api/internal/security"
 
 	"go.uber.org/zap"
@@ -15,22 +15,24 @@ import (
 
 // ConnectionManager 管理所有 WebSocket 连接
 type ConnectionManager struct {
-	connections  map[string]*Connection // node_id -> connection
-	broadcast    chan []byte            // 广播消息通道
-	register     chan *Connection       // 新连接注册
-	unregister   chan *Connection       // 连接断开
-	mutex        sync.RWMutex           // 并发安全
-	TokenManager *security.TokenManager // 凭证管理器
+	connections   map[string]*Connection // node_id -> connection
+	broadcast     chan []byte            // 广播消息通道
+	register      chan *Connection       // 新连接注册
+	unregister    chan *Connection       // 连接断开
+	mutex         sync.RWMutex           // 并发安全
+	TokenManager  *security.TokenManager // 凭证管理器
+	StatusService *operations.StatusService
 }
 
 // NewConnectionManager 创建连接管理器
-func NewConnectionManager(tokenManager *security.TokenManager) *ConnectionManager {
+func NewConnectionManager(tokenManager *security.TokenManager, statusService *operations.StatusService) *ConnectionManager {
 	return &ConnectionManager{
-		connections:  make(map[string]*Connection),
-		broadcast:    make(chan []byte),
-		register:     make(chan *Connection),
-		unregister:   make(chan *Connection),
-		TokenManager: tokenManager,
+		connections:   make(map[string]*Connection),
+		broadcast:     make(chan []byte),
+		register:      make(chan *Connection),
+		unregister:    make(chan *Connection),
+		TokenManager:  tokenManager,
+		StatusService: statusService,
 	}
 }
 
@@ -64,33 +66,6 @@ func (m *ConnectionManager) registerConnection(conn *Connection) {
 	m.connections[conn.NodeID] = conn
 	logger.Info("Edge Node connected", zap.String("node_id", conn.NodeID), zap.Int("total_connections", len(m.connections)))
 
-	// 启动离线任务补偿（Reconciliation）
-	go func() {
-		// 等待连接稳定
-		time.Sleep(500 * time.Millisecond)
-
-		logger.Debug("Checking pending jobs for re-connected node", zap.String("node_id", conn.NodeID))
-		jobs, err := conn.PrintJobRepo.GetPendingOrDispatchedJobsByEdgeNodeID(conn.NodeID)
-		if err != nil {
-			logger.Error("Failed to fetch pending jobs for node", zap.String("node_id", conn.NodeID), zap.Error(err))
-			return
-		}
-
-		if len(jobs) > 0 {
-			logger.Info("Found pending/dispatched jobs for node, re-dispatching", zap.Int("count", len(jobs)), zap.String("node_id", conn.NodeID))
-			for _, job := range jobs {
-				// 重新分发任务
-				// 注意：job.PrinterName 已由查询填充
-				if err := m.DispatchPrintJob(conn.NodeID, job, job.PrinterName); err != nil {
-					logger.Error("Failed to re-dispatch job", zap.String("job_id", job.ID), zap.Error(err))
-				} else {
-					logger.Info("Successfully re-dispatched job", zap.String("job_id", job.ID))
-				}
-				// 避免瞬间流量突发
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
-	}()
 }
 
 // unregisterConnection 注销连接
@@ -103,6 +78,9 @@ func (m *ConnectionManager) unregisterConnection(conn *Connection) {
 		// 避免新连接注册后，旧连接注销导致新连接被误删
 		if currentConn == conn {
 			delete(m.connections, conn.NodeID)
+			if m.StatusService != nil {
+				_ = m.StatusService.MarkUnstable(conn.NodeID)
+			}
 			logger.Info("Edge Node disconnected", zap.String("node_id", conn.NodeID), zap.Int("total_connections", len(m.connections)))
 		} else {
 			logger.Debug("Ignored unregister request for replaced connection of node", zap.String("node_id", conn.NodeID))
@@ -320,22 +298,7 @@ func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob
 
 	// 使用 10秒超时等待 ACK
 	// 如果超时，意味着 Edge 端虽然在线但未能确认接收任务
-	err := conn.SendCommandWithAck(&command, 10*time.Second)
-	if err != nil {
-		// ACK超时或失败，将任务状态回滚到pending，以便重试机制重新分发
-		logger.Warn("Failed to receive ACK for print job from node, rolling back status to pending", zap.String("job_id", job.ID), zap.String("node_id", nodeID), zap.Error(err))
-
-		// 回滚任务状态
-		job.Status = "pending"
-		job.ErrorMessage = fmt.Sprintf("Failed to receive ACK from edge node: %v", err)
-
-		// 更新任务到数据库（使用Connection中的PrintJobRepo）
-		if updateErr := conn.PrintJobRepo.UpdatePrintJob(job); updateErr != nil {
-			logger.Error("Failed to rollback job status to pending", zap.String("job_id", job.ID), zap.Error(updateErr))
-		}
-	}
-
-	return err
+	return conn.SendCommandWithAck(&command, 10*time.Second)
 }
 
 func (m *ConnectionManager) DispatchNodeEnabledChange(nodeID string, enabled bool) error {

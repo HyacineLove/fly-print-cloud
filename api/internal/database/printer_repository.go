@@ -30,16 +30,14 @@ func (r *PrinterRepository) CreatePrinter(printer *models.Printer) error {
 
 	query := `
 		INSERT INTO printers (id, name, display_name, model, serial_number, status, firmware_version, 
-		                     port_info, ip_address, mac_address, network_config,
-		                     latitude, longitude, location, capabilities, edge_node_id, queue_length)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		                     port_info, ip_address, mac_address, network_config, capabilities, edge_node_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING created_at, updated_at`
 
 	err = r.db.QueryRow(query,
-		printer.ID, printer.Name, printer.DisplayName, printer.Model, printer.SerialNumber, printer.Status,
+		printer.ID, printer.Name, printer.DisplayName, printer.Model, printer.SerialNumber, printer.PrinterStatus,
 		printer.FirmwareVersion, printer.PortInfo, printer.IPAddress, printer.MACAddress,
-		printer.NetworkConfig, printer.Latitude, printer.Longitude, printer.Location,
-		capabilitiesJSON, printer.EdgeNodeID, printer.QueueLength,
+		printer.NetworkConfig, capabilitiesJSON, printer.EdgeNodeID,
 	).Scan(&printer.CreatedAt, &printer.UpdatedAt)
 
 	if err != nil {
@@ -52,8 +50,8 @@ func (r *PrinterRepository) CreatePrinter(printer *models.Printer) error {
 func (r *PrinterRepository) GetPrinterByNameAndEdgeNode(name, edgeNodeID string) (*models.Printer, error) {
 	query := `
 		SELECT id, name, display_name, model, serial_number, status, enabled, firmware_version, port_info,
-		       ip_address, mac_address, network_config, latitude, longitude, location,
-		       capabilities, edge_node_id, queue_length, created_at, updated_at
+		       ip_address, mac_address, network_config,
+		       capabilities, edge_node_id, created_at, updated_at
 		FROM printers 
 		WHERE name = $1 AND edge_node_id = $2 AND deleted_at IS NULL`
 
@@ -63,10 +61,10 @@ func (r *PrinterRepository) GetPrinterByNameAndEdgeNode(name, edgeNodeID string)
 
 	var displayName sql.NullString
 	err := r.db.QueryRow(query, name, edgeNodeID).Scan(
-		&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.Status, &printer.Enabled,
+		&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.PrinterStatus, &printer.Enabled,
 		&firmwareVersion, &portInfo, &printer.IPAddress, &printer.MACAddress,
-		&printer.NetworkConfig, &printer.Latitude, &printer.Longitude, &printer.Location,
-		&capabilitiesJSON, &printer.EdgeNodeID, &printer.QueueLength,
+		&printer.NetworkConfig,
+		&capabilitiesJSON, &printer.EdgeNodeID,
 		&printer.CreatedAt, &printer.UpdatedAt,
 	)
 
@@ -92,6 +90,9 @@ func (r *PrinterRepository) GetPrinterByNameAndEdgeNode(name, edgeNodeID string)
 		}
 	}
 
+	if err := r.loadRuntimeStatus(&printer); err != nil {
+		return nil, err
+	}
 	return &printer, nil
 }
 
@@ -99,8 +100,8 @@ func (r *PrinterRepository) GetPrinterByNameAndEdgeNode(name, edgeNodeID string)
 func (r *PrinterRepository) GetPrinterByID(printerID string) (*models.Printer, error) {
 	query := `
 		SELECT id, name, display_name, model, serial_number, status, enabled, firmware_version, port_info,
-		       ip_address, mac_address, network_config, latitude, longitude, location,
-		       capabilities, edge_node_id, queue_length, created_at, updated_at
+		       ip_address, mac_address, network_config,
+		       capabilities, edge_node_id, created_at, updated_at
 		FROM printers WHERE id = $1 AND deleted_at IS NULL`
 
 	printer := &models.Printer{}
@@ -110,10 +111,10 @@ func (r *PrinterRepository) GetPrinterByID(printerID string) (*models.Printer, e
 	var capabilitiesJSON []byte
 
 	err := r.db.QueryRow(query, printerID).Scan(
-		&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.Status, &printer.Enabled,
+		&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.PrinterStatus, &printer.Enabled,
 		&firmwareVersion, &printer.PortInfo, &ipAddress, &printer.MACAddress,
-		&printer.NetworkConfig, &printer.Latitude, &printer.Longitude, &printer.Location,
-		&capabilitiesJSON, &printer.EdgeNodeID, &printer.QueueLength,
+		&printer.NetworkConfig,
+		&capabilitiesJSON, &printer.EdgeNodeID,
 		&printer.CreatedAt, &printer.UpdatedAt,
 	)
 
@@ -140,6 +141,9 @@ func (r *PrinterRepository) GetPrinterByID(printerID string) (*models.Printer, e
 		return nil, fmt.Errorf("failed to unmarshal capabilities: %w", err)
 	}
 
+	if err := r.loadRuntimeStatus(printer); err != nil {
+		return nil, err
+	}
 	return printer, nil
 }
 
@@ -158,8 +162,8 @@ func (r *PrinterRepository) ListPrinters(page, pageSize int) ([]*models.Printer,
 	// 获取分页数据
 	query := `
 		SELECT id, name, display_name, model, serial_number, status, enabled, firmware_version, port_info,
-		       ip_address, mac_address, network_config, latitude, longitude, location,
-		       capabilities, edge_node_id, queue_length, created_at, updated_at
+		       ip_address, mac_address, network_config,
+		       capabilities, edge_node_id, created_at, updated_at
 		FROM printers 
 		WHERE deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -180,10 +184,10 @@ func (r *PrinterRepository) ListPrinters(page, pageSize int) ([]*models.Printer,
 		var capabilitiesJSON []byte
 
 		err := rows.Scan(
-			&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.Status, &printer.Enabled,
+			&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.PrinterStatus, &printer.Enabled,
 			&firmwareVersion, &printer.PortInfo, &ipAddress, &printer.MACAddress,
-			&printer.NetworkConfig, &printer.Latitude, &printer.Longitude, &printer.Location,
-			&capabilitiesJSON, &printer.EdgeNodeID, &printer.QueueLength,
+			&printer.NetworkConfig,
+			&capabilitiesJSON, &printer.EdgeNodeID,
 			&printer.CreatedAt, &printer.UpdatedAt,
 		)
 		if err != nil {
@@ -206,6 +210,9 @@ func (r *PrinterRepository) ListPrinters(page, pageSize int) ([]*models.Printer,
 			return nil, 0, fmt.Errorf("failed to unmarshal capabilities: %w", err)
 		}
 
+		if err := r.loadRuntimeStatus(printer); err != nil {
+			return nil, 0, err
+		}
 		printers = append(printers, printer)
 	}
 
@@ -229,8 +236,8 @@ func (r *PrinterRepository) CountPrintersByEdgeNode(edgeNodeID string) (int, err
 func (r *PrinterRepository) ListPrintersByEdgeNode(edgeNodeID string) ([]*models.Printer, error) {
 	query := `
 		SELECT id, name, display_name, model, serial_number, status, enabled, firmware_version, port_info,
-		       ip_address, mac_address, network_config, latitude, longitude, location,
-		       capabilities, edge_node_id, queue_length, created_at, updated_at
+		       ip_address, mac_address, network_config,
+		       capabilities, edge_node_id, created_at, updated_at
 		FROM printers 
 		WHERE edge_node_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC`
@@ -250,10 +257,10 @@ func (r *PrinterRepository) ListPrintersByEdgeNode(edgeNodeID string) ([]*models
 		var capabilitiesJSON []byte
 
 		err := rows.Scan(
-			&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.Status, &printer.Enabled,
+			&printer.ID, &printer.Name, &displayName, &printer.Model, &printer.SerialNumber, &printer.PrinterStatus, &printer.Enabled,
 			&firmwareVersion, &printer.PortInfo, &ipAddress, &printer.MACAddress,
-			&printer.NetworkConfig, &printer.Latitude, &printer.Longitude, &printer.Location,
-			&capabilitiesJSON, &printer.EdgeNodeID, &printer.QueueLength,
+			&printer.NetworkConfig,
+			&capabilitiesJSON, &printer.EdgeNodeID,
 			&printer.CreatedAt, &printer.UpdatedAt,
 		)
 		if err != nil {
@@ -276,6 +283,9 @@ func (r *PrinterRepository) ListPrintersByEdgeNode(edgeNodeID string) ([]*models
 			return nil, fmt.Errorf("failed to unmarshal capabilities: %w", err)
 		}
 
+		if err := r.loadRuntimeStatus(printer); err != nil {
+			return nil, err
+		}
 		printers = append(printers, printer)
 	}
 
@@ -294,16 +304,15 @@ func (r *PrinterRepository) UpdatePrinter(printer *models.Printer) error {
 		UPDATE printers 
 		SET name = $2, display_name = $3, model = $4, serial_number = $5, status = $6, enabled = $7,
 		    firmware_version = $8, port_info = $9, ip_address = $10, mac_address = $11, network_config = $12,
-		    latitude = $13, longitude = $14, location = $15, capabilities = $16,
-		    queue_length = $17, updated_at = CURRENT_TIMESTAMP
+		    capabilities = $13,
+		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING updated_at`
 
 	err = r.db.QueryRow(query,
-		printer.ID, printer.Name, printer.DisplayName, printer.Model, printer.SerialNumber, printer.Status, printer.Enabled,
+		printer.ID, printer.Name, printer.DisplayName, printer.Model, printer.SerialNumber, printer.PrinterStatus, printer.Enabled,
 		printer.FirmwareVersion, printer.PortInfo, printer.IPAddress, printer.MACAddress,
-		printer.NetworkConfig, printer.Latitude, printer.Longitude, printer.Location,
-		capabilitiesJSON, printer.QueueLength,
+		printer.NetworkConfig, capabilitiesJSON,
 	).Scan(&printer.UpdatedAt)
 
 	if err != nil {
@@ -313,6 +322,40 @@ func (r *PrinterRepository) UpdatePrinter(printer *models.Printer) error {
 		return fmt.Errorf("failed to update printer: %w", err)
 	}
 	return nil
+}
+
+func (r *PrinterRepository) loadRuntimeStatus(printer *models.Printer) error {
+	query := `SELECT status_observed_since, source_observed_at, status_received_at
+	          FROM printers WHERE id = $1`
+	var statusObservedSince, sourceObservedAt, statusReceivedAt sql.NullTime
+	if err := r.db.QueryRow(query, printer.ID).Scan(
+		&statusObservedSince, &sourceObservedAt, &statusReceivedAt,
+	); err != nil {
+		return fmt.Errorf("failed to load printer runtime status: %w", err)
+	}
+	if statusObservedSince.Valid {
+		printer.StatusObservedSince = &statusObservedSince.Time
+	}
+	if sourceObservedAt.Valid {
+		printer.SourceObservedAt = &sourceObservedAt.Time
+	}
+	if statusReceivedAt.Valid {
+		printer.StatusReceivedAt = &statusReceivedAt.Time
+	}
+	return nil
+}
+
+func (r *PrinterRepository) UpdateRuntimeStatus(printerID, printerStatus string, sourceObservedAt *time.Time) error {
+	_, err := r.db.Exec(`
+		UPDATE printers SET status_observed_since = CASE
+				WHEN status IS NOT DISTINCT FROM $2 THEN COALESCE(status_observed_since, CURRENT_TIMESTAMP)
+				ELSE CURRENT_TIMESTAMP END,
+			status = $2, source_observed_at = $3, status_received_at = CURRENT_TIMESTAMP,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1`,
+		printerID, printerStatus, sourceObservedAt,
+	)
+	return err
 }
 
 // DeletePrinter 删除打印机（软删除）
@@ -363,10 +406,10 @@ func (r *PrinterRepository) UpsertPrinter(printer *models.Printer) error {
 	query := `
 		INSERT INTO printers (
 			id, name, model, serial_number, status, firmware_version, port_info,
-			ip_address, mac_address, network_config, latitude, longitude, location,
-			capabilities, edge_node_id, queue_length, created_at, updated_at
+			ip_address, mac_address, network_config,
+			capabilities, edge_node_id, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 		)
 		ON CONFLICT (name, edge_node_id) 
 		DO UPDATE SET
@@ -378,11 +421,7 @@ func (r *PrinterRepository) UpsertPrinter(printer *models.Printer) error {
 			ip_address = EXCLUDED.ip_address,
 			mac_address = EXCLUDED.mac_address,
 			network_config = EXCLUDED.network_config,
-			latitude = EXCLUDED.latitude,
-			longitude = EXCLUDED.longitude,
-			location = EXCLUDED.location,
 			capabilities = EXCLUDED.capabilities,
-			queue_length = EXCLUDED.queue_length,
 			updated_at = CURRENT_TIMESTAMP
 		RETURNING id`
 
@@ -390,10 +429,9 @@ func (r *PrinterRepository) UpsertPrinter(printer *models.Printer) error {
 	err = r.db.QueryRow(
 		query,
 		printer.ID, printer.Name, printer.Model, printer.SerialNumber,
-		printer.Status, printer.FirmwareVersion, printer.PortInfo,
+		printer.PrinterStatus, printer.FirmwareVersion, printer.PortInfo,
 		printer.IPAddress, printer.MACAddress, printer.NetworkConfig,
-		printer.Latitude, printer.Longitude, printer.Location,
-		capabilitiesJSON, printer.EdgeNodeID, printer.QueueLength,
+		capabilitiesJSON, printer.EdgeNodeID,
 		time.Now(), time.Now(),
 	).Scan(&returnedID)
 

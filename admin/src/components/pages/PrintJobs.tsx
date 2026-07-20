@@ -19,7 +19,7 @@ interface PrintJob {
   user_name: string;
   printer_id: string;
   edge_node_id: string;  // 新增：节点ID
-  status: 'pending' | 'dispatched' | 'downloading' | 'printing' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'dispatched' | 'processing' | 'completed' | 'failed' | 'canceled' | 'unconfirmed';
   created_at: string;
   updated_at: string;
   page_count: number;
@@ -33,6 +33,7 @@ interface PrintJob {
   start_time: string;
   end_time: string;
   error_message: string;
+	 error_code?: string;
   retry_count: number;
   max_retries: number;
   key?: string;
@@ -93,26 +94,22 @@ class PrintJobsService {
         },
       });
       
-      if (response.ok) {
-        const result = await response.json();
-        return {
-          jobs: result?.jobs || [],
-          total: result?.pagination?.total || result?.jobs?.length || 0,
-          page: page,
-          pageSize: pageSize
-        };
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result?.message || result?.error || `HTTP ${response.status}`);
       }
+
+      const result = await response.json();
+      return {
+        jobs: result?.jobs || [],
+        total: result?.pagination?.total || result?.jobs?.length || 0,
+        page: page,
+        pageSize: pageSize
+      };
     } catch (error) {
       console.error('获取打印任务列表失败:', error);
+      throw error;
     }
-    
-    // API调用失败时返回空数据
-    return {
-      jobs: [],
-      total: 0,
-      page: page,
-      pageSize: pageSize
-    };
   }
 
   // 获取 Edge Nodes 列表
@@ -158,6 +155,28 @@ class PrintJobsService {
 }
 
 const printJobsService = new PrintJobsService();
+
+const getResultDetail = (job: PrintJob): string => {
+  if (!job.error_code) {
+    if (job.status === 'failed') return '打印任务处理失败';
+    if (job.status === 'canceled') return '打印任务已取消';
+    if (job.status === 'unconfirmed') return '打印结果待确认，请勿重复提交';
+    return '-';
+  }
+  const messages: Record<string, string> = {
+    dispatch_ack_timeout: '无法确认边缘节点是否已接收任务，请勿重复提交',
+    dispatch_failed: '打印任务未能发送到边缘节点',
+    printer_out_of_paper: '打印机缺纸',
+    printer_jammed: '打印机卡纸',
+    printer_out_of_toner: '打印机耗材已用尽',
+    printer_cover_open: '打印机机盖未关闭',
+    printer_offline: '打印机离线',
+    ipp_unreachable: '无法连接打印机',
+    printer_unconfirmed_lock: '打印结果待确认，请勿重复提交',
+    canceled: '打印任务已取消',
+  };
+  return messages[job.error_code] || '打印任务处理失败';
+};
 
 // Print Jobs 组件
 const PrintJobs: React.FC = () => {
@@ -214,16 +233,16 @@ const PrintJobs: React.FC = () => {
         return <Tag color="default">等待中</Tag>;
       case 'dispatched':
         return <Tag color="blue">已分发</Tag>;
-      case 'downloading':
-        return <Tag color="cyan">下载中</Tag>;
-      case 'printing':
-        return <Tag color="processing">打印中</Tag>;
+	  case 'processing':
+		return <Tag color="processing">处理中</Tag>;
       case 'completed':
         return <Tag color="success">已完成</Tag>;
       case 'failed':
         return <Tag color="error">失败</Tag>;
-      case 'cancelled':
-        return <Tag color="default">已取消</Tag>;
+	  case 'canceled':
+		return <Tag color="default">已取消</Tag>;
+	  case 'unconfirmed':
+		return <Tag color="warning">无法确认</Tag>;
       default:
         return <Tag color="default">{status}</Tag>;
     }
@@ -285,7 +304,7 @@ const PrintJobs: React.FC = () => {
   };
 
   const canCancel = (status: string) => {
-    return status === 'pending' || status === 'dispatched' || status === 'printing';
+	return status === 'pending' || status === 'dispatched' || status === 'processing';
   };
 
   const handleCancelJob = async (job: PrintJob) => {
@@ -381,6 +400,12 @@ const PrintJobs: React.FC = () => {
       key: 'page_count',
       render: (count: number) => count || '-',
     },
+	{
+	  title: '结果详情',
+	  key: 'result_detail',
+	  width: 220,
+	  render: (_: unknown, record: PrintJob) => getResultDetail(record),
+	},
     {
       title: '份数',
       dataIndex: 'copies',
@@ -456,9 +481,11 @@ const PrintJobs: React.FC = () => {
             >
               <Select.Option value="pending">等待中</Select.Option>
               <Select.Option value="dispatched">已分发</Select.Option>
-              <Select.Option value="printing">打印中</Select.Option>
+			  <Select.Option value="processing">处理中</Select.Option>
               <Select.Option value="completed">已完成</Select.Option>
               <Select.Option value="failed">失败</Select.Option>
+			  <Select.Option value="canceled">已取消</Select.Option>
+			  <Select.Option value="unconfirmed">无法确认</Select.Option>
             </Select>
             
             <Select

@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Table, Tag, Space, Row, Col, Statistic, Progress, message, Select, Button, Popconfirm, Modal, Form, Input } from 'antd';
+import { Card, Table, Tag, Space, message, Select, Button, Popconfirm, Modal, Form, Input } from 'antd';
 import { 
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   StopOutlined,
-  PrinterOutlined,
   PlayCircleOutlined,
   DeleteOutlined,
   EditOutlined
@@ -17,15 +16,12 @@ interface PrinterStatus {
   name: string;
   display_name?: string;
   model: string;
-  location?: string; // 后端可能为空
-  status: 'ready' | 'printing' | 'error' | 'offline'; // 后端状态值
+  printer_status: string;
+  status_received_at?: string;
+  status_stale?: boolean;
   enabled: boolean;
-  edge_node_enabled?: boolean; // Edge Node的启用状态
-  actually_enabled?: boolean; // 实际的逻辑级联状态
-  disabled_reason?: string; // 禁用原因
   edge_node_id: string;
   edge_node_name?: string; // Edge Node 名称
-  queue_length: number;
   key?: string;
 }
 
@@ -303,6 +299,8 @@ const Printers: React.FC = () => {
   // 初始加载数据
   useEffect(() => {
     loadData();
+	const timer = window.setInterval(() => { if (!document.hidden) loadData(); }, 30000);
+	return () => window.clearInterval(timer);
   }, []);
 
   // 综合筛选逻辑：Edge Node + 状态 + 名称搜索
@@ -316,7 +314,7 @@ const Printers: React.FC = () => {
     
     // 按状态筛选
     if (selectedStatus) {
-      result = result.filter(printer => printer.status === selectedStatus);
+      result = result.filter(printer => printer.printer_status === selectedStatus);
     }
     
     // 按名称搜索（不区分大小写，匹配名称、别名和ID）
@@ -334,30 +332,60 @@ const Printers: React.FC = () => {
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'ready': return 'success';
+      case 'idle': return 'success';
       case 'printing': return 'processing';
-      case 'offline': return 'default';
-      case 'error': return 'error';
+      case 'printer_state_unknown': return 'default';
+      case 'printer_unconfirmed_lock': return 'warning';
+      case 'printer_out_of_paper':
+      case 'printer_jammed':
+      case 'printer_out_of_toner':
+      case 'printer_cover_open':
+      case 'printer_offline':
+      case 'ipp_unreachable':
+      case 'printer_stopped':
+      case 'printer_not_accepting_jobs':
+      case 'printer_user_intervention':
+      case 'printer_other_fault': return 'error';
       default: return 'default';
     }
   };
 
   const getStatusText = (status: string) => {
     switch (status) {
-      case 'ready': return '就绪';
+      case 'idle': return '空闲';
       case 'printing': return '打印中';
-      case 'offline': return '离线';
-      case 'error': return '错误';
-      default: return '未知';
+      case 'printer_out_of_paper': return '缺纸';
+      case 'printer_jammed': return '卡纸';
+      case 'printer_out_of_toner': return '耗材耗尽';
+      case 'printer_cover_open': return '机盖打开';
+      case 'printer_offline': return '离线';
+      case 'ipp_unreachable': return '无法连接';
+      case 'printer_stopped': return '已停止';
+      case 'printer_not_accepting_jobs': return '拒绝任务';
+      case 'printer_user_intervention': return '需要人工处理';
+      case 'printer_other_fault': return '设备故障';
+      case 'printer_unconfirmed_lock': return '结果待确认';
+      case 'printer_state_unknown': return '状态未知';
+      default: return status || '状态未知';
     }
   };
 
   const getStatusIcon = (status: string) => {
     switch (status) {
-      case 'ready': return <CheckCircleOutlined />;
+      case 'idle': return <CheckCircleOutlined />;
       case 'printing': return <PlayCircleOutlined />;
-      case 'offline': return <StopOutlined />;
-      case 'error': return <ExclamationCircleOutlined />;
+      case 'printer_state_unknown': return <StopOutlined />;
+      case 'printer_unconfirmed_lock': return <ExclamationCircleOutlined />;
+      case 'printer_out_of_paper':
+      case 'printer_jammed':
+      case 'printer_out_of_toner':
+      case 'printer_cover_open':
+      case 'printer_offline':
+      case 'ipp_unreachable':
+      case 'printer_stopped':
+      case 'printer_not_accepting_jobs':
+      case 'printer_user_intervention':
+      case 'printer_other_fault': return <ExclamationCircleOutlined />;
       default: return <StopOutlined />;
     }
   };
@@ -401,20 +429,14 @@ const Printers: React.FC = () => {
       render: (text: string) => text || '未知',
     },
     {
-      title: '位置',
-      dataIndex: 'location',
-      key: 'location',
-      width: 150,
-      render: (text: string) => text || '-',
-    },
-    {
-      title: '运行状态',
-      dataIndex: 'status',
-      key: 'status',
+      title: '当前状态',
+      dataIndex: 'printer_status',
+      key: 'printer_status',
       width: 120,
-      render: (status: string) => (
-        <Tag color={getStatusColor(status)} icon={getStatusIcon(status)}>
+      render: (status: string, record: PrinterStatus) => (
+        <Tag color={getStatusColor(status)} icon={getStatusIcon(status)} title={record.status_stale ? '状态超过90秒未更新' : record.status_received_at ? `状态更新时间：${record.status_received_at}` : undefined}>
           {getStatusText(status)}
+          {record.status_stale ? '（未更新）' : ''}
         </Tag>
       ),
     },
@@ -423,18 +445,12 @@ const Printers: React.FC = () => {
       key: 'enabled_status',
       width: 120,
       render: (_, record: PrinterStatus) => {
-        const actuallyEnabled = record.actually_enabled ?? record.enabled;
-        return (
-          <div>
-            <Tag color={actuallyEnabled ? 'green' : 'red'}>
-              {actuallyEnabled ? '已启用' : '已禁用'}
-            </Tag>
-            {record.disabled_reason && (
-              <div style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>
-                {record.disabled_reason}
-              </div>
-            )}
-          </div>
+		return (
+		  <div>
+			<Tag color={record.enabled ? 'green' : 'red'}>
+			  {record.enabled ? '已启用' : '已禁用'}
+			</Tag>
+		  </div>
         );
       },
     },
@@ -456,13 +472,11 @@ const Printers: React.FC = () => {
             type="text" 
             size="small"
             onClick={() => handleToggleEnabled(record)}
-            disabled={record.edge_node_enabled === false} // 如果Edge Node被禁用，则禁用按钮
-            style={{ 
-              color: (record.actually_enabled ?? record.enabled) ? '#ff4d4f' : '#52c41a' 
-            }}
-            title={record.disabled_reason || undefined} // 显示禁用原因作为提示
-          >
-            {(record.actually_enabled ?? record.enabled) ? '禁用' : '启用'}
+			style={{
+			  color: record.enabled ? '#ff4d4f' : '#52c41a'
+			}}
+		  >
+			{record.enabled ? '禁用' : '启用'}
           </Button>
           <Popconfirm
             title="确认删除"
@@ -494,49 +508,6 @@ const Printers: React.FC = () => {
         </Space>
       </div>
 
-      {/* 统计信息 */}
-      <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
-          <Card>
-            <Statistic
-              title="总打印机数"
-              value={filteredPrinters.length}
-              prefix={<PrinterOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic
-              title="就绪打印机"
-              value={filteredPrinters.filter(printer => printer.status === 'ready').length}
-              prefix={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
-              valueStyle={{ color: '#52c41a' }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic
-              title="正在打印"
-              value={filteredPrinters.filter(printer => printer.status === 'printing').length}
-              prefix={<PlayCircleOutlined style={{ color: '#1890ff' }} />}
-              valueStyle={{ color: '#1890ff' }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic
-              title="异常打印机"
-              value={filteredPrinters.filter(printer => printer.status === 'error').length}
-              prefix={<ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />}
-              valueStyle={{ color: '#ff4d4f' }}
-            />
-          </Card>
-        </Col>
-      </Row>
-
       {/* 筛选器 */}
       <div style={{ marginBottom: 16 }}>
         <Space wrap>
@@ -553,7 +524,7 @@ const Printers: React.FC = () => {
             ))}
           </Select>
           
-          <span style={{ marginLeft: 16 }}>运行状态：</span>
+          <span style={{ marginLeft: 16 }}>当前状态：</span>
           <Select
             value={selectedStatus}
             onChange={setSelectedStatus}
@@ -561,10 +532,9 @@ const Printers: React.FC = () => {
             placeholder="选择状态"
           >
             <Select.Option value="">全部</Select.Option>
-            <Select.Option value="ready">就绪</Select.Option>
-            <Select.Option value="printing">打印中</Select.Option>
-            <Select.Option value="error">错误</Select.Option>
-            <Select.Option value="offline">离线</Select.Option>
+            {Array.from(new Set(printers.map(printer => printer.printer_status).filter(Boolean))).map(status => (
+              <Select.Option key={status} value={status}>{getStatusText(status)}</Select.Option>
+            ))}
           </Select>
           
           <span style={{ marginLeft: 16 }}>搜索：</span>

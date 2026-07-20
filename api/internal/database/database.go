@@ -9,6 +9,7 @@ import (
 
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/logger"
+	"fly-print-cloud/api/internal/security"
 
 	_ "github.com/lib/pq"
 	"github.com/spf13/viper"
@@ -132,9 +133,13 @@ func (db *DB) InitTables() error {
 		id VARCHAR(100) PRIMARY KEY,
 		name VARCHAR(100) NOT NULL, -- User-friendly display name (can be modified)
 		status VARCHAR(20) NOT NULL DEFAULT 'offline',
+		health_status VARCHAR(20) NOT NULL DEFAULT 'unknown',
+		health_reason_code VARCHAR(100),
+		health_message TEXT,
 		enabled BOOLEAN NOT NULL DEFAULT true, -- 云端启用/禁用状态
 		version VARCHAR(50),
 		last_heartbeat TIMESTAMP,
+		printer_status_received_at TIMESTAMP,
 		deleted_at TIMESTAMP,
 		
 		-- 位置信息
@@ -156,6 +161,10 @@ func (db *DB) InitTables() error {
 		-- 连接信息
 		connection_quality VARCHAR(20),
 		latency INTEGER,
+		cpu_usage DOUBLE PRECISION DEFAULT 0,
+		memory_usage DOUBLE PRECISION DEFAULT 0,
+		disk_usage DOUBLE PRECISION DEFAULT 0,
+		components JSONB DEFAULT '{}'::jsonb,
 		
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -185,7 +194,10 @@ func (db *DB) InitTables() error {
 		display_name VARCHAR(255),
 		model VARCHAR(100),
 		serial_number VARCHAR(100),
-		status VARCHAR(20) NOT NULL DEFAULT 'offline',
+		status VARCHAR(64) NOT NULL DEFAULT 'printer_state_unknown',
+		status_observed_since TIMESTAMP,
+		source_observed_at TIMESTAMP,
+		status_received_at TIMESTAMP,
 		enabled BOOLEAN NOT NULL DEFAULT true, -- 云端启用/禁用状态
 		
 		-- 硬件信息
@@ -197,17 +209,11 @@ func (db *DB) InitTables() error {
 		mac_address VARCHAR(17),
 		network_config TEXT,
 		
-		-- 地理位置信息
-		latitude DECIMAL(10, 8),
-		longitude DECIMAL(11, 8),
-		location VARCHAR(255),
-		
 		-- 能力信息 (JSON 格式)
 		capabilities JSONB,
 		
 		-- 关联信息
 		edge_node_id VARCHAR(100) REFERENCES edge_nodes(id) ON DELETE CASCADE,
-		queue_length INTEGER DEFAULT 0,
 		
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -261,6 +267,7 @@ func (db *DB) InitTables() error {
 		start_time TIMESTAMP,
 		end_time TIMESTAMP,
 		error_message TEXT,
+		error_code VARCHAR(100),
 		
 		-- 重试信息
 		retry_count INTEGER DEFAULT 0,
@@ -276,6 +283,30 @@ func (db *DB) InitTables() error {
 
 	if _, err := db.Exec("ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64);"); err != nil {
 		return fmt.Errorf("failed to migrate print_jobs table: %w", err)
+	}
+
+	operationalAlertsSQL := `
+	CREATE TABLE IF NOT EXISTS operational_alerts (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		resource_type VARCHAR(20) NOT NULL,
+		resource_id VARCHAR(100) NOT NULL,
+		node_id VARCHAR(100),
+		printer_id UUID,
+		job_id UUID,
+		reason_code VARCHAR(100) NOT NULL,
+		category VARCHAR(30) NOT NULL,
+		title VARCHAR(200) NOT NULL,
+		status VARCHAR(20) NOT NULL DEFAULT 'open',
+		details JSONB DEFAULT '{}'::jsonb,
+		occurrence_count INTEGER NOT NULL DEFAULT 1,
+		first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		resolved_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);`
+	if _, err := db.Exec(operationalAlertsSQL); err != nil {
+		return fmt.Errorf("failed to create operational_alerts table: %w", err)
 	}
 
 	// 创建打印任务更新时间触发器
@@ -339,6 +370,31 @@ func (db *DB) InitTables() error {
 		// 将 used_at 改为可空（兼容预注册token）
 		"ALTER TABLE token_usage_records ALTER COLUMN used_at DROP NOT NULL;",
 		"ALTER TABLE token_usage_records ALTER COLUMN used_at DROP DEFAULT;",
+		"ALTER TABLE edge_nodes ADD COLUMN IF NOT EXISTS health_status VARCHAR(20) NOT NULL DEFAULT 'unknown';",
+		"ALTER TABLE edge_nodes ADD COLUMN IF NOT EXISTS health_reason_code VARCHAR(100);",
+		"ALTER TABLE edge_nodes ADD COLUMN IF NOT EXISTS health_message TEXT;",
+		"ALTER TABLE edge_nodes ADD COLUMN IF NOT EXISTS cpu_usage DOUBLE PRECISION DEFAULT 0;",
+		"ALTER TABLE edge_nodes ADD COLUMN IF NOT EXISTS memory_usage DOUBLE PRECISION DEFAULT 0;",
+		"ALTER TABLE edge_nodes ADD COLUMN IF NOT EXISTS disk_usage DOUBLE PRECISION DEFAULT 0;",
+		"ALTER TABLE edge_nodes ADD COLUMN IF NOT EXISTS components JSONB DEFAULT '{}'::jsonb;",
+		"ALTER TABLE edge_nodes ADD COLUMN IF NOT EXISTS printer_status_received_at TIMESTAMP;",
+		"ALTER TABLE printers ALTER COLUMN status TYPE VARCHAR(64);",
+		"ALTER TABLE printers ADD COLUMN IF NOT EXISTS status_observed_since TIMESTAMP;",
+		"ALTER TABLE printers ADD COLUMN IF NOT EXISTS source_observed_at TIMESTAMP;",
+		"ALTER TABLE printers ADD COLUMN IF NOT EXISTS status_received_at TIMESTAMP;",
+		"ALTER TABLE printers ALTER COLUMN status SET DEFAULT 'printer_state_unknown';",
+		"ALTER TABLE printers DROP COLUMN IF EXISTS health_status;",
+		"ALTER TABLE printers DROP COLUMN IF EXISTS reason_code;",
+		"ALTER TABLE printers DROP COLUMN IF EXISTS reason_message;",
+		"ALTER TABLE printers DROP COLUMN IF EXISTS reason_observed_since;",
+		"ALTER TABLE printers DROP COLUMN IF EXISTS accepting_jobs;",
+		"ALTER TABLE printers DROP COLUMN IF EXISTS diagnostics;",
+		"ALTER TABLE printers DROP COLUMN IF EXISTS queue_length;",
+		"ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS error_code VARCHAR(100);",
+		"UPDATE printers SET status = CASE WHEN status = 'ready' THEN 'idle' WHEN status = 'processing' THEN 'printing' WHEN status IN ('error','stopped') THEN 'printer_stopped' WHEN status IN ('offline','unknown') THEN 'printer_state_unknown' ELSE status END WHERE status IN ('ready','processing','error','stopped','offline','unknown');",
+		"UPDATE edge_nodes SET enabled = false, status = 'offline' WHERE status = 'maintenance';",
+		"UPDATE print_jobs SET status = 'processing' WHERE status IN ('printing','downloading');",
+		"UPDATE print_jobs SET status = 'canceled' WHERE status = 'cancelled';",
 	}
 
 	for _, migration := range migrations {
@@ -365,6 +421,10 @@ func (db *DB) InitTables() error {
 
 		// Print Jobs 索引
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status);",
+		"CREATE INDEX IF NOT EXISTS idx_operational_alerts_status ON operational_alerts(status);",
+		"CREATE INDEX IF NOT EXISTS idx_operational_alerts_resource ON operational_alerts(resource_type, resource_id);",
+		"CREATE INDEX IF NOT EXISTS idx_operational_alerts_last_seen ON operational_alerts(last_seen_at);",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_operational_alerts_open_unique ON operational_alerts(resource_type, resource_id, reason_code) WHERE status = 'open';",
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_printer_id ON print_jobs(printer_id);",
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_user_id ON print_jobs(user_id);",
 		"CREATE INDEX IF NOT EXISTS idx_print_jobs_created_at ON print_jobs(created_at DESC);", // 降序，常用于最新任务查询
@@ -434,6 +494,7 @@ func (db *DB) InitTables() error {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		client_id VARCHAR(100) UNIQUE NOT NULL,
 		client_secret_hash VARCHAR(255) NOT NULL,
+		client_secret_encrypted TEXT NOT NULL,
 		client_type VARCHAR(20) NOT NULL DEFAULT 'edge_node',
 		allowed_scopes TEXT NOT NULL,
 		description TEXT,
@@ -551,7 +612,7 @@ func (db *DB) CreateDefaultAdmin() error {
 }
 
 // CreateDefaultOAuth2Client 创建默认 Edge OAuth2 客户端（builtin 模式首次启动时）
-func (db *DB) CreateDefaultOAuth2Client() error {
+func (db *DB) CreateDefaultOAuth2Client(secretCipher *security.ClientSecretCipher) error {
 	// 检查是否已存在客户端
 	var count int
 	err := db.QueryRow("SELECT COUNT(*) FROM oauth2_clients").Scan(&count)
@@ -575,23 +636,20 @@ func (db *DB) CreateDefaultOAuth2Client() error {
 	if err != nil {
 		return fmt.Errorf("failed to hash client secret: %w", err)
 	}
+	encryptedSecret, err := secretCipher.Encrypt(rawSecret)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt client secret: %w", err)
+	}
 
 	insertSQL := `
-	INSERT INTO oauth2_clients (client_id, client_secret_hash, client_type, allowed_scopes, description, enabled)
-	VALUES ('edge-default', $1, 'edge_node', 'edge:register edge:printer edge:heartbeat file:read', 'Default Edge client (auto-generated)', true)`
+	INSERT INTO oauth2_clients (client_id, client_secret_hash, client_secret_encrypted, client_type, allowed_scopes, description, enabled)
+	VALUES ('edge-default', $1, $2, 'edge_node', 'edge:register edge:printer edge:heartbeat file:read', 'Default Edge client (auto-generated)', true)`
 
-	if _, err := db.Exec(insertSQL, string(hashedSecret)); err != nil {
+	if _, err := db.Exec(insertSQL, string(hashedSecret), encryptedSecret); err != nil {
 		return fmt.Errorf("failed to create default oauth2 client: %w", err)
 	}
 
-	logger.Warn("==========================================")
-	logger.Warn("  DEFAULT EDGE OAuth2 CLIENT CREATED")
-	logger.Warn("==========================================")
-	logger.Info("Default Edge OAuth2 client", zap.String("client_id", "edge-default"), zap.String("client_secret", rawSecret))
-	logger.Warn("==========================================")
-	logger.Warn("  SAVE THIS SECRET IMMEDIATELY!")
-	logger.Warn("  It will NOT be shown again!")
-	logger.Warn("==========================================")
+	logger.Info("Default Edge OAuth2 client created", zap.String("client_id", "edge-default"))
 
 	return nil
 }

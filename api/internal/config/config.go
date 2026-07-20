@@ -94,9 +94,10 @@ type MinIOConfig struct {
 
 // SecurityConfig 安全配置
 type SecurityConfig struct {
-	FileAccessSecret string `mapstructure:"file_access_secret"` // 文件访问凭证签名密钥
-	UploadTokenTTL   int    `mapstructure:"upload_token_ttl"`   // 上传凭证有效期（秒）
-	DownloadTokenTTL int    `mapstructure:"download_token_ttl"` // 下载凭证有效期（秒）
+	FileAccessSecret               string `mapstructure:"file_access_secret"`
+	OAuthClientSecretEncryptionKey string `mapstructure:"oauth_client_secret_encryption_key"`
+	UploadTokenTTL                 int    `mapstructure:"upload_token_ttl"`
+	DownloadTokenTTL               int    `mapstructure:"download_token_ttl"`
 }
 
 // Load 加载配置
@@ -219,6 +220,9 @@ func (c *Config) Validate() error {
 	if len(c.Security.FileAccessSecret) < 32 {
 		return fmt.Errorf("SECURITY WARNING: file_access_secret must be at least 32 characters long")
 	}
+	if c.OAuth2.IsBuiltinMode() && c.Security.OAuthClientSecretEncryptionKey == "" {
+		return fmt.Errorf("security.oauth_client_secret_encryption_key is required in builtin OAuth2 mode")
+	}
 
 	// 验证存储配置
 	if c.Storage.Provider != "local" && c.Storage.Provider != "minio" {
@@ -322,6 +326,7 @@ func setDefaults() {
 
 	// Security 默认值
 	viper.SetDefault("security.file_access_secret", "fly-print-file-access-secret-dev-only")
+	viper.SetDefault("security.oauth_client_secret_encryption_key", "")
 	viper.SetDefault("security.upload_token_ttl", 180)   // 3分钟
 	viper.SetDefault("security.download_token_ttl", 180) // 3分钟
 }

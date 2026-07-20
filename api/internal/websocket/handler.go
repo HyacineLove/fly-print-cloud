@@ -7,6 +7,7 @@ import (
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/middleware"
+	"fly-print-cloud/api/internal/operations"
 	"fly-print-cloud/api/internal/security"
 
 	"github.com/gin-gonic/gin"
@@ -23,10 +24,11 @@ type WebSocketHandler struct {
 	fileRepo       *database.FileRepository
 	tokenManager   *security.TokenManager
 	allowedOrigins []string // 允许的Origin列表
+	statusService  *operations.StatusService
 }
 
 // NewWebSocketHandler 创建 WebSocket 处理器
-func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, allowedOrigins []string) *WebSocketHandler {
+func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, allowedOrigins []string, statusService *operations.StatusService) *WebSocketHandler {
 	return &WebSocketHandler{
 		manager:        manager,
 		printerRepo:    printerRepo,
@@ -35,6 +37,7 @@ func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.Print
 		fileRepo:       fileRepo,
 		tokenManager:   tokenManager,
 		allowedOrigins: allowedOrigins,
+		statusService:  statusService,
 	}
 }
 
@@ -134,7 +137,7 @@ func (h *WebSocketHandler) HandleConnection(c *gin.Context) {
 	}
 
 	// 创建连接对象
-	connection := NewConnection(nodeID, conn, h.manager, h.printerRepo, h.edgeNodeRepo, h.printJobRepo, h.fileRepo, h.tokenManager)
+	connection := NewConnection(nodeID, conn, h.manager, h.printerRepo, h.edgeNodeRepo, h.printJobRepo, h.fileRepo, h.tokenManager, h.statusService)
 
 	// 注册连接
 	h.manager.register <- connection

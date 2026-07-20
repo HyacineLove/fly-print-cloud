@@ -26,6 +26,49 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func newStorageFileHandler(
+	t *testing.T,
+	repo *fakeFileRepository,
+) (*FileHandler, *fakeStorage) {
+	t.Helper()
+	store := newFakeStorage()
+	return &FileHandler{
+		repo:    repo,
+		config:  &config.StorageConfig{UploadDir: t.TempDir(), MaxSize: 1024 * 1024},
+		storage: store,
+	}, store
+}
+
+func newPNGUploadRequest(t *testing.T) *http.Request {
+	t.Helper()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "sample.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile() error = %v", err)
+	}
+	if _, err := part.Write(samplePNGBytes()); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/upload", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
+}
+
+func newUploadTestRouter(handler *FileHandler) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/upload", func(c *gin.Context) {
+		c.Set("external_id", "user-1")
+		handler.Upload(c)
+	})
+	return router
+}
+
 func TestUploadPolicyEndpointReturnsConfiguredLimits(t *testing.T) {
 	t.Parallel()
 
@@ -306,34 +349,9 @@ func TestFileHandlerStorageUploadUsesStorageBackend(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	repo := &fakeFileRepository{}
-	store := newFakeStorage()
-	handler := &FileHandler{
-		repo:    repo,
-		config:  &config.StorageConfig{UploadDir: t.TempDir(), MaxSize: 1024 * 1024},
-		storage: store,
-	}
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", "sample.png")
-	if err != nil {
-		t.Fatalf("CreateFormFile() error = %v", err)
-	}
-	if _, err := part.Write(samplePNGBytes()); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	router := gin.New()
-	router.POST("/upload", func(c *gin.Context) {
-		c.Set("external_id", "user-1")
-		handler.Upload(c)
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "/upload", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	handler, store := newStorageFileHandler(t, repo)
+	router := newUploadTestRouter(handler)
+	req := newPNGUploadRequest(t)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
 
@@ -364,34 +382,9 @@ func TestFileHandlerStorageUploadCleansUpStoredObjectWhenRepoCreateFails(t *test
 	gin.SetMode(gin.TestMode)
 
 	repo := &fakeFileRepository{createErr: errors.New("db down")}
-	store := newFakeStorage()
-	handler := &FileHandler{
-		repo:    repo,
-		config:  &config.StorageConfig{UploadDir: t.TempDir(), MaxSize: 1024 * 1024},
-		storage: store,
-	}
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", "sample.png")
-	if err != nil {
-		t.Fatalf("CreateFormFile() error = %v", err)
-	}
-	if _, err := part.Write(samplePNGBytes()); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	router := gin.New()
-	router.POST("/upload", func(c *gin.Context) {
-		c.Set("external_id", "user-1")
-		handler.Upload(c)
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "/upload", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	handler, store := newStorageFileHandler(t, repo)
+	router := newUploadTestRouter(handler)
+	req := newPNGUploadRequest(t)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
 
@@ -423,14 +416,8 @@ func TestFileHandlerStorageDownloadStreamsFromStorage(t *testing.T) {
 			},
 		},
 	}
-	store := newFakeStorage()
+	handler, store := newStorageFileHandler(t, repo)
 	store.objects["objects/report.pdf"] = payload
-
-	handler := &FileHandler{
-		repo:    repo,
-		config:  &config.StorageConfig{UploadDir: t.TempDir(), MaxSize: 1024 * 1024},
-		storage: store,
-	}
 
 	router := gin.New()
 	router.GET("/files/:id", func(c *gin.Context) {

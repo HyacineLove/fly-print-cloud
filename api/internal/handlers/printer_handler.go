@@ -3,10 +3,12 @@ package handlers
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/operations"
 	"fly-print-cloud/api/internal/websocket"
 
 	"github.com/gin-gonic/gin"
@@ -20,15 +22,17 @@ type PrinterHandler struct {
 	printJobRepo   *database.PrintJobRepository
 	wsManager      *websocket.ConnectionManager
 	tokenUsageRepo *database.TokenUsageRepository
+	statusService  *operations.StatusService
 }
 
-func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository) *PrinterHandler {
+func NewPrinterHandler(printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository, statusService *operations.StatusService) *PrinterHandler {
 	return &PrinterHandler{
 		printerRepo:    printerRepo,
 		edgeNodeRepo:   edgeNodeRepo,
 		printJobRepo:   printJobRepo,
 		wsManager:      wsManager,
 		tokenUsageRepo: tokenUsageRepo,
+		statusService:  statusService,
 	}
 }
 
@@ -37,17 +41,12 @@ type UpdatePrinterRequest struct {
 	Name            string                     `json:"name" binding:"required,min=1,max=100"`
 	Model           string                     `json:"model"`
 	SerialNumber    string                     `json:"serial_number"`
-	Status          string                     `json:"status" binding:"required,oneof=ready printing error offline"`
 	FirmwareVersion string                     `json:"firmware_version"`
 	PortInfo        string                     `json:"port_info"`
 	IPAddress       *string                    `json:"ip_address"`
 	MACAddress      string                     `json:"mac_address"`
 	NetworkConfig   string                     `json:"network_config"`
-	Latitude        *float64                   `json:"latitude"`
-	Longitude       *float64                   `json:"longitude"`
-	Location        string                     `json:"location"`
 	Capabilities    models.PrinterCapabilities `json:"capabilities"`
-	QueueLength     int                        `json:"queue_length"`
 }
 
 // AdminUpdatePrinterRequest 管理界面更新打印机请求
@@ -59,29 +58,14 @@ type AdminUpdatePrinterRequest struct {
 // PrinterWithStatus 包含实际状态的打印机信息
 type PrinterWithStatus struct {
 	*models.Printer
-	EdgeNodeEnabled bool   `json:"edge_node_enabled"`
-	ActuallyEnabled bool   `json:"actually_enabled"`
-	DisabledReason  string `json:"disabled_reason,omitempty"`
+	StatusStale bool `json:"status_stale"`
 }
 
 // NewPrinterWithStatus 创建包含实际状态的打印机信息
-func NewPrinterWithStatus(printer *models.Printer, edgeNodeEnabled bool) *PrinterWithStatus {
-	actuallyEnabled := printer.Enabled && edgeNodeEnabled
-
-	var disabledReason string
-	if !actuallyEnabled {
-		if !printer.Enabled {
-			disabledReason = "打印机被禁用"
-		} else if !edgeNodeEnabled {
-			disabledReason = "Edge Node被禁用"
-		}
-	}
-
+func NewPrinterWithStatus(printer *models.Printer) *PrinterWithStatus {
 	return &PrinterWithStatus{
-		Printer:         printer,
-		EdgeNodeEnabled: edgeNodeEnabled,
-		ActuallyEnabled: actuallyEnabled,
-		DisabledReason:  disabledReason,
+		Printer:     printer,
+		StatusStale: operations.PrinterStatusStale(printer, time.Now()),
 	}
 }
 
@@ -151,8 +135,8 @@ func validatePrinterCapabilities(cap models.PrinterCapabilities) error {
 func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 	page, pageSize, _ := ParsePaginationParams(c)
 	edgeNodeID := c.Query("edge_node_id") // 支持按Edge Node筛选
-	status := c.Query("status")           // 支持按状态筛选
-	search := c.Query("search")           // 支持按名称/别名/ID搜索
+	status := c.Query("printer_status")
+	search := c.Query("search") // 支持按名称/别名/ID搜索
 
 	var printers []*models.Printer
 	var total int
@@ -181,7 +165,7 @@ func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 	if status != "" {
 		filtered := make([]*models.Printer, 0)
 		for _, printer := range printers {
-			if printer.Status == status {
+			if printer.PrinterStatus == status {
 				filtered = append(filtered, printer)
 			}
 		}
@@ -214,25 +198,10 @@ func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 		total = len(printers)
 	}
 
-	// 获取所有相关的Edge Node状态信息
-	edgeNodeStatusMap := make(map[string]bool)
-	for _, printer := range printers {
-		if _, exists := edgeNodeStatusMap[printer.EdgeNodeID]; !exists {
-			edgeNode, err := h.edgeNodeRepo.GetEdgeNodeByID(printer.EdgeNodeID)
-			if err != nil {
-				logger.Error("Failed to get edge node", zap.String("edge_node_id", printer.EdgeNodeID), zap.Error(err))
-				edgeNodeStatusMap[printer.EdgeNodeID] = false // 默认为禁用
-			} else {
-				edgeNodeStatusMap[printer.EdgeNodeID] = edgeNode.Enabled
-			}
-		}
-	}
-
-	// 转换为包含实际状态的打印机信息
+	// 添加状态新鲜度元数据，不派生新的打印机状态。
 	printersWithStatus := make([]*PrinterWithStatus, len(printers))
 	for i, printer := range printers {
-		edgeNodeEnabled := edgeNodeStatusMap[printer.EdgeNodeID]
-		printersWithStatus[i] = NewPrinterWithStatus(printer, edgeNodeEnabled)
+		printersWithStatus[i] = NewPrinterWithStatus(printer)
 	}
 
 	totalPages := (total + pageSize - 1) / pageSize
@@ -261,17 +230,7 @@ func (h *PrinterHandler) GetPrinter(c *gin.Context) {
 		return
 	}
 
-	// 获取Edge Node状态
-	edgeNode, err := h.edgeNodeRepo.GetEdgeNodeByID(printer.EdgeNodeID)
-	if err != nil {
-		logger.Error("Failed to get edge node", zap.String("edge_node_id", printer.EdgeNodeID), zap.Error(err))
-		// 如果无法获取Edge Node状态，假设为禁用
-		printerWithStatus := NewPrinterWithStatus(printer, false)
-		SuccessResponse(c, printerWithStatus)
-		return
-	}
-
-	printerWithStatus := NewPrinterWithStatus(printer, edgeNode.Enabled)
+	printerWithStatus := NewPrinterWithStatus(printer)
 	SuccessResponse(c, printerWithStatus)
 }
 
@@ -328,17 +287,12 @@ func (h *PrinterHandler) UpdatePrinter(c *gin.Context) {
 		printer.Name = req.Name
 		printer.Model = req.Model
 		printer.SerialNumber = req.SerialNumber
-		printer.Status = req.Status
 		printer.FirmwareVersion = req.FirmwareVersion
 		printer.PortInfo = req.PortInfo
 		printer.IPAddress = req.IPAddress
 		printer.MACAddress = req.MACAddress
 		printer.NetworkConfig = req.NetworkConfig
-		printer.Latitude = req.Latitude
-		printer.Longitude = req.Longitude
-		printer.Location = req.Location
 		printer.Capabilities = req.Capabilities
-		printer.QueueLength = req.QueueLength
 	}
 
 	if err := h.printerRepo.UpdatePrinter(printer); err != nil {
@@ -459,8 +413,8 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 			Name:            req.Name,
 			Model:           req.Model,
 			SerialNumber:    req.SerialNumber,
-			Status:          "offline", // 默认状态
-			Enabled:         true,      // 默认启用
+			PrinterStatus:   "printer_state_unknown",
+			Enabled:         true, // 默认启用
 			FirmwareVersion: req.FirmwareVersion,
 			PortInfo:        req.PortInfo,
 			IPAddress:       req.IPAddress,
@@ -468,7 +422,6 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 			NetworkConfig:   "",
 			Capabilities:    req.Capabilities,
 			EdgeNodeID:      edgeNodeID,
-			QueueLength:     0,
 		}
 
 		if err := h.printerRepo.CreatePrinter(printer); err != nil {
@@ -511,9 +464,9 @@ func (h *PrinterHandler) EdgeDeletePrinter(c *gin.Context) {
 
 // PrinterStatusItem 单个打印机状态项
 type PrinterStatusItem struct {
-	PrinterID   string `json:"printer_id" binding:"required"`
-	Status      string `json:"status" binding:"required,oneof=ready printing error offline"`
-	QueueLength int    `json:"queue_length"`
+	PrinterID        string     `json:"printer_id" binding:"required"`
+	PrinterStatus    string     `json:"printer_status" binding:"required,max=64"`
+	SourceObservedAt *time.Time `json:"source_observed_at"`
 }
 
 // EdgeBatchStatusRequest 批量状态上报请求
@@ -579,10 +532,15 @@ func (h *PrinterHandler) EdgeBatchUpdatePrinterStatus(c *gin.Context) {
 		// 节点禁用检查由中间件 EdgeNodeEnabledCheck 处理
 
 		// 更新打印机状态
-		printer.Status = item.Status
-		printer.QueueLength = item.QueueLength
-
-		if err := h.printerRepo.UpdatePrinter(printer); err != nil {
+		if h.statusService == nil {
+			err = fmt.Errorf("status service unavailable")
+		} else {
+			err = h.statusService.ApplyPrinterSnapshot(edgeNodeID, operations.PrinterSnapshot{
+				PrinterID: item.PrinterID, PrinterStatus: item.PrinterStatus,
+				SourceObservedAt: item.SourceObservedAt,
+			})
+		}
+		if err != nil {
 			logger.Error("Failed to update printer status", zap.String("printer_id", item.PrinterID), zap.Error(err))
 			failed++
 			errors = append(errors, PrinterStatusError{

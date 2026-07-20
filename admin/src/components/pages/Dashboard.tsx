@@ -1,410 +1,142 @@
-import React, { useState, useEffect } from 'react';
-import { Row, Col, Card, Statistic, Progress, Table, Tag, message, Spin } from 'antd';
-import { 
-  CheckCircleOutlined,
-  ExclamationCircleOutlined,
-  StopOutlined,
-  PrinterOutlined,
-  CloudServerOutlined,
-  FileTextOutlined,
-  UserOutlined
-} from '@ant-design/icons';
-import * as echarts from 'echarts';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Card, Col, Collapse, Empty, Row, Select, Space, Statistic, Table, Typography, message } from 'antd';
+import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
+import { CloudServerOutlined, PrinterOutlined, WarningOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import { buildApiUrl, buildAuthUrl } from '../../config';
 
-// Dashboard 数据接口
-interface DashboardStats {
-  totalPrinters: number;
-  onlinePrinters: number;
-  totalEdgeNodes: number;
-  onlineEdgeNodes: number;
-  totalPrintJobs: number;
-  completedJobs: number;
-  totalUsers: number;
-  activeUsers: number;
-}
-
-interface PrinterStatus {
+interface AlertRecord {
   id: string;
-  name: string;
-  location?: string;
-  status: 'ready' | 'printing' | 'error' | 'offline';
-  edge_node_id: string;
-  model: string;
-  key?: string;
+  resource_type: 'node' | 'printer' | 'job';
+  resource_id: string;
+  node_name?: string;
+  printer_name?: string;
+  job_id?: string;
+  title: string;
+  status: 'open' | 'resolved';
+  first_seen_at: string;
+  last_seen_at: string;
+  resolved_at?: string;
+  duration_seconds?: number;
 }
 
-interface PrintJob {
-  id: string;
-  name: string;
-  user_name: string;
-  printer_id: string;
-  status: 'pending' | 'printing' | 'completed' | 'failed' | 'cancelled';
-  created_at: string;
-  page_count: number;
-  key?: string;
+interface Summary { high: number; offline_nodes: number; unavailable_printers: number; }
+interface AlertPage { items: AlertRecord[]; total: number; page: number; page_size: number; }
+interface MaintenanceData extends AlertPage { summary: Summary; }
+
+const emptySummary: Summary = { high: 0, offline_nodes: 0, unavailable_printers: 0 };
+
+async function api(path: string) {
+  const authResponse = await fetch(buildAuthUrl('me'));
+  const authBody = await authResponse.json();
+  const token = authBody?.data?.access_token;
+  const response = await fetch(buildApiUrl(path), { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const body = await response.json();
+  return body?.data || {};
 }
 
-// Dashboard 服务类
-class DashboardService {
-  private async getToken(): Promise<string | null> {
-    try {
-      const response = await fetch(buildAuthUrl('me'));
-      const result = await response.json();
-      
-      if (result.code === 200 && result.data.access_token) {
-        return result.data.access_token;
-      }
-    } catch (error) {
-      console.error('获取 token 失败:', error);
-    }
-    
-    return null;
-  }
+const resourceLink = (alert: AlertRecord) => {
+  if (alert.resource_type === 'node') return <Link to="/edge-nodes">{alert.node_name || alert.resource_id}</Link>;
+  if (alert.resource_type === 'printer') return <Link to="/printers">{alert.printer_name || alert.resource_id}</Link>;
+  return <Link to="/print-jobs">{alert.job_id || alert.resource_id}</Link>;
+};
 
-  async getStats(): Promise<DashboardStats> {
-    try {
-      const token = await this.getToken();
-      
-      // 并行获取各种统计数据
-      // 注意：打印任务统计不能用 jobs.length（接口默认分页/limit），必须用 pagination.total
-      // completedJobs 也同理：用 status=completed 的 total 来统计
-      const [printersResponse, edgeNodesResponse, printJobsTotalResponse, printJobsCompletedResponse] = await Promise.all([
-        fetch(buildApiUrl('/admin/printers'), {
-          headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
-        }),
-        fetch(buildApiUrl('/admin/edge-nodes'), {
-          headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
-        }),
-        fetch(buildApiUrl('/admin/print-jobs?page=1&page_size=1'), {
-          headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
-        }),
-        fetch(buildApiUrl('/admin/print-jobs?page=1&page_size=1&status=completed'), {
-          headers: { ...(token && { 'Authorization': `Bearer ${token}` }) },
-        })
-      ]);
-      
-      const printersResult = printersResponse.ok ? await printersResponse.json() : null;
-      const edgeNodesResult = edgeNodesResponse.ok ? await edgeNodesResponse.json() : null;
-      const printJobsTotalResult = printJobsTotalResponse.ok ? await printJobsTotalResponse.json() : null;
-      const printJobsCompletedResult = printJobsCompletedResponse.ok ? await printJobsCompletedResponse.json() : null;
-      
-      const printers = printersResult?.data?.items || [];
-      const edgeNodes = edgeNodesResult?.data?.items || [];
-      const totalPrintJobs = printJobsTotalResult?.pagination?.total ?? (printJobsTotalResult?.jobs?.length || 0);
-      const completedJobs = printJobsCompletedResult?.pagination?.total ?? (printJobsCompletedResult?.jobs?.length || 0);
-      
-      // 计算统计数据
-      const onlinePrinters = printers.filter((p: any) => p.status === 'ready' || p.status === 'printing').length;
-      const onlineEdgeNodes = edgeNodes.filter((e: any) => e.status === 'online').length;
-      
-      return {
-        totalPrinters: printers.length,
-        onlinePrinters,
-        totalEdgeNodes: edgeNodes.length,
-        onlineEdgeNodes,
-        totalPrintJobs,
-        completedJobs,
-        totalUsers: 0, // 暂时没有用户统计API
-        activeUsers: 0,
-      };
-    } catch (error) {
-      console.error('获取统计数据失败:', error);
-      throw error;
-    }
-  }
+const durationText = (seconds?: number) => {
+  if (seconds == null) return '-';
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
+  return `${(seconds / 3600).toFixed(1)} 小时`;
+};
 
-  async getPrinters(): Promise<PrinterStatus[]> {
-    try {
-      const token = await this.getToken();
-      const response = await fetch(buildApiUrl('/admin/printers'), {
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        return result.data.items || [];
-      }
-    } catch (error) {
-      console.error('获取打印机列表失败:', error);
-      throw error;
-    }
-    
-    return [];
-  }
-
-  async getPrintJobs(): Promise<{ jobs: PrintJob[]; total: number }> {
-    try {
-      const token = await this.getToken();
-      const response = await fetch(buildApiUrl('/admin/print-jobs?page=1&page_size=5'), {
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        return {
-          jobs: result?.jobs || [],
-          total: result?.pagination?.total || result?.jobs?.length || 0
-        };
-      }
-    } catch (error) {
-      console.error('获取打印任务列表失败:', error);
-      throw error;
-    }
-    
-    return { jobs: [], total: 0 };
-  }
-
-  async getPrintJobTrends(): Promise<{ dates: string[]; completed: number[]; failed: number[] }> {
-    try {
-      const token = await this.getToken();
-      const response = await fetch(buildApiUrl('/admin/dashboard/trends'), {
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        return result.data || { dates: [], completed: [], failed: [] };
-      }
-    } catch (error) {
-      console.error('获取趋势数据失败:', error);
-    }
-    
-    // 如果API不可用，返回模拟数据以便测试图表显示
-    const mockDates = [];
-    const mockCompleted = [];
-    const mockFailed = [];
-    
-    // 生成最近7天的模拟数据
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date();
-      date.setDate(date.getDate() - i);
-      mockDates.push(date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }));
-      mockCompleted.push(Math.floor(Math.random() * 20) + 5); // 5-25之间的随机数
-      mockFailed.push(Math.floor(Math.random() * 5)); // 0-5之间的随机数
-    }
-    
-    return {
-      dates: mockDates,
-      completed: mockCompleted,
-      failed: mockFailed,
-    };
-  }
-}
-
-const dashboardService = new DashboardService();
-
-// Dashboard 组件
 const Dashboard: React.FC = () => {
-  const [stats, setStats] = useState<DashboardStats>({
-    totalPrinters: 0,
-    onlinePrinters: 0,
-    totalEdgeNodes: 0,
-    onlineEdgeNodes: 0,
-    totalPrintJobs: 0,
-    completedJobs: 0,
-    totalUsers: 0,
-    activeUsers: 0,
-  });
-
+  const [maintenance, setMaintenance] = useState<MaintenanceData>({ items: [], total: 0, page: 1, page_size: 20, summary: emptySummary });
+  const [history, setHistory] = useState<AlertPage>({ items: [], total: 0, page: 1, page_size: 10 });
+  const [resourceType, setResourceType] = useState('');
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
-  // 数据加载
-  useEffect(() => {
-    const loadDashboardData = async () => {
-      try {
-        setLoading(true);
+  const loadCurrent = useCallback(async (page = 1) => {
+    const query = new URLSearchParams({ page: String(page), page_size: '20' });
+    if (resourceType) query.set('resource_type', resourceType);
+    const data = await api(`/admin/dashboard/maintenance?${query}`);
+    setMaintenance({
+      items: data.items || [], total: data.total || 0, page: data.page || page,
+      page_size: data.page_size || 20, summary: data.summary || emptySummary,
+    });
+  }, [resourceType]);
 
-        // 只加载统计数据和趋势数据
-        const [statsData, trendsData] = await Promise.all([
-          dashboardService.getStats(),
-          dashboardService.getPrintJobTrends(),
-        ]);
-
-        setStats(statsData);
-
-        // 延迟初始化图表，确保DOM渲染完成
-        setTimeout(() => {
-          const chartElement = document.getElementById('printJobsChart');
-          if (chartElement) {
-            // 清理旧实例
-            echarts.dispose(chartElement);
-            
-            const chart = echarts.init(chartElement);
-          const option = {
-            title: {
-              text: '打印任务趋势',
-              left: 'center',
-              textStyle: {
-                fontSize: 16,
-              },
-            },
-            tooltip: {
-              trigger: 'axis',
-            },
-            legend: {
-              data: ['完成任务', '失败任务'],
-              top: 30,
-            },
-            xAxis: {
-              type: 'category',
-              data: trendsData.dates,
-            },
-            yAxis: {
-              type: 'value',
-            },
-            series: [
-              {
-                name: '完成任务',
-                type: 'line',
-                smooth: true,
-                data: trendsData.completed,
-                itemStyle: {
-                  color: '#52c41a',
-                },
-              },
-              {
-                name: '失败任务',
-                type: 'line',
-                smooth: true,
-                data: trendsData.failed,
-                itemStyle: {
-                  color: '#ff4d4f',
-                },
-              },
-            ],
-          };
-            chart.setOption(option);
-
-            // 响应式处理
-            const handleResize = () => chart.resize();
-            window.addEventListener('resize', handleResize);
-          }
-        }, 500);
-
-      } catch (error) {
-        console.error('加载 Dashboard 数据失败:', error);
-        message.error('加载 Dashboard 数据失败，请稍后重试');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadDashboardData();
+  const loadHistory = useCallback(async (page = 1) => {
+    setHistoryLoading(true);
+    try {
+      const data = await api(`/admin/alerts/history?status=resolved&page=${page}&page_size=10`);
+      setHistory({ items: data.items || [], total: data.total || 0, page: data.page || page, page_size: data.page_size || 10 });
+    } finally { setHistoryLoading(false); }
   }, []);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'ready': return 'success';
-      case 'printing': return 'processing';
-      case 'offline': return 'default';
-      case 'error': return 'error';
-      default: return 'default';
-    }
-  };
+  const refresh = useCallback(async () => {
+    try {
+      await loadCurrent(maintenance.page || 1);
+      if (historyOpen) await loadHistory(history.page || 1);
+    } catch (error) {
+      console.error(error);
+      message.error('运维状态加载失败，请稍后重试');
+    } finally { setLoading(false); }
+  }, [history.page, historyOpen, loadCurrent, loadHistory, maintenance.page]);
 
-  const getJobStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed': return 'success';
-      case 'printing': return 'processing';
-      case 'pending': return 'warning';
-      case 'failed': return 'error';
-      case 'cancelled': return 'default';
-      default: return 'default';
-    }
-  };
+  useEffect(() => {
+    setLoading(true);
+    loadCurrent(1).catch(error => console.error('运维状态加载失败', error)).finally(() => setLoading(false));
+  }, [loadCurrent]);
 
-  // 移除表格列定义，因为不再需要表格
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (!document.hidden) refresh(); }, 30000);
+    const onVisible = () => { if (!document.hidden) refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, [refresh]);
 
-  if (loading) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '400px' 
-      }}>
-        <Spin size="large" tip="加载中..." />
-      </div>
-    );
-  }
+  const currentColumns: ColumnsType<AlertRecord> = [
+    { title: '问题', dataIndex: 'title', width: 220 },
+    { title: '节点', dataIndex: 'node_name', width: 180, render: value => value || '-' },
+    { title: '打印机/任务', key: 'resource', width: 220, render: (_, row) => resourceLink(row) },
+    { title: '首次发生', dataIndex: 'first_seen_at', width: 180, render: value => new Date(value).toLocaleString() },
+    { title: '最后确认', dataIndex: 'last_seen_at', width: 180, render: value => new Date(value).toLocaleString() },
+  ];
+  const historyColumns: ColumnsType<AlertRecord> = [
+    { title: '问题', dataIndex: 'title' },
+    { title: '资源', key: 'resource', render: (_, row) => resourceLink(row) },
+    { title: '发生时间', dataIndex: 'first_seen_at', render: value => new Date(value).toLocaleString() },
+    { title: '恢复时间', dataIndex: 'resolved_at', render: value => value ? new Date(value).toLocaleString() : '-' },
+    { title: '持续时长', dataIndex: 'duration_seconds', render: durationText },
+  ];
+  const pagination = (data: AlertPage, onChange: (page: number) => void): TablePaginationConfig => ({
+    current: data.page, pageSize: data.page_size, total: data.total, showSizeChanger: false, onChange,
+  });
 
-  return (
-    <div>
-      {/* 统计卡片 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={12} sm={12} md={6}>
-          <Card style={{ height: 120, minHeight: 120 }} bodyStyle={{ padding: '16px 12px' }}>
-            <Statistic
-              title="打印机总数"
-              value={stats.totalPrinters}
-              prefix={<PrinterOutlined />}
-              valueStyle={{ fontSize: '20px' }}
-            />
-            <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: '4px' }}>
-              在线: {stats.onlinePrinters} 台
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={12} md={6}>
-          <Card style={{ height: 120, minHeight: 120 }} bodyStyle={{ padding: '16px 12px' }}>
-            <Statistic
-              title="边缘节点"
-              value={stats.totalEdgeNodes}
-              prefix={<CloudServerOutlined />}
-              valueStyle={{ fontSize: '20px' }}
-            />
-            <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: '4px' }}>
-              在线: {stats.onlineEdgeNodes} 个
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={12} md={6}>
-          <Card style={{ height: 120, minHeight: 120 }} bodyStyle={{ padding: '16px 12px' }}>
-            <Statistic
-              title="打印任务"
-              value={stats.totalPrintJobs}
-              prefix={<FileTextOutlined />}
-              valueStyle={{ fontSize: '20px' }}
-            />
-            <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: '4px' }}>
-              完成: {stats.completedJobs} 个
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={12} md={6}>
-          <Card style={{ height: 120, minHeight: 120 }} bodyStyle={{ padding: '16px 12px' }}>
-            <Statistic
-              title="用户总数"
-              value={stats.totalUsers}
-              prefix={<UserOutlined />}
-              valueStyle={{ fontSize: '20px' }}
-            />
-            <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: '4px' }}>
-              活跃: {stats.activeUsers} 人
-            </div>
-          </Card>
-        </Col>
-      </Row>
-
-      {/* 移除设备状态和最近任务列表，用户可以直接访问对应页面 */}
-
-      {/* 图表区域 */}
-      <Row style={{ marginTop: 16 }}>
-        <Col span={24}>
-          <Card title="任务趋势分析">
-            <div id="printJobsChart" style={{ height: '300px', width: '100%' }}></div>
-          </Card>
-        </Col>
-      </Row>
-    </div>
-  );
+  return <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Typography.Title level={3} style={{ margin: 0 }}>运维状态</Typography.Title>
+    <Row gutter={[16, 16]}>
+      <Col xs={24} lg={8}><Card><Statistic title="高优先级" value={maintenance.summary.high} valueStyle={{ color: maintenance.summary.high ? '#cf1322' : undefined }} prefix={<WarningOutlined />} /></Card></Col>
+      <Col xs={24} lg={8}><Card><Statistic title="离线节点" value={maintenance.summary.offline_nodes} prefix={<CloudServerOutlined />} /></Card></Col>
+      <Col xs={24} lg={8}><Card><Statistic title="不可用打印机" value={maintenance.summary.unavailable_printers} prefix={<PrinterOutlined />} /></Card></Col>
+    </Row>
+    <Card title="需要立即处理" extra={<Select value={resourceType} style={{ width: 120 }} onChange={setResourceType}
+      options={[{ value: '', label: '全部资源' }, { value: 'node', label: '节点' }, { value: 'printer', label: '打印机' }, { value: 'job', label: '任务' }]} />}>
+      <Table rowKey="id" loading={loading} dataSource={maintenance.items} columns={currentColumns}
+        pagination={pagination(maintenance, page => loadCurrent(page).catch(() => message.error('告警加载失败')))}
+        locale={{ emptyText: <Empty description="当前没有需要立即处理的问题" /> }} />
+    </Card>
+    <Collapse onChange={keys => {
+      const open = (Array.isArray(keys) ? keys : [keys]).includes('history');
+      setHistoryOpen(open);
+      if (open && !historyOpen) loadHistory(1).catch(() => message.error('告警历史加载失败'));
+    }} items={[{ key: 'history', label: '告警历史', children:
+      <Table rowKey="id" size="small" loading={historyLoading} dataSource={history.items} columns={historyColumns}
+        pagination={pagination(history, page => loadHistory(page).catch(() => message.error('告警历史加载失败')))}
+        locale={{ emptyText: '暂无恢复记录' }} /> }]} />
+  </Space>;
 };
 
 export default Dashboard;

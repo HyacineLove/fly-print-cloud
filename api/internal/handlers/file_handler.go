@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"fly-print-cloud/api/internal/business"
 	"fly-print-cloud/api/internal/config"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
+	"fly-print-cloud/api/internal/operations"
 	"fly-print-cloud/api/internal/security"
 	"fly-print-cloud/api/internal/storage"
 	"fly-print-cloud/api/internal/utils"
@@ -245,6 +247,7 @@ var (
 	errPrinterNotFound        = errors.New("Printer not found")
 	errPrinterNotBelongToNode = errors.New("Printer does not belong to this node")
 	errPrinterDisabled        = errors.New("Printer has been disabled by administrator")
+	errPrinterUnavailable     = errors.New("Printer is not currently available")
 )
 
 func (h *FileHandler) validateUploadRules(fileHeader *multipart.FileHeader, srcFile multipart.File) error {
@@ -580,6 +583,9 @@ func (h *FileHandler) ensureUploadTargetActive(nodeID, printerID string) error {
 	if !printer.Enabled {
 		return errPrinterDisabled
 	}
+	if reason := operations.ValidatePrinterDispatch(printer, node, time.Now()); reason != "" {
+		return errPrinterUnavailable
+	}
 
 	return nil
 }
@@ -596,6 +602,8 @@ func uploadTargetErrorCode(err error) string {
 		return "printer_not_belong_to_node"
 	case errPrinterDisabled:
 		return "printer_disabled"
+	case errPrinterUnavailable:
+		return "printer_unavailable"
 	default:
 		return "unknown_error"
 	}

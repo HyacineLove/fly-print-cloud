@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +15,7 @@ import (
 	"fly-print-cloud/api/internal/handlers"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/middleware"
+	"fly-print-cloud/api/internal/operations"
 	"fly-print-cloud/api/internal/security"
 	"fly-print-cloud/api/internal/storage"
 	"fly-print-cloud/api/internal/websocket"
@@ -106,6 +106,8 @@ func main() {
 	printJobRepo := database.NewPrintJobRepository(db)
 	fileRepo := database.NewFileRepository(db)
 	tokenUsageRepo := database.NewTokenUsageRepository(db)
+	alertRepo := database.NewOperationalAlertRepository(db)
+	statusService := operations.NewStatusService(db, alertRepo)
 	systemSettingsRepo := database.NewSystemSettingsRepository(db)
 	businessSettingsService := business.NewSettingsService(systemSettingsRepo, cfg)
 
@@ -131,22 +133,42 @@ func main() {
 	go startStaleJobCleanupTask(printJobRepo)
 
 	// 初始化 WebSocket 管理器
-	wsManager := websocket.NewConnectionManager(tokenManager)
-	wsHandler := websocket.NewWebSocketHandler(wsManager, printerRepo, edgeNodeRepo, printJobRepo, fileRepo, tokenManager, cfg.Server.AllowedOrigins)
-
-	// 启动pending任务重试机制（每5分钟检查一次超过3分钟的pending任务）
-	go startPendingJobRetryTask(printJobRepo, printerRepo, wsManager)
+	wsManager := websocket.NewConnectionManager(tokenManager, statusService)
+	wsHandler := websocket.NewWebSocketHandler(wsManager, printerRepo, edgeNodeRepo, printJobRepo, fileRepo, tokenManager, cfg.Server.AllowedOrigins, statusService)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for now := range ticker.C {
+			if err := statusService.Sweep(now); err != nil {
+				logger.Error("Operational status sweep failed", zap.Error(err))
+			}
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if _, err := alertRepo.CleanupResolved(90 * 24 * time.Hour); err != nil {
+				logger.Error("Alert history cleanup failed", zap.Error(err))
+			}
+		}
+	}()
 
 	// 初始化内置认证服务（builtin 模式）
 	var builtinAuth *auth.BuiltinAuthService
 	var oauth2ClientRepo *database.OAuth2ClientRepository
+	var oauth2SecretCipher *security.ClientSecretCipher
 	if cfg.OAuth2.IsBuiltinMode() {
+		oauth2SecretCipher, err = security.NewClientSecretCipher(cfg.Security.OAuthClientSecretEncryptionKey)
+		if err != nil {
+			logger.Fatal("Invalid OAuth client secret encryption key", zap.Error(err))
+		}
 		oauth2ClientRepo = database.NewOAuth2ClientRepository(db)
 		builtinAuth = auth.NewBuiltinAuthService(oauth2ClientRepo, userRepo, &cfg.OAuth2)
 		logger.Info("OAuth2 mode: builtin (embedded auth service)")
 
 		// 创建默认 Edge OAuth2 客户端（首次启动）
-		if err := db.CreateDefaultOAuth2Client(); err != nil {
+		if err := db.CreateDefaultOAuth2Client(oauth2SecretCipher); err != nil {
 			logger.Warn("Failed to create default OAuth2 client", zap.Error(err))
 		}
 	} else {
@@ -156,8 +178,8 @@ func main() {
 	// 初始化处理器
 	userHandler := handlers.NewUserHandler(userRepo)
 	edgeNodeHandler := handlers.NewEdgeNodeHandler(db, edgeNodeRepo, printerRepo, wsManager, tokenUsageRepo)
-	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo, printJobRepo, wsManager, tokenUsageRepo)
-	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, edgeNodeRepo, wsManager)
+	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo, printJobRepo, wsManager, tokenUsageRepo, statusService)
+	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, edgeNodeRepo, wsManager, statusService)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo, builtinAuth)
 	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, storageService, wsManager, tokenManager, businessSettingsService, edgeNodeRepo, printerRepo)
 	businessSettingsHandler := handlers.NewBusinessSettingsHandler(businessSettingsService)
@@ -185,7 +207,7 @@ func main() {
 	r.Use(middleware.SecurityHeadersMiddleware())
 
 	// 设置路由
-	setupRoutes(r, userHandler, edgeNodeHandler, printerHandler, printJobHandler, wsHandler, oauth2Handler, fileHandler, businessSettingsHandler, healthHandler, printJobRepo, edgeNodeRepo, printerRepo, oauth2ClientRepo)
+	setupRoutes(r, userHandler, edgeNodeHandler, printerHandler, printJobHandler, wsHandler, oauth2Handler, fileHandler, businessSettingsHandler, healthHandler, printJobRepo, edgeNodeRepo, printerRepo, alertRepo, oauth2ClientRepo, oauth2SecretCipher)
 
 	// 创建HTTP服务器
 	serverAddr := cfg.Server.GetServerAddr()
@@ -221,7 +243,7 @@ func main() {
 	logger.Info("Server exited")
 }
 
-func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandler *handlers.EdgeNodeHandler, printerHandler *handlers.PrinterHandler, printJobHandler *handlers.PrintJobHandler, wsHandler *websocket.WebSocketHandler, oauth2Handler *handlers.OAuth2Handler, fileHandler *handlers.FileHandler, businessSettingsHandler *handlers.BusinessSettingsHandler, healthHandler *handlers.HealthHandler, printJobRepo *database.PrintJobRepository, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, oauth2ClientRepo *database.OAuth2ClientRepository) {
+func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandler *handlers.EdgeNodeHandler, printerHandler *handlers.PrinterHandler, printJobHandler *handlers.PrintJobHandler, wsHandler *websocket.WebSocketHandler, oauth2Handler *handlers.OAuth2Handler, fileHandler *handlers.FileHandler, businessSettingsHandler *handlers.BusinessSettingsHandler, healthHandler *handlers.HealthHandler, printJobRepo *database.PrintJobRepository, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, alertRepo *database.OperationalAlertRepository, oauth2ClientRepo *database.OAuth2ClientRepository, oauth2SecretCipher *security.ClientSecretCipher) {
 	// Swagger 文档路由
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
@@ -256,8 +278,10 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 			// Dashboard 路由 - 需要 admin 或 operator 权限
 			dashboardGroup := adminGroup.Group("/dashboard", middleware.OAuth2ResourceServer("fly-print-admin", "fly-print-operator"))
 			{
-				dashboardHandler := handlers.NewDashboardHandler(printJobRepo)
+				dashboardHandler := handlers.NewDashboardHandler(printJobRepo, alertRepo)
 				dashboardGroup.GET("/trends", dashboardHandler.GetTrends)
+				dashboardGroup.GET("/maintenance", dashboardHandler.GetMaintenance)
+				adminGroup.GET("/alerts/history", middleware.OAuth2ResourceServer("fly-print-admin", "fly-print-operator"), dashboardHandler.GetAlertHistory)
 			}
 
 			// 用户管理路由 - 需要 admin 权限
@@ -314,12 +338,13 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 			if oauth2ClientRepo != nil {
 				oauth2ClientGroup := adminGroup.Group("/oauth2-clients", middleware.OAuth2ResourceServer("fly-print-admin"))
 				{
-					oauth2ClientHandler := handlers.NewOAuth2ClientHandler(oauth2ClientRepo)
+					oauth2ClientHandler := handlers.NewOAuth2ClientHandler(oauth2ClientRepo, oauth2SecretCipher)
 					oauth2ClientGroup.GET("", oauth2ClientHandler.List)
 					oauth2ClientGroup.POST("", oauth2ClientHandler.Create)
 					oauth2ClientGroup.GET("/:id", oauth2ClientHandler.Get)
 					oauth2ClientGroup.PUT("/:id", oauth2ClientHandler.Update)
 					oauth2ClientGroup.PUT("/:id/secret", oauth2ClientHandler.ResetSecret)
+					oauth2ClientGroup.POST("/:id/secret/copy", oauth2ClientHandler.CopySecret)
 					oauth2ClientGroup.DELETE("/:id", oauth2ClientHandler.Delete)
 				}
 			}
@@ -463,109 +488,6 @@ func startTokenCleanupTask(tokenUsageRepo *database.TokenUsageRepository) {
 			logger.Error("Token cleanup error", zap.Error(err))
 		} else if deleted > 0 {
 			logger.Info("Token cleanup completed", zap.Int64("deleted", deleted))
-		}
-	}
-}
-
-// startPendingJobRetryTask 启动pending任务重试机制
-// 每5分钟检查一次创建时间超过3分钟的pending任务，并尝试重新分发
-func startPendingJobRetryTask(printJobRepo *database.PrintJobRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	logger.Info("Pending job retry task started (checking every 5 minutes)")
-
-	for range ticker.C {
-		// 查询创建时间超过3分钟的pending任务
-		jobs, err := printJobRepo.GetPendingJobsForRetry(3 * time.Minute)
-		if err != nil {
-			logger.Error("Failed to fetch pending jobs for retry", zap.Error(err))
-			continue
-		}
-
-		if len(jobs) == 0 {
-			continue
-		}
-
-		logger.Info("Found pending jobs for retry", zap.Int("count", len(jobs)))
-
-		for _, job := range jobs {
-			// 获取打印机信息
-			printer, err := printerRepo.GetPrinterByID(job.PrinterID)
-			if err != nil {
-				logger.Error("Failed to get printer for retry", zap.String("job_id", job.ID), zap.Error(err))
-				continue
-			}
-
-			if printer == nil {
-				logger.Warn("Printer not found for pending job", zap.String("job_id", job.ID), zap.String("printer_id", job.PrinterID))
-				// 打印机已删除，将任务标记为失败
-				job.Status = "failed"
-				job.ErrorMessage = "Printer not found"
-				now := time.Now()
-				job.EndTime = &now
-				if updateErr := printJobRepo.UpdatePrintJob(job); updateErr != nil {
-					logger.Error("Failed to mark job as failed", zap.String("job_id", job.ID), zap.Error(updateErr))
-				}
-				continue
-			}
-
-			// 检查节点和打印机是否可用
-			if !printer.Enabled {
-				logger.Debug("Printer disabled, skip retry", zap.String("job_id", job.ID), zap.String("printer_id", printer.ID))
-				continue
-			}
-
-			// 检查节点是否在线
-			if !wsManager.IsNodeConnected(printer.EdgeNodeID) {
-				logger.Debug("Edge node not connected, skip retry", zap.String("job_id", job.ID), zap.String("node_id", printer.EdgeNodeID))
-				continue
-			}
-
-			// 检查重试次数是否超过限制
-			if job.RetryCount >= job.MaxRetries {
-				logger.Warn("Job exceeded max retries, marking as failed",
-					zap.String("job_id", job.ID),
-					zap.Int("retry_count", job.RetryCount),
-					zap.Int("max_retries", job.MaxRetries))
-
-				// 标记任务为失败
-				job.Status = "failed"
-				job.ErrorMessage = fmt.Sprintf("Exceeded max retries (%d/%d)", job.RetryCount, job.MaxRetries)
-				now := time.Now()
-				job.EndTime = &now
-
-				if updateErr := printJobRepo.UpdatePrintJob(job); updateErr != nil {
-					logger.Error("Failed to mark job as failed", zap.String("job_id", job.ID), zap.Error(updateErr))
-				}
-				continue
-			}
-
-			// 尝试重新分发任务
-			logger.Info("Retrying to dispatch pending job",
-				zap.String("job_id", job.ID),
-				zap.String("node_id", printer.EdgeNodeID),
-				zap.Int("retry_count", job.RetryCount))
-
-			// 增加重试计数
-			job.RetryCount++
-
-			err = wsManager.DispatchPrintJob(printer.EdgeNodeID, job, printer.Name)
-			if err != nil {
-				logger.Warn("Failed to retry dispatch job", zap.String("job_id", job.ID), zap.Error(err))
-				// 分发失败，更新retry_count后保持pending状态，下次继续重试
-				if updateErr := printJobRepo.UpdatePrintJob(job); updateErr != nil {
-					logger.Error("Failed to update retry count", zap.String("job_id", job.ID), zap.Error(updateErr))
-				}
-			} else {
-				// 分发成功，更新状态为dispatched
-				job.Status = "dispatched"
-				if updateErr := printJobRepo.UpdatePrintJob(job); updateErr != nil {
-					logger.Error("Failed to update job status to dispatched", zap.String("job_id", job.ID), zap.Error(updateErr))
-				} else {
-					logger.Info("Successfully retried dispatch job", zap.String("job_id", job.ID))
-				}
-			}
 		}
 	}
 }
