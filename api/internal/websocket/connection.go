@@ -1,8 +1,10 @@
 package websocket
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,20 +38,21 @@ const (
 
 // Connection 表示单个 WebSocket 连接
 type Connection struct {
-	NodeID        string
-	Conn          *websocket.Conn
-	Send          chan []byte
-	done          chan struct{}
-	closeOnce     sync.Once
-	Manager       *ConnectionManager
-	PrinterRepo   *database.PrinterRepository
-	EdgeNodeRepo  *database.EdgeNodeRepository
-	PrintJobRepo  *database.PrintJobRepository
-	FileRepo      *database.FileRepository
-	TokenManager  *security.TokenManager
-	StatusService *operations.StatusService
+	NodeID           string
+	Conn             *websocket.Conn
+	Send             chan []byte
+	done             chan struct{}
+	closeOnce        sync.Once
+	Manager          *ConnectionManager
+	PrinterRepo      *database.PrinterRepository
+	EdgeNodeRepo     *database.EdgeNodeRepository
+	PrintJobRepo     *database.PrintJobRepository
+	FileRepo         *database.FileRepository
+	TokenManager     *security.TokenManager
+	StatusService    *operations.StatusService
+	Receipts         *database.EdgeJobUpdateReceiptRepository
 	TerminalSessions *database.TerminalSessionRepository
-	Callbacks *database.IntegrationCallbackRepository
+	Callbacks        *database.IntegrationCallbackRepository
 
 	// ACK 机制相关
 	pendingAcks map[string]chan struct{}
@@ -57,22 +60,23 @@ type Connection struct {
 }
 
 // NewConnection 创建新连接
-func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository) *Connection {
+func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService, receipts *database.EdgeJobUpdateReceiptRepository, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository) *Connection {
 	return &Connection{
-		NodeID:        nodeID,
-		Conn:          conn,
-		Send:          make(chan []byte, 256),
-		done:          make(chan struct{}),
-		Manager:       manager,
-		PrinterRepo:   printerRepo,
-		EdgeNodeRepo:  edgeNodeRepo,
-		PrintJobRepo:  printJobRepo,
-		FileRepo:      fileRepo,
-		TokenManager:  tokenManager,
-		StatusService: statusService,
+		NodeID:           nodeID,
+		Conn:             conn,
+		Send:             make(chan []byte, 256),
+		done:             make(chan struct{}),
+		Manager:          manager,
+		PrinterRepo:      printerRepo,
+		EdgeNodeRepo:     edgeNodeRepo,
+		PrintJobRepo:     printJobRepo,
+		FileRepo:         fileRepo,
+		TokenManager:     tokenManager,
+		StatusService:    statusService,
+		Receipts:         receipts,
 		TerminalSessions: terminalSessions,
-		Callbacks: callbacks,
-		pendingAcks:   make(map[string]chan struct{}),
+		Callbacks:        callbacks,
+		pendingAcks:      make(map[string]chan struct{}),
 	}
 }
 
@@ -461,7 +465,7 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 	logger.Info("Print job created for file", zap.String("job_id", job.ID), zap.String("file_id", file.ID))
 
 	// 分发必须离开读取循环执行，否则读取循环无法消费 Edge 返回的 ACK。
-	go DispatchPrintJobAndRecord(c.Manager, c.PrintJobRepo, c.StatusService, job, printer.EdgeNodeID, printer.Name)
+	go DispatchPrintJobAndRecord(c.Manager, c.PrintJobRepo, c.StatusService, job, printer.EdgeNodeID)
 }
 
 // handleHeartbeat 处理心跳消息
@@ -656,24 +660,67 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 
 	logger.Debug("Job update data", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status), zap.String("error_code", jobData.ErrorCode), zap.String("error", errMsg))
 
-	// 终态保护：任务已完成或已失败时，不再接受后续状态覆盖。
-	// 这可避免Edge迟到上报覆盖云端人工取消（failed）结果。
 	existingJob, err := c.PrintJobRepo.GetPrintJobByID(jobData.JobID)
 	if err != nil {
 		logger.Error("Failed to get current job before update", zap.String("job_id", jobData.JobID), zap.Error(err))
+		c.sendJobUpdateAck(jobData.EventID, jobData.JobID, "rejected", "job_lookup_failed")
 		return
 	}
 	if existingJob == nil {
 		logger.Warn("Job not found when handling status update", zap.String("job_id", jobData.JobID))
+		c.sendJobUpdateAck(jobData.EventID, jobData.JobID, "rejected", "job_not_found")
+		return
+	}
+	printer, err := c.PrinterRepo.GetPrinterByID(existingJob.PrinterID)
+	if err != nil || printer == nil || printer.EdgeNodeID != c.NodeID {
+		logger.Warn("Rejecting job update for a job not owned by this node", zap.String("job_id", jobData.JobID), zap.String("node_id", c.NodeID))
+		c.sendJobUpdateAck(jobData.EventID, jobData.JobID, "rejected", "job_node_mismatch")
 		return
 	}
 	if c.Callbacks != nil {
 		matched, err := c.Callbacks.ValidateJobContext(jobData.JobID, jobData.TerminalSessionID, jobData.TerminalTicketHash, jobData.IntegrationRequestID)
 		if err != nil || !matched {
 			logger.Warn("Ignoring job update with invalid integration terminal context", zap.String("job_id", jobData.JobID), zap.String("node_id", c.NodeID))
+			c.sendJobUpdateAck(jobData.EventID, jobData.JobID, "rejected", "terminal_context_mismatch")
 			return
 		}
 	}
+
+	if isTerminalJobStatus(jobData.Status) {
+		if _, err := uuid.Parse(jobData.EventID); err != nil {
+			logger.Warn("Rejecting terminal job update without a valid event ID", zap.String("job_id", jobData.JobID))
+			c.sendJobUpdateAck(jobData.EventID, jobData.JobID, "rejected", "event_id_required")
+			return
+		}
+		if c.StatusService == nil || c.Receipts == nil {
+			logger.Error("Terminal job-update persistence unavailable", zap.String("job_id", jobData.JobID))
+			return
+		}
+		result, err := c.StatusService.ApplyTerminalJobUpdate(c.Receipts, operations.TerminalJobUpdate{
+			EventID: jobData.EventID, PayloadHash: terminalJobUpdatePayloadHash(jobData), NodeID: c.NodeID,
+			JobID: jobData.JobID, Status: jobData.Status, ErrorCode: jobData.ErrorCode, ErrorMessage: errMsg,
+		})
+		if err != nil {
+			logger.Error("Failed to persist terminal job update", zap.String("job_id", jobData.JobID), zap.Error(err))
+			return
+		}
+		if !result.Accepted {
+			c.sendJobUpdateAck(jobData.EventID, jobData.JobID, "rejected", result.Reason)
+			return
+		}
+		if result.Changed && c.Callbacks != nil {
+			integrationStatus := map[string]string{"completed": "completed", "failed": "failed", "canceled": "cancelled", "unconfirmed": "failed"}[jobData.Status]
+			if integrationStatus != "" {
+				_ = c.Callbacks.TransitionForJob(jobData.JobID, integrationStatus, jobData.ErrorCode, errMsg)
+			}
+		}
+		c.sendJobUpdateAck(jobData.EventID, jobData.JobID, "accepted", "")
+		logger.Info("Terminal job update accepted", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status), zap.String("event_id", jobData.EventID))
+		return
+	}
+
+	// Process-state reports are intentionally realtime-only. They do not use the
+	// durable terminal receipt protocol and cannot overwrite a terminal result.
 	dispatchUnconfirmed := existingJob.Status == "unconfirmed" && existingJob.ErrorCode == "dispatch_ack_timeout"
 	if (existingJob.Status == "completed" || existingJob.Status == "failed" || existingJob.Status == "canceled" || existingJob.Status == "unconfirmed") && !dispatchUnconfirmed {
 		logger.Debug("Ignoring late status update for terminal job", zap.String("job_id", jobData.JobID), zap.String("current_status", existingJob.Status), zap.String("incoming_status", jobData.Status))
@@ -689,11 +736,41 @@ func (c *Connection) handleJobUpdate(msg *Message) {
 		return
 	}
 	if c.Callbacks != nil {
-		integrationStatus := map[string]string{"processing":"printing","completed":"completed","failed":"failed","canceled":"cancelled","unconfirmed":"failed"}[jobData.Status]
-		if integrationStatus != "" { _ = c.Callbacks.TransitionForJob(jobData.JobID, integrationStatus, jobData.ErrorCode, errMsg) }
+		integrationStatus := map[string]string{"processing": "printing", "completed": "completed", "failed": "failed", "canceled": "cancelled", "unconfirmed": "failed"}[jobData.Status]
+		if integrationStatus != "" {
+			_ = c.Callbacks.TransitionForJob(jobData.JobID, integrationStatus, jobData.ErrorCode, errMsg)
+		}
 	}
 
 	logger.Info("Successfully updated job status", zap.String("job_id", jobData.JobID), zap.String("status", jobData.Status))
+}
+
+func isTerminalJobStatus(status string) bool {
+	return status == "completed" || status == "failed" || status == "canceled" || status == "unconfirmed"
+}
+
+func terminalJobUpdatePayloadHash(data JobUpdateData) string {
+	message := ""
+	if data.ErrorMessage != nil {
+		message = *data.ErrorMessage
+	}
+	plain := strings.Join([]string{data.JobID, data.Status, data.ErrorCode, message, data.TerminalSessionID, data.TerminalTicketHash, data.IntegrationRequestID}, "\n")
+	sum := sha256.Sum256([]byte(plain))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func (c *Connection) sendJobUpdateAck(eventID, jobID, status, reason string) {
+	if eventID == "" {
+		return
+	}
+	message, err := json.Marshal(Message{Type: CmdTypeJobUpdateAck, NodeID: c.NodeID, Timestamp: time.Now(), Data: JobUpdateAckPayload{EventID: eventID, JobID: jobID, Status: status, Reason: reason}})
+	if err != nil {
+		logger.Error("Failed to marshal job-update acknowledgement", zap.Error(err))
+		return
+	}
+	if err := c.enqueue(message); err != nil {
+		logger.Warn("Unable to send job-update acknowledgement", zap.String("node_id", c.NodeID), zap.String("event_id", eventID), zap.Error(err))
+	}
 }
 
 // SendCommand 发送指令到 Edge Node

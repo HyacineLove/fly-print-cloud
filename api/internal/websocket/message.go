@@ -12,12 +12,12 @@ type Message struct {
 
 // 上行消息类型
 const (
-	MsgTypeHeartbeat          = "edge_heartbeat"
-	MsgTypeJobUpdate          = "job_update"
-	MsgTypeSubmitPrintParams  = "submit_print_params"
-	MsgTypeRequestUploadToken = "request_upload_token" // 请求上传凭证
+	MsgTypeHeartbeat            = "edge_heartbeat"
+	MsgTypeJobUpdate            = "job_update"
+	MsgTypeSubmitPrintParams    = "submit_print_params"
+	MsgTypeRequestUploadToken   = "request_upload_token" // 请求上传凭证
 	MsgTypeTerminalSessionState = "terminal_session_state"
-	MsgTypeAck                = "ack"                  // 确认消息
+	MsgTypeAck                  = "ack" // 确认消息
 )
 
 // 下行指令类型
@@ -29,6 +29,7 @@ const (
 	CmdTypeNodeState    = "node_state"
 	CmdTypeError        = "error"        // 错误消息，用于通知 Edge 端操作失败
 	CmdTypeUploadToken  = "upload_token" // 下发上传凭证
+	CmdTypeJobUpdateAck = "job_update_ack"
 )
 
 // PreviewFilePayload 文件预览请求载荷
@@ -100,13 +101,23 @@ type SystemInfo struct {
 
 // 任务状态更新数据
 type JobUpdateData struct {
-	JobID        string  `json:"job_id"`
-	Status       string  `json:"status"`
-	ErrorCode    string  `json:"error_code"`
-	ErrorMessage *string `json:"error_message"`
-	TerminalSessionID string `json:"terminal_session_id,omitempty"`
-	TerminalTicketHash string `json:"terminal_ticket_hash,omitempty"`
-	IntegrationRequestID string `json:"integration_request_id,omitempty"`
+	EventID              string  `json:"event_id,omitempty"`
+	JobID                string  `json:"job_id"`
+	Status               string  `json:"status"`
+	ErrorCode            string  `json:"error_code"`
+	ErrorMessage         *string `json:"error_message"`
+	TerminalSessionID    string  `json:"terminal_session_id,omitempty"`
+	TerminalTicketHash   string  `json:"terminal_ticket_hash,omitempty"`
+	IntegrationRequestID string  `json:"integration_request_id,omitempty"`
+}
+
+// JobUpdateAckPayload is sent only after Cloud has durably accepted or
+// explicitly rejected an Edge terminal job-update event.
+type JobUpdateAckPayload struct {
+	EventID string `json:"event_id"`
+	JobID   string `json:"job_id"`
+	Status  string `json:"status"` // accepted/rejected
+	Reason  string `json:"reason,omitempty"`
 }
 
 // 打印任务分发数据
@@ -114,7 +125,6 @@ type PrintJobData struct {
 	JobID                    string     `json:"job_id"`
 	Name                     string     `json:"name"`
 	PrinterID                string     `json:"printer_id"`
-	PrinterName              string     `json:"printer_name"`
 	FilePath                 string     `json:"file_path,omitempty"`
 	FileURL                  string     `json:"file_url,omitempty"`
 	ContentHash              string     `json:"content_hash"`
@@ -127,9 +137,9 @@ type PrintJobData struct {
 	ColorMode                string     `json:"color_mode"`
 	DuplexMode               string     `json:"duplex_mode"`
 	MaxRetries               int        `json:"max_retries"`
-	TerminalSessionID         string     `json:"terminal_session_id,omitempty"`
-	TerminalTicketHash        string     `json:"terminal_ticket_hash,omitempty"`
-	IntegrationRequestID      string     `json:"integration_request_id,omitempty"`
+	TerminalSessionID        string     `json:"terminal_session_id,omitempty"`
+	TerminalTicketHash       string     `json:"terminal_ticket_hash,omitempty"`
+	IntegrationRequestID     string     `json:"integration_request_id,omitempty"`
 }
 
 // RequestUploadTokenPayload 请求上传凭证载荷 (Edge -> Cloud)

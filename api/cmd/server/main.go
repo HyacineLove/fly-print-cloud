@@ -157,7 +157,8 @@ func main() {
 	wsManager := websocket.NewConnectionManager(tokenManager, statusService)
 	integrationTerminalDispatcher := integration.NewTerminalDispatcher(integrationRequestRepo, database.NewTerminalSessionRepository(db), fileRepo, printerRepo, printJobRepo, wsManager, statusService)
 	go integrationTerminalDispatcher.Run(context.Background())
-	wsHandler := websocket.NewWebSocketHandler(wsManager, printerRepo, edgeNodeRepo, printJobRepo, fileRepo, tokenManager, cfg.Server.AllowedOrigins, statusService, database.NewTerminalSessionRepository(db), integrationCallbackRepo)
+	jobUpdateReceiptRepo := database.NewEdgeJobUpdateReceiptRepository(db)
+	wsHandler := websocket.NewWebSocketHandler(wsManager, printerRepo, edgeNodeRepo, printJobRepo, fileRepo, tokenManager, cfg.Server.AllowedOrigins, statusService, jobUpdateReceiptRepo, database.NewTerminalSessionRepository(db), integrationCallbackRepo)
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()

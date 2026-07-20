@@ -234,25 +234,24 @@ func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, 
 }
 
 // DispatchPrintJob 发送打印任务指令
-func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob, printerName string) error {
+func (m *ConnectionManager) DispatchPrintJob(nodeID string, job *models.PrintJob) error {
 	// 构造打印任务数据
 	printJobData := PrintJobData{
-		JobID:       job.ID,
-		Name:        job.Name,
-		PrinterID:   job.PrinterID,
-		PrinterName: printerName,
-		FilePath:    job.FilePath,
-		FileURL:     job.FileURL,
-		ContentHash: job.ContentHash,
-		FileSize:    job.FileSize,
-		PageCount:   job.PageCount,
-		Copies:      job.Copies,
-		PaperSize:   job.PaperSize,
-		ColorMode:   job.ColorMode,
-		DuplexMode:  job.DuplexMode,
-		MaxRetries:  job.MaxRetries,
-		TerminalSessionID: job.TerminalSessionID,
-		TerminalTicketHash: job.TerminalTicketHash,
+		JobID:                job.ID,
+		Name:                 job.Name,
+		PrinterID:            job.PrinterID,
+		FilePath:             job.FilePath,
+		FileURL:              job.FileURL,
+		ContentHash:          job.ContentHash,
+		FileSize:             job.FileSize,
+		PageCount:            job.PageCount,
+		Copies:               job.Copies,
+		PaperSize:            job.PaperSize,
+		ColorMode:            job.ColorMode,
+		DuplexMode:           job.DuplexMode,
+		MaxRetries:           job.MaxRetries,
+		TerminalSessionID:    job.TerminalSessionID,
+		TerminalTicketHash:   job.TerminalTicketHash,
 		IntegrationRequestID: job.IntegrationRequestID,
 	}
 

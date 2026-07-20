@@ -207,7 +207,7 @@ func (h *PrintJobHandler) CreatePrintJob(c *gin.Context) {
 
 	// 打印机信息已在上面获取并校验过
 
-	go websocket.DispatchPrintJobAndRecord(h.wsManager, h.printJobRepo, h.statusService, job, printer.EdgeNodeID, printer.Name)
+	go websocket.DispatchPrintJobAndRecord(h.wsManager, h.printJobRepo, h.statusService, job, printer.EdgeNodeID)
 
 	c.JSON(http.StatusCreated, job)
 }

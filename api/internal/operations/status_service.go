@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -21,6 +22,18 @@ type HeartbeatSnapshot struct {
 type PrinterSnapshot struct {
 	PrinterID, PrinterStatus string
 	SourceObservedAt         *time.Time
+}
+
+// TerminalJobUpdate is the durable Edge-to-Cloud result contract. EventID and
+// PayloadHash let Cloud acknowledge a retried report without applying it twice.
+type TerminalJobUpdate struct {
+	EventID, PayloadHash, NodeID, JobID, Status, ErrorCode, ErrorMessage string
+}
+
+type TerminalJobUpdateResult struct {
+	Accepted bool
+	Changed  bool
+	Reason   string
 }
 
 type StatusService struct {
@@ -98,7 +111,7 @@ func (s *StatusService) ApplyHeartbeat(nodeID string, h HeartbeatSnapshot) error
 			}
 		}
 	}
-			managed := []string{"disk_usage_critical", "memory_usage_critical"}
+	managed := []string{"disk_usage_critical", "memory_usage_critical"}
 	if err = s.alerts.ResolveReasonsTx(tx, "node", nodeID, managed, active); err != nil {
 		return err
 	}
@@ -186,6 +199,87 @@ func (s *StatusService) ApplyJobResult(jobID, nodeID, printerID, status, errorCo
 		}
 	}
 	return tx.Commit()
+}
+
+// ApplyTerminalJobUpdate atomically validates an Edge terminal report, applies
+// the monotonic job transition, and records its receipt before an ACK is sent.
+func (s *StatusService) ApplyTerminalJobUpdate(receipts *database.EdgeJobUpdateReceiptRepository, update TerminalJobUpdate) (TerminalJobUpdateResult, error) {
+	if receipts == nil {
+		return TerminalJobUpdateResult{}, fmt.Errorf("Edge job-update receipt repository unavailable")
+	}
+	if update.EventID == "" || update.PayloadHash == "" || update.NodeID == "" || update.JobID == "" {
+		return TerminalJobUpdateResult{Reason: "invalid_terminal_update"}, nil
+	}
+	if update.Status != "completed" && update.Status != "failed" && update.Status != "canceled" && update.Status != "unconfirmed" {
+		return TerminalJobUpdateResult{Reason: "unsupported_job_status"}, nil
+	}
+
+	tx, err := s.db.BeginTx()
+	if err != nil {
+		return TerminalJobUpdateResult{}, err
+	}
+	defer tx.Rollback()
+
+	if existing, err := receipts.GetTx(tx, update.EventID); err != nil {
+		return TerminalJobUpdateResult{}, err
+	} else if existing != nil {
+		if existing.NodeID == update.NodeID && existing.JobID == update.JobID && existing.Status == update.Status && existing.PayloadHash == update.PayloadHash {
+			return TerminalJobUpdateResult{Accepted: true}, nil
+		}
+		return TerminalJobUpdateResult{Reason: "event_id_conflict"}, nil
+	}
+
+	var currentStatus, currentErrorCode, printerID, ownerNodeID string
+	err = tx.QueryRow(`SELECT j.status,COALESCE(j.error_code,''),j.printer_id::text,p.edge_node_id
+		FROM print_jobs j JOIN printers p ON p.id=j.printer_id
+		WHERE j.id=$1::uuid FOR UPDATE`, update.JobID).
+		Scan(&currentStatus, &currentErrorCode, &printerID, &ownerNodeID)
+	if err == sql.ErrNoRows {
+		return TerminalJobUpdateResult{Reason: "job_not_found"}, nil
+	}
+	if err != nil {
+		return TerminalJobUpdateResult{}, err
+	}
+	if ownerNodeID != update.NodeID {
+		return TerminalJobUpdateResult{Reason: "job_node_mismatch"}, nil
+	}
+
+	// A result may supersede only the explicit dispatch-ACK uncertainty. All
+	// other terminal states are immutable, including print-time uncertainty.
+	allowFromUnconfirmed := currentStatus == "unconfirmed" && currentErrorCode == "dispatch_ack_timeout"
+	if currentStatus == "completed" || currentStatus == "failed" || currentStatus == "canceled" || (currentStatus == "unconfirmed" && !allowFromUnconfirmed) {
+		if currentStatus != update.Status {
+			return TerminalJobUpdateResult{Reason: "job_status_conflict"}, nil
+		}
+		if err := receipts.CreateTx(tx, database.EdgeJobUpdateReceipt{EventID: update.EventID, NodeID: update.NodeID, JobID: update.JobID, Status: update.Status, PayloadHash: update.PayloadHash}); err != nil {
+			return TerminalJobUpdateResult{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return TerminalJobUpdateResult{}, err
+		}
+		return TerminalJobUpdateResult{Accepted: true}, nil
+	}
+
+	_, err = tx.Exec(`UPDATE print_jobs SET status=$2::varchar,
+		error_code=CASE WHEN $2::varchar='completed' THEN NULL ELSE NULLIF($3::varchar,'') END,
+		error_message=CASE WHEN $2::varchar='completed' THEN NULL WHEN NULLIF($4::varchar,'') IS NULL THEN error_message ELSE $4::varchar END,
+		updated_at=CURRENT_TIMESTAMP,end_time=COALESCE(end_time,CURRENT_TIMESTAMP)
+		WHERE id=$1::uuid`, update.JobID, update.Status, update.ErrorCode, update.ErrorMessage)
+	if err != nil {
+		return TerminalJobUpdateResult{}, err
+	}
+	if update.Status == "unconfirmed" {
+		if err = s.coordinator.OpenPrinterUnconfirmed(tx, printerID, update.NodeID, update.JobID, update.ErrorCode, map[string]interface{}{"message": update.ErrorMessage}); err != nil {
+			return TerminalJobUpdateResult{}, err
+		}
+	}
+	if err = receipts.CreateTx(tx, database.EdgeJobUpdateReceipt{EventID: update.EventID, NodeID: update.NodeID, JobID: update.JobID, Status: update.Status, PayloadHash: update.PayloadHash}); err != nil {
+		return TerminalJobUpdateResult{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return TerminalJobUpdateResult{}, err
+	}
+	return TerminalJobUpdateResult{Accepted: true, Changed: true}, nil
 }
 
 func (s *StatusService) ApplyDispatchUnconfirmed(jobID, nodeID, printerID string) error {

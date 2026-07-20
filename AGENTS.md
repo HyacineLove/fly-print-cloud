@@ -1,5 +1,13 @@
 # FlyPrint Cloud Agent Guide
 
+## Edge terminal-result protocol (2026-07-21)
+
+- `print_job` identifies a physical target by `job_id`, `printer_id`, `file_url`, and `content_hash`. `printer_name` is not part of the wire contract and must never be used as a routing fallback.
+- Cloud keeps the existing three-attempt delivery ACK loop. That ACK means Edge durably recorded the incoming job; it does not mean printing finished.
+- Edge sends `job_update` for real-time `processing` state only on a best-effort basis. Terminal states (`completed`, `failed`, `canceled`, `unconfirmed`) require a stable UUID `event_id`.
+- Cloud persists the terminal job update and `edge_job_update_receipts` record in one transaction, after verifying that the authenticated WebSocket node owns the target printer. It replies with `job_update_ack`: `accepted` permits Edge to remove its local outbox item; `rejected` is a protocol error and Edge must retain it as a visible local communication fault without retrying.
+- An identical terminal `event_id` is idempotently accepted; reuse with different node, job, status, or payload hash is rejected. Terminal status is monotonic except that `unconfirmed/dispatch_ack_timeout` can later be replaced by a real terminal result.
+
 本文件是 `fly-print-cloud` 子项目的 Agent 入口说明，也供上级 `FlyPrint` 工作区的统筹 Agent 阅读。先读本文件，再根据任务进入 `api/`、`admin/`、`nginx/` 或 `docker-compose.yml`。项目的用户可见启动与部署说明详见 [README.md](README.md)；跨仓开发计划、进度和非技术使用说明位于上级工作区，详见 README 末尾列出的文件。
 
 ## 1. 项目定位

@@ -4,7 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/models"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestValidatePrinterDispatchUsesOrderedFacts(t *testing.T) {
@@ -110,5 +113,130 @@ func TestApplyJobResultRejectsUnknownStatusBeforeDatabaseWrite(t *testing.T) {
 	service := &StatusService{}
 	if err := service.ApplyJobResult("job", "node", "printer", "printing", "", nil); err == nil {
 		t.Fatal("legacy printing status must not enter the Cloud state model")
+	}
+}
+
+func TestApplyTerminalJobUpdatePersistsResultAndReceiptTogether(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := &StatusService{db: &database.DB{DB: db}}
+	receipts := database.NewEdgeJobUpdateReceiptRepository(&database.DB{DB: db})
+	update := TerminalJobUpdate{EventID: "event-1", PayloadHash: "hash-1", NodeID: "node-1", JobID: "job-1", Status: "completed"}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT event_id").WithArgs(update.EventID).
+		WillReturnRows(sqlmock.NewRows([]string{"event_id", "node_id", "job_id", "status", "payload_hash"}))
+	mock.ExpectQuery("SELECT j.status").WithArgs(update.JobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "error_code", "printer_id", "edge_node_id"}).
+			AddRow("processing", "", "printer-1", update.NodeID))
+	mock.ExpectExec("UPDATE print_jobs").WithArgs(update.JobID, update.Status, update.ErrorCode, update.ErrorMessage).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO edge_job_update_receipts").
+		WithArgs(update.EventID, update.NodeID, update.JobID, update.Status, update.PayloadHash).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := service.ApplyTerminalJobUpdate(receipts, update)
+	if err != nil {
+		t.Fatalf("ApplyTerminalJobUpdate() error = %v", err)
+	}
+	if !result.Accepted || !result.Changed {
+		t.Fatalf("unexpected terminal result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyTerminalJobUpdateRejectsOtherNodeBeforeChangingTask(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := &StatusService{db: &database.DB{DB: db}}
+	receipts := database.NewEdgeJobUpdateReceiptRepository(&database.DB{DB: db})
+	update := TerminalJobUpdate{EventID: "event-1", PayloadHash: "hash-1", NodeID: "node-1", JobID: "job-1", Status: "failed"}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT event_id").WithArgs(update.EventID).
+		WillReturnRows(sqlmock.NewRows([]string{"event_id", "node_id", "job_id", "status", "payload_hash"}))
+	mock.ExpectQuery("SELECT j.status").WithArgs(update.JobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "error_code", "printer_id", "edge_node_id"}).
+			AddRow("processing", "", "printer-1", "node-2"))
+	mock.ExpectRollback()
+
+	result, err := service.ApplyTerminalJobUpdate(receipts, update)
+	if err != nil {
+		t.Fatalf("ApplyTerminalJobUpdate() error = %v", err)
+	}
+	if result.Accepted || result.Reason != "job_node_mismatch" {
+		t.Fatalf("unexpected terminal result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyTerminalJobUpdateAcceptsAnIdenticalRetry(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := &StatusService{db: &database.DB{DB: db}}
+	receipts := database.NewEdgeJobUpdateReceiptRepository(&database.DB{DB: db})
+	update := TerminalJobUpdate{EventID: "event-1", PayloadHash: "hash-1", NodeID: "node-1", JobID: "job-1", Status: "completed"}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT event_id").WithArgs(update.EventID).
+		WillReturnRows(sqlmock.NewRows([]string{"event_id", "node_id", "job_id", "status", "payload_hash"}).
+			AddRow(update.EventID, update.NodeID, update.JobID, update.Status, update.PayloadHash))
+	mock.ExpectRollback()
+
+	result, err := service.ApplyTerminalJobUpdate(receipts, update)
+	if err != nil {
+		t.Fatalf("ApplyTerminalJobUpdate() error = %v", err)
+	}
+	if !result.Accepted || result.Changed {
+		t.Fatalf("unexpected terminal result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyTerminalJobUpdateRejectsReusedEventWithDifferentPayload(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := &StatusService{db: &database.DB{DB: db}}
+	receipts := database.NewEdgeJobUpdateReceiptRepository(&database.DB{DB: db})
+	update := TerminalJobUpdate{EventID: "event-1", PayloadHash: "new-hash", NodeID: "node-1", JobID: "job-1", Status: "completed"}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT event_id").WithArgs(update.EventID).
+		WillReturnRows(sqlmock.NewRows([]string{"event_id", "node_id", "job_id", "status", "payload_hash"}).
+			AddRow(update.EventID, update.NodeID, update.JobID, update.Status, "old-hash"))
+	mock.ExpectRollback()
+
+	result, err := service.ApplyTerminalJobUpdate(receipts, update)
+	if err != nil {
+		t.Fatalf("ApplyTerminalJobUpdate() error = %v", err)
+	}
+	if result.Accepted || result.Reason != "event_id_conflict" {
+		t.Fatalf("unexpected terminal result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

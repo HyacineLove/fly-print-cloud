@@ -110,7 +110,7 @@ func TestDispatchPrintJobIncludesContentHash(t *testing.T) {
 		}
 	}()
 
-	if err := manager.DispatchPrintJob("node-1", job, "Printer"); err != nil {
+	if err := manager.DispatchPrintJob("node-1", job); err != nil {
 		t.Fatalf("DispatchPrintJob() error = %v", err)
 	}
 
@@ -123,5 +123,8 @@ func TestDispatchPrintJobIncludesContentHash(t *testing.T) {
 		t.Fatalf(
 			"content_hash = %v, want %s", data["content_hash"], testContentHash,
 		)
+	}
+	if _, present := data["printer_name"]; present {
+		t.Fatal("print_job must identify its target only by printer_id")
 	}
 }
