@@ -57,13 +57,14 @@ func (r *IntegrationProviderRepository) Create(provider *models.IntegrationProvi
 	return r.db.QueryRow(`INSERT INTO integration_providers(
 		code,display_name,entry_url,callback_base_url,entry_visible,enabled,
 		allowed_ip_cidrs,allowed_file_hosts,max_file_size,allowed_mime_types,
+		allow_private_file_hosts,
 		inbound_secret_encrypted,outbound_secret_encrypted
-	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 	RETURNING id,created_at,updated_at`,
 		provider.Code, provider.DisplayName, provider.EntryURL, provider.CallbackBaseURL,
 		provider.EntryVisible, provider.Enabled, provider.AllowedIPCIDRs, provider.AllowedFileHosts,
-		provider.MaxFileSize, provider.AllowedMIMETypes, provider.InboundSecretEncrypted,
-		provider.OutboundSecretEncrypted,
+		provider.MaxFileSize, provider.AllowedMIMETypes, provider.AllowPrivateFileHosts,
+		provider.InboundSecretEncrypted, provider.OutboundSecretEncrypted,
 	).Scan(&provider.ID, &provider.CreatedAt, &provider.UpdatedAt)
 }
 
@@ -72,11 +73,12 @@ func (r *IntegrationProviderRepository) Create(provider *models.IntegrationProvi
 func (r *IntegrationProviderRepository) Update(provider *models.IntegrationProvider) error {
 	return r.db.QueryRow(`UPDATE integration_providers SET
 		display_name=$2,entry_url=$3,callback_base_url=$4,entry_visible=$5,enabled=$6,
-		allowed_ip_cidrs=$7,allowed_file_hosts=$8,max_file_size=$9,allowed_mime_types=$10
+		allowed_ip_cidrs=$7,allowed_file_hosts=$8,max_file_size=$9,allowed_mime_types=$10,
+		allow_private_file_hosts=$11
 		WHERE code=$1 RETURNING updated_at`,
 		provider.Code, provider.DisplayName, provider.EntryURL, provider.CallbackBaseURL,
 		provider.EntryVisible, provider.Enabled, provider.AllowedIPCIDRs, provider.AllowedFileHosts,
-		provider.MaxFileSize, provider.AllowedMIMETypes,
+		provider.MaxFileSize, provider.AllowedMIMETypes, provider.AllowPrivateFileHosts,
 	).Scan(&provider.UpdatedAt)
 }
 
@@ -86,7 +88,7 @@ func (r *IntegrationProviderRepository) UpdateFlags(code string, entryVisible, e
 	provider := &models.IntegrationProvider{}
 	err := scanProvider(r.db.QueryRow(`UPDATE integration_providers SET entry_visible=$2,enabled=$3
 		WHERE code=$1 RETURNING id,code,display_name,entry_url,callback_base_url,entry_visible,enabled,
-		allowed_ip_cidrs,allowed_file_hosts,max_file_size,allowed_mime_types,created_at,updated_at`, code, entryVisible, enabled), provider, false)
+		allowed_ip_cidrs,allowed_file_hosts,max_file_size,allowed_mime_types,allow_private_file_hosts,created_at,updated_at`, code, entryVisible, enabled), provider, false)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -103,13 +105,14 @@ func (r *IntegrationProviderRepository) RotateSecrets(code, inbound, outbound st
 }
 
 const providerSelect = `SELECT id,code,display_name,entry_url,callback_base_url,entry_visible,enabled,
-	allowed_ip_cidrs,allowed_file_hosts,max_file_size,allowed_mime_types,created_at,updated_at`
+	allowed_ip_cidrs,allowed_file_hosts,max_file_size,allowed_mime_types,allow_private_file_hosts,created_at,updated_at`
 
 func scanProvider(scanner interface{ Scan(...any) error }, provider *models.IntegrationProvider, withSecrets bool) error {
 	fields := []any{
 		&provider.ID, &provider.Code, &provider.DisplayName, &provider.EntryURL, &provider.CallbackBaseURL,
 		&provider.EntryVisible, &provider.Enabled, &provider.AllowedIPCIDRs, &provider.AllowedFileHosts,
-		&provider.MaxFileSize, &provider.AllowedMIMETypes, &provider.CreatedAt, &provider.UpdatedAt,
+		&provider.MaxFileSize, &provider.AllowedMIMETypes, &provider.AllowPrivateFileHosts,
+		&provider.CreatedAt, &provider.UpdatedAt,
 	}
 	if withSecrets {
 		fields = append(fields, &provider.InboundSecretEncrypted, &provider.OutboundSecretEncrypted)

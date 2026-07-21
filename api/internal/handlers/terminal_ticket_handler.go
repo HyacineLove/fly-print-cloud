@@ -8,7 +8,6 @@ import (
 	"html"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"fly-print-cloud/api/internal/database"
@@ -21,83 +20,102 @@ import (
 const terminalTicketTTL = 5 * time.Minute
 
 type TerminalTicketHandler struct {
-	tickets      *database.TerminalTicketRepository
-	printers     *database.PrinterRepository
-	edgeNodes    *database.EdgeNodeRepository
-	providers    *database.IntegrationProviderRepository
+	tickets        *database.TerminalTicketRepository
+	printers       *database.PrinterRepository
+	edgeNodes      *database.EdgeNodeRepository
+	providers      *database.IntegrationProviderRepository
 	uploadSessions *database.TerminalUploadSessionRepository
-	tokens       *security.TokenManager
-	entryBaseURL string
+	tokens         *security.TokenManager
 }
 
-func NewTerminalTicketHandler(tickets *database.TerminalTicketRepository, printers *database.PrinterRepository, edgeNodes *database.EdgeNodeRepository, providers *database.IntegrationProviderRepository, uploadSessions *database.TerminalUploadSessionRepository, tokens *security.TokenManager, entryBaseURL string) *TerminalTicketHandler {
-	return &TerminalTicketHandler{tickets: tickets, printers: printers, edgeNodes: edgeNodes, providers: providers, uploadSessions: uploadSessions, tokens: tokens, entryBaseURL: strings.TrimRight(entryBaseURL, "/")}
-}
-
-type issueTerminalTicketRequest struct {
-	PrinterID         string `json:"printer_id" binding:"required"`
-	TerminalSessionID string `json:"terminal_session_id" binding:"required,max=128"`
-}
-
-func (h *TerminalTicketHandler) IssueForSelf(c *gin.Context) {
-	if h.entryBaseURL == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "terminal_entry_not_configured"})
-		return
-	}
-	var req issueTerminalTicketRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		ValidationErrorResponse(c, err)
-		return
-	}
-	nodeID := c.GetString("node_id")
-	if nodeID == "" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "edge_node_identity_missing"})
-		return
-	}
-	node, err := h.edgeNodes.GetEdgeNodeByID(nodeID)
-	if err != nil || node == nil || !node.Enabled {
-		c.JSON(http.StatusForbidden, gin.H{"error": "node_unavailable"})
-		return
-	}
-	printer, err := h.printers.GetPrinterByID(req.PrinterID)
-	if err != nil || printer == nil || printer.EdgeNodeID != nodeID || !printer.Enabled {
-		c.JSON(http.StatusForbidden, gin.H{"error": "printer_unavailable"})
-		return
-	}
-	raw, err := newTerminalTicket()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "terminal_ticket_generation_failed"})
-		return
-	}
-	ticket := &models.TerminalTicket{TicketHash: ticketHash(raw), NodeID: nodeID, PrinterID: req.PrinterID, TerminalSessionID: req.TerminalSessionID, ExpiresAt: time.Now().Add(terminalTicketTTL)}
-	if err := h.tickets.Create(ticket); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "terminal_ticket_creation_failed"})
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"terminal_ticket": raw, "entry_url": h.entryBaseURL + "/entry?terminal_ticket=" + raw, "expires_at": ticket.ExpiresAt})
+func NewTerminalTicketHandler(tickets *database.TerminalTicketRepository, printers *database.PrinterRepository, edgeNodes *database.EdgeNodeRepository, providers *database.IntegrationProviderRepository, uploadSessions *database.TerminalUploadSessionRepository, tokens *security.TokenManager) *TerminalTicketHandler {
+	return &TerminalTicketHandler{tickets: tickets, printers: printers, edgeNodes: edgeNodes, providers: providers, uploadSessions: uploadSessions, tokens: tokens}
 }
 
 func (h *TerminalTicketHandler) EntryPage(c *gin.Context) {
 	raw := c.Query("terminal_ticket")
 	if raw == "" {
-		c.String(http.StatusBadRequest, "invalid terminal ticket")
+		if c.Query("token") != "" {
+			h.redirectUploadTokenToEntry(c)
+			return
+		}
+		renderEntryError(c, http.StatusBadRequest, "二维码无效", "请返回打印终端刷新二维码后重新扫描。", false)
 		return
 	}
 	if _, err := h.tickets.GetValidByHash(ticketHash(raw), time.Now()); err != nil {
-		c.String(http.StatusGone, "terminal ticket expired or unavailable")
+		renderEntryError(c, http.StatusGone, "二维码已失效", "请返回打印终端刷新二维码后重新扫描。", false)
 		return
 	}
 	providers, err := h.providers.List()
-	if err != nil { c.String(http.StatusServiceUnavailable, "entry temporarily unavailable"); return }
+	if err != nil {
+		renderEntryError(c, http.StatusServiceUnavailable, "打印入口暂时不可用", "服务暂时无法加载，请稍后重新尝试。", true)
+		return
+	}
 	ticket := html.EscapeString(raw)
-	buttons := "<button data-entry=official>官方打印</button>"
+	buttons := "<button data-entry=official><strong>官方打印</strong><span>上传文件并在当前终端打印</span></button>"
 	for _, provider := range providers {
 		if provider.Enabled && provider.EntryVisible {
-			buttons += "<button data-entry='" + html.EscapeString(provider.Code) + "'>" + html.EscapeString(provider.DisplayName) + "</button>"
+			buttons += "<button data-entry='" + html.EscapeString(provider.Code) + "'><strong>" + html.EscapeString(provider.DisplayName) + "</strong><span>进入第三方打印服务</span></button>"
 		}
 	}
 	c.Header("Cache-Control", "no-store")
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte("<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><title>FlyPrint</title><main><h1>请选择打印入口</h1>"+buttons+"<script>document.querySelectorAll('[data-entry]').forEach(b=>b.onclick=async()=>{const r=await fetch('/api/v1/public/terminal-entry/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({terminal_ticket:'"+ticket+"',entry:b.dataset.entry})});const d=await r.json();if(d.redirect_url)location.href=d.redirect_url;else alert('入口暂不可用，请重新扫码')});</script></main>"))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte("<!doctype html><html lang=zh-CN><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>飞印打印入口</title><style>*{box-sizing:border-box}body{margin:0;background:#f4f7fb;color:#172033;font-family:system-ui,-apple-system,'Microsoft YaHei',sans-serif}main{max-width:560px;margin:0 auto;padding:48px 20px}h1{font-size:28px;margin:0 0 8px}p{color:#697386;margin:0 0 28px}.entries{display:grid;gap:14px}button{width:100%;padding:20px;text-align:left;border:1px solid #dce3ee;border-radius:14px;background:#fff;box-shadow:0 6px 20px rgba(37,61,95,.07);cursor:pointer}button:active{transform:translateY(1px)}button:disabled{cursor:wait;opacity:.65}strong,span{display:block}strong{font-size:18px;color:#1268e8;margin-bottom:5px}span{font-size:14px;color:#778195}.notice{display:none;margin-top:18px;padding:14px 16px;border-radius:12px;background:#fff2f0;color:#b42318;border:1px solid #ffccc7;line-height:1.55}.notice.visible{display:block}</style></head><body><main><h1>选择打印入口</h1><p>本次选择将绑定当前终端，选择后不可切换。</p><div class=entries>"+buttons+"</div><div id=notice class=notice role=alert></div><script>const notice=document.getElementById('notice');const errors={terminal_ticket_locked_or_expired:'本次二维码已失效或已选择过入口，请返回终端重新扫码。',terminal_entry_unavailable:'所选打印入口当前不可用，请联系管理员。',official_upload_unavailable:'官方打印暂时不可用，请稍后重新扫码。'};document.querySelectorAll('[data-entry]').forEach(b=>b.onclick=async()=>{document.querySelectorAll('button').forEach(x=>x.disabled=true);notice.classList.remove('visible');try{const r=await fetch('/api/v1/public/terminal-entry/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({terminal_ticket:'"+ticket+"',entry:b.dataset.entry})});const d=await r.json();if(r.ok&&d.redirect_url){location.href=d.redirect_url;return}notice.textContent=errors[d.error]||'打印入口暂时不可用，请返回终端重新扫码。'}catch(e){notice.textContent='网络连接异常，请检查网络后重新尝试。'}notice.classList.add('visible');document.querySelectorAll('button').forEach(x=>x.disabled=false)});</script></main></body></html>"))
+}
+
+// redirectUploadTokenToEntry bridges the original Edge QR path into the entry
+// selector. The upload token proves node/printer ownership; a separate opaque
+// terminal ticket is issued so providers never receive an upload credential.
+func (h *TerminalTicketHandler) redirectUploadTokenToEntry(c *gin.Context) {
+	rawUploadToken := c.Query("token")
+	nodeID := c.Query("node_id")
+	printerID := c.Query("printer_id")
+	payload, err := h.tokens.VerifyUploadTokenAvailable(rawUploadToken, nodeID, printerID)
+	if err != nil {
+		renderEntryError(c, http.StatusGone, "二维码已失效", "请返回打印终端刷新二维码后重新扫描。", false)
+		return
+	}
+	node, err := h.edgeNodes.GetEdgeNodeByID(payload.NodeID)
+	if err != nil || node == nil || !node.Enabled {
+		renderEntryError(c, http.StatusForbidden, "打印终端不可用", "当前终端已停用或离线，请联系工作人员处理。", false)
+		return
+	}
+	printer, err := h.printers.GetPrinterByID(payload.PrinterID)
+	if err != nil || printer == nil || printer.EdgeNodeID != payload.NodeID || !printer.Enabled {
+		renderEntryError(c, http.StatusForbidden, "打印机不可用", "当前打印机已停用，请联系工作人员处理。", false)
+		return
+	}
+	sessionNotBefore := time.Unix(payload.IssuedAt, 0).Add(-5 * time.Second)
+	hasSession, err := h.tickets.HasCurrentSession(payload.NodeID, sessionNotBefore)
+	if err != nil || !hasSession {
+		renderEntryError(c, http.StatusConflict, "终端正在准备", "请稍后重新尝试；若仍无法进入，请返回终端刷新二维码。", true)
+		return
+	}
+	// Consume the bridge credential before issuing the separate terminal
+	// ticket. Concurrent scans can therefore create at most one entry ticket.
+	if _, err := h.tokens.ValidateUploadTokenForContext(rawUploadToken, nodeID, printerID); err != nil {
+		renderEntryError(c, http.StatusGone, "二维码已失效", "请返回打印终端刷新二维码后重新扫描。", false)
+		return
+	}
+
+	rawTicket, err := newTerminalTicket()
+	if err != nil {
+		renderEntryError(c, http.StatusServiceUnavailable, "打印入口暂时不可用", "服务暂时无法处理请求，请稍后重新尝试。", true)
+		return
+	}
+	expiresAt := time.Now().Add(terminalTicketTTL)
+	if uploadExpiry := time.Unix(payload.ExpiresAt, 0); uploadExpiry.Before(expiresAt) {
+		expiresAt = uploadExpiry
+	}
+	ticket := &models.TerminalTicket{
+		TicketHash: ticketHash(rawTicket), NodeID: payload.NodeID,
+		PrinterID: payload.PrinterID, ExpiresAt: expiresAt,
+	}
+	if err := h.tickets.CreateForCurrentSession(ticket, sessionNotBefore); err != nil {
+		renderEntryError(c, http.StatusConflict, "二维码已失效", "终端会话已经变化，请返回打印终端刷新二维码后重新扫描。", false)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Redirect(http.StatusFound, "/entry?"+url.Values{"terminal_ticket": {rawTicket}}.Encode())
 }
 
 type selectTerminalEntryRequest struct {
@@ -115,7 +133,10 @@ func (h *TerminalTicketHandler) SelectEntry(c *gin.Context) {
 	if req.Entry != "official" {
 		var err error
 		provider, err = h.providers.Get(req.Entry, false)
-		if err != nil || provider == nil || !provider.Enabled || !provider.EntryVisible { c.JSON(http.StatusBadRequest, gin.H{"error":"terminal_entry_unavailable"}); return }
+		if err != nil || provider == nil || !provider.Enabled || !provider.EntryVisible {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "terminal_entry_unavailable"})
+			return
+		}
 	}
 	ticket, err := h.tickets.Select(ticketHash(req.TerminalTicket), req.Entry, time.Now())
 	if err != nil {
@@ -125,22 +146,39 @@ func (h *TerminalTicketHandler) SelectEntry(c *gin.Context) {
 	if req.Entry == "official" {
 		token, expiresAt, err := h.tokens.GenerateUploadToken(ticket.NodeID, ticket.PrinterID)
 		if err != nil || h.uploadSessions.Create(token, ticket.TicketHash, ticket.NodeID, ticket.PrinterID, ticket.TerminalSessionID, expiresAt) != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error":"official_upload_unavailable"}); return
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "official_upload_unavailable"})
+			return
 		}
 		query := url.Values{"token": {token}, "node_id": {ticket.NodeID}, "printer_id": {ticket.PrinterID}}
-		c.JSON(http.StatusOK, gin.H{"redirect_url":"/upload?" + query.Encode()})
+		c.JSON(http.StatusOK, gin.H{"redirect_url": "/upload?" + query.Encode()})
 		return
 	}
 	redirect, err := url.Parse(provider.EntryURL)
-	if err != nil { c.JSON(http.StatusServiceUnavailable, gin.H{"error":"terminal_entry_unavailable"}); return }
-	query := redirect.Query(); query.Set("terminal_ticket", req.TerminalTicket); redirect.RawQuery = query.Encode()
-	c.JSON(http.StatusOK, gin.H{"redirect_url":redirect.String()})
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "terminal_entry_unavailable"})
+		return
+	}
+	query := redirect.Query()
+	query.Set("terminal_ticket", req.TerminalTicket)
+	redirect.RawQuery = query.Encode()
+	c.JSON(http.StatusOK, gin.H{"redirect_url": redirect.String()})
 }
 
 func newTerminalTicket() (string, error) {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil { return "", err }
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func ticketHash(raw string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(raw))) }
+
+func renderEntryError(c *gin.Context, status int, title, message string, retry bool) {
+	action := ""
+	if retry {
+		action = "<button type=button onclick='location.reload()'>重新尝试</button>"
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Data(status, "text/html; charset=utf-8", []byte("<!doctype html><html lang=zh-CN><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>"+html.EscapeString(title)+"</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f4f7fb;color:#172033;font-family:system-ui,-apple-system,'Microsoft YaHei',sans-serif}.card{width:min(100%,480px);padding:34px 28px;border:1px solid #e4e9f1;border-radius:18px;background:#fff;box-shadow:0 16px 48px rgba(37,61,95,.1);text-align:center}.icon{width:58px;height:58px;margin:0 auto 20px;border-radius:50%;display:grid;place-items:center;background:#fff2f0;color:#d92d20;font-size:30px;font-weight:700}h1{margin:0 0 12px;font-size:24px}p{margin:0;color:#697386;line-height:1.7}button{margin-top:24px;padding:11px 24px;border:0;border-radius:10px;background:#1268e8;color:#fff;font-size:16px;cursor:pointer}</style></head><body><main class=card><div class=icon>!</div><h1>"+html.EscapeString(title)+"</h1><p>"+html.EscapeString(message)+"</p>"+action+"</main></body></html>"))
+}

@@ -30,16 +30,17 @@ func NewIntegrationProviderHandler(repo *database.IntegrationProviderRepository,
 }
 
 type providerRequest struct {
-	Code             string `json:"code"`
-	DisplayName      string `json:"display_name"`
-	EntryURL         string `json:"entry_url"`
-	CallbackBaseURL  string `json:"callback_base_url"`
-	EntryVisible     bool   `json:"entry_visible"`
-	Enabled          bool   `json:"enabled"`
-	AllowedIPCIDRs   string `json:"allowed_ip_cidrs"`
-	AllowedFileHosts string `json:"allowed_file_hosts"`
-	MaxFileSize      int64  `json:"max_file_size"`
-	AllowedMIMETypes string `json:"allowed_mime_types"`
+	Code                  string `json:"code"`
+	DisplayName           string `json:"display_name"`
+	EntryURL              string `json:"entry_url"`
+	CallbackBaseURL       string `json:"callback_base_url"`
+	EntryVisible          bool   `json:"entry_visible"`
+	Enabled               bool   `json:"enabled"`
+	AllowedIPCIDRs        string `json:"allowed_ip_cidrs"`
+	AllowedFileHosts      string `json:"allowed_file_hosts"`
+	AllowPrivateFileHosts bool   `json:"allow_private_file_hosts"`
+	MaxFileSize           int64  `json:"max_file_size"`
+	AllowedMIMETypes      string `json:"allowed_mime_types"`
 }
 
 var providerCodePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
@@ -227,16 +228,17 @@ func (h *IntegrationProviderHandler) Rotate(c *gin.Context) {
 
 func providerFromRequest(request providerRequest) *models.IntegrationProvider {
 	return &models.IntegrationProvider{
-		Code:             request.Code,
-		DisplayName:      strings.TrimSpace(request.DisplayName),
-		EntryURL:         strings.TrimSpace(request.EntryURL),
-		CallbackBaseURL:  strings.TrimSpace(request.CallbackBaseURL),
-		EntryVisible:     request.EntryVisible,
-		Enabled:          request.Enabled,
-		AllowedIPCIDRs:   strings.TrimSpace(request.AllowedIPCIDRs),
-		AllowedFileHosts: strings.TrimSpace(request.AllowedFileHosts),
-		MaxFileSize:      request.MaxFileSize,
-		AllowedMIMETypes: strings.TrimSpace(request.AllowedMIMETypes),
+		Code:                  request.Code,
+		DisplayName:           strings.TrimSpace(request.DisplayName),
+		EntryURL:              strings.TrimSpace(request.EntryURL),
+		CallbackBaseURL:       strings.TrimSpace(request.CallbackBaseURL),
+		EntryVisible:          request.EntryVisible,
+		Enabled:               request.Enabled,
+		AllowedIPCIDRs:        strings.TrimSpace(request.AllowedIPCIDRs),
+		AllowedFileHosts:      strings.TrimSpace(request.AllowedFileHosts),
+		AllowPrivateFileHosts: request.AllowPrivateFileHosts,
+		MaxFileSize:           request.MaxFileSize,
+		AllowedMIMETypes:      strings.TrimSpace(request.AllowedMIMETypes),
 	}
 }
 

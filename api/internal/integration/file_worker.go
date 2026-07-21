@@ -93,7 +93,7 @@ func (w *FileWorker) downloadAndStore(ctx context.Context, request *models.Integ
 	if !request.FileExpiresAt.After(time.Now()) {
 		return nil, "", fmt.Errorf("provider file URL has expired")
 	}
-	response, err := fetchApprovedURL(ctx, request.FileURL, provider.AllowedFileHosts)
+	response, err := fetchApprovedURL(ctx, request.FileURL, provider.AllowedFileHosts, provider.AllowPrivateFileHosts)
 	if err != nil {
 		return nil, "", err
 	}
@@ -163,18 +163,18 @@ func validateStoredMIME(path, declared, allowed string) error {
 	return nil
 }
 
-func fetchApprovedURL(ctx context.Context, rawURL, allowedHosts string) (*http.Response, error) {
+func fetchApprovedURL(ctx context.Context, rawURL, allowedHosts string, allowPrivate bool) (*http.Response, error) {
 	current, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
 	}
 	for redirects := 0; redirects <= 3; redirects++ {
-		if err := validateProviderURL(ctx, current, allowedHosts); err != nil {
+		if err := validateProviderURL(ctx, current, allowedHosts, allowPrivate); err != nil {
 			return nil, err
 		}
 		client := &http.Client{
 			Timeout:       30 * time.Second,
-			Transport:     &http.Transport{DialContext: dialApprovedPublicAddress},
+			Transport:     &http.Transport{DialContext: dialApprovedAddress(allowPrivate)},
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 		}
 		response, err := client.Get(current.String())
@@ -196,31 +196,33 @@ func fetchApprovedURL(ctx context.Context, rawURL, allowedHosts string) (*http.R
 
 // DialContext repeats resolution immediately before connection, preventing a
 // host from passing policy resolution and then rebinding to a private address.
-func dialApprovedPublicAddress(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil || len(addresses) == 0 {
-		return nil, fmt.Errorf("provider file host could not be resolved")
-	}
-	dialer := net.Dialer{Timeout: 10 * time.Second}
-	var lastErr error
-	for _, resolved := range addresses {
-		if !isPublicAddress(resolved.IP) {
-			return nil, fmt.Errorf("provider file host resolved to forbidden address")
+func dialApprovedAddress(allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
 		}
-		connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(resolved.IP.String(), port))
-		if err == nil {
-			return connection, nil
+		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil || len(addresses) == 0 {
+			return nil, fmt.Errorf("provider file host could not be resolved")
 		}
-		lastErr = err
+		dialer := net.Dialer{Timeout: 10 * time.Second}
+		var lastErr error
+		for _, resolved := range addresses {
+			if !isAllowedProviderAddress(resolved.IP, allowPrivate) {
+				return nil, fmt.Errorf("provider file host resolved to forbidden address")
+			}
+			connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(resolved.IP.String(), port))
+			if err == nil {
+				return connection, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
 	}
-	return nil, lastErr
 }
 
-func validateProviderURL(ctx context.Context, target *url.URL, allowedHosts string) error {
+func validateProviderURL(ctx context.Context, target *url.URL, allowedHosts string, allowPrivate bool) error {
 	if target.Scheme != "http" || target.User != nil || !allowedCSVContains(allowedHosts, target.Hostname()) {
 		return fmt.Errorf("provider file URL is not allowed")
 	}
@@ -229,7 +231,7 @@ func validateProviderURL(ctx context.Context, target *url.URL, allowedHosts stri
 		return fmt.Errorf("provider file host could not be resolved")
 	}
 	for _, address := range addresses {
-		if !isPublicAddress(address.IP) {
+		if !isAllowedProviderAddress(address.IP, allowPrivate) {
 			return fmt.Errorf("provider file host resolved to forbidden address")
 		}
 	}
@@ -237,7 +239,23 @@ func validateProviderURL(ctx context.Context, target *url.URL, allowedHosts stri
 }
 
 func isPublicAddress(address net.IP) bool {
-	return address.IsGlobalUnicast() && !address.IsPrivate() && !address.IsLoopback() && !address.IsLinkLocalUnicast() && !address.IsLinkLocalMulticast() && !address.IsUnspecified()
+	return isAllowedProviderAddress(address, false)
+}
+
+func isAllowedProviderAddress(address net.IP, allowPrivate bool) bool {
+	if address == nil || !address.IsGlobalUnicast() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsUnspecified() {
+		return false
+	}
+	if address.IsPrivate() {
+		return allowPrivate
+	}
+	for _, raw := range []string{"100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4", "2001:db8::/32"} {
+		_, block, _ := net.ParseCIDR(raw)
+		if block.Contains(address) {
+			return false
+		}
+	}
+	return true
 }
 
 func allowedCSVContains(values, needle string) bool {

@@ -186,9 +186,21 @@ func (tm *TokenManager) GenerateDownloadToken(fileID, jobID, nodeID string) (str
 }
 
 func (tm *TokenManager) ValidateUploadToken(token string) (*UploadTokenPayload, error) {
+	return tm.ValidateUploadTokenForContext(token, "", "")
+}
+
+// ValidateUploadTokenForContext atomically consumes an upload token only when
+// its signed node and printer match the expected terminal context.
+func (tm *TokenManager) ValidateUploadTokenForContext(token, expectedNodeID, expectedPrinterID string) (*UploadTokenPayload, error) {
 	tokenHash, _, nodeID, printerID, issuedAt, expiresAt, _, _, err := tm.parseUploadToken(token)
 	if err != nil {
 		return nil, err
+	}
+	if expectedNodeID != "" && nodeID != expectedNodeID {
+		return nil, ErrInvalidContext
+	}
+	if expectedPrinterID != "" && printerID != expectedPrinterID {
+		return nil, ErrInvalidContext
 	}
 
 	if tm.tokenRepo != nil {

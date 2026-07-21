@@ -14,12 +14,70 @@ func NewTerminalTicketRepository(db *DB) *TerminalTicketRepository {
 	return &TerminalTicketRepository{db: db}
 }
 
+// CancelActiveForNodeTx invalidates tickets that could still open an entry
+// after the owning node has been removed. Historical tickets remain intact.
+func (r *TerminalTicketRepository) CancelActiveForNodeTx(tx *Tx, nodeID string) error {
+	_, err := tx.Exec(`UPDATE terminal_tickets SET status='cancelled',consumed_at=NULL
+		WHERE node_id=$1 AND status IN ('issued','selected')`, nodeID)
+	return err
+}
+
 func (r *TerminalTicketRepository) Create(ticket *models.TerminalTicket) error {
 	return r.db.QueryRow(`INSERT INTO terminal_tickets
 		(ticket_hash, node_id, printer_id, terminal_session_id, status, expires_at)
 		VALUES ($1,$2,$3,$4,'issued',$5) RETURNING id, issued_at`,
 		ticket.TicketHash, ticket.NodeID, ticket.PrinterID, ticket.TerminalSessionID, ticket.ExpiresAt,
 	).Scan(&ticket.ID, &ticket.IssuedAt)
+}
+
+func (r *TerminalTicketRepository) HasCurrentSession(nodeID string, sessionNotBefore time.Time) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM edge_terminal_sessions
+		WHERE node_id=$1 AND terminal_session_id<>'' AND updated_at>=$2)`, nodeID, sessionNotBefore).Scan(&exists)
+	return exists, err
+}
+
+// CreateForCurrentSession issues a ticket for the kiosk session created by the
+// same QR-code request and binds that session to the ticket atomically. The raw
+// ticket never enters the database; only its hash is persisted.
+func (r *TerminalTicketRepository) CreateForCurrentSession(ticket *models.TerminalTicket, sessionNotBefore time.Time) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := tx.QueryRow(`SELECT terminal_session_id FROM edge_terminal_sessions
+		WHERE node_id=$1 AND terminal_session_id<>'' AND updated_at>=$2
+		FOR UPDATE`, ticket.NodeID, sessionNotBefore).Scan(&ticket.TerminalSessionID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("active terminal session not found")
+		}
+		return err
+	}
+
+	if err := tx.QueryRow(`INSERT INTO terminal_tickets
+		(ticket_hash, node_id, printer_id, terminal_session_id, status, expires_at)
+		VALUES ($1,$2,$3,$4,'issued',$5) RETURNING id, issued_at`,
+		ticket.TicketHash, ticket.NodeID, ticket.PrinterID, ticket.TerminalSessionID, ticket.ExpiresAt,
+	).Scan(&ticket.ID, &ticket.IssuedAt); err != nil {
+		return err
+	}
+
+	result, err := tx.Exec(`UPDATE edge_terminal_sessions
+		SET terminal_ticket_hash=$3, entry_type='entry', integration_request_id=NULL, updated_at=$4
+		WHERE node_id=$1 AND terminal_session_id=$2`,
+		ticket.NodeID, ticket.TerminalSessionID, ticket.TicketHash, time.Now())
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("active terminal session changed")
+	}
+	return tx.Commit()
 }
 
 func (r *TerminalTicketRepository) GetValidByHash(hash string, now time.Time) (*models.TerminalTicket, error) {

@@ -43,3 +43,20 @@ func TestUploadTokenResponsePayloadIncludesRequestID(t *testing.T) {
 		t.Fatalf("request id was not encoded: %#v", decoded)
 	}
 }
+
+func TestUploadTokenRequestIDExtractsOnlyUploadTokenRequests(t *testing.T) {
+	connection := &Connection{}
+	message := &Message{
+		Type: MsgTypeRequestUploadToken,
+		Data: map[string]interface{}{
+			"request_id": "request-3",
+			"printer_id": "printer-1",
+		},
+	}
+	if got := connection.uploadTokenRequestID(message); got != "request-3" {
+		t.Fatalf("upload token request id = %q, want request-3", got)
+	}
+	if got := connection.uploadTokenRequestID(&Message{Type: MsgTypeHeartbeat, Data: message.Data}); got != "" {
+		t.Fatalf("non-upload-token message request id = %q, want empty", got)
+	}
+}

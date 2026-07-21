@@ -189,16 +189,18 @@ func (m *ConnectionManager) GetConnectionCount() int {
 
 // DispatchPreviewFile 发送预览文件命令
 func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, fileName string, fileSize int64, fileType string, contentHash string) error {
-	logger.Debug("Preparing to dispatch preview file to node", zap.String("node_id", nodeID), zap.String("file_name", fileName), zap.String("file_id", fileID))
+	return m.dispatchPreviewFile(nodeID, PreviewFilePayload{FileID: fileID, FileURL: fileURL, FileName: fileName, FileSize: fileSize, FileType: fileType, ContentHash: contentHash})
+}
 
-	payload := PreviewFilePayload{
-		FileID:      fileID,
-		FileURL:     fileURL,
-		FileName:    fileName,
-		FileSize:    fileSize,
-		FileType:    fileType,
-		ContentHash: contentHash,
-	}
+// DispatchIntegrationPreview uses the standard preview command while carrying
+// the terminal proof required to bind it to the active kiosk session.
+func (m *ConnectionManager) DispatchIntegrationPreview(nodeID string, payload PreviewFilePayload) error {
+	return m.dispatchPreviewFile(nodeID, payload)
+}
+
+func (m *ConnectionManager) dispatchPreviewFile(nodeID string, payload PreviewFilePayload) error {
+	logger.Debug("Preparing to dispatch preview file to node", zap.String("node_id", nodeID), zap.String("file_name", payload.FileName), zap.String("file_id", payload.FileID))
+	fileURL := payload.FileURL
 
 	// 生成文件访问凭证（用于预览）
 	if fileURL != "" && m.TokenManager != nil {

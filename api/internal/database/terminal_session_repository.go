@@ -7,7 +7,9 @@ import "time"
 // never dispatched based only on stale ticket data.
 type TerminalSessionRepository struct{ db *DB }
 
-func NewTerminalSessionRepository(db *DB) *TerminalSessionRepository { return &TerminalSessionRepository{db: db} }
+func NewTerminalSessionRepository(db *DB) *TerminalSessionRepository {
+	return &TerminalSessionRepository{db: db}
+}
 
 func (r *TerminalSessionRepository) Report(nodeID, sessionID, ticketHash, entryType, integrationRequestID string, now time.Time) error {
 	_, err := r.db.Exec(`INSERT INTO edge_terminal_sessions(node_id,terminal_session_id,terminal_ticket_hash,entry_type,integration_request_id,updated_at)
@@ -20,7 +22,8 @@ func (r *TerminalSessionRepository) Report(nodeID, sessionID, ticketHash, entryT
 
 func (r *TerminalSessionRepository) Matches(nodeID, sessionID, ticketHash, integrationRequestID string) (bool, error) {
 	var count int
-	err := r.db.QueryRow(`SELECT COUNT(*) FROM edge_terminal_sessions WHERE node_id=$1 AND terminal_session_id=$2 AND terminal_ticket_hash=$3
+	err := r.db.QueryRow(`SELECT COUNT(*) FROM edge_terminal_sessions WHERE node_id=$1 AND terminal_session_id=$2
+		AND (terminal_ticket_hash=$3 OR terminal_ticket_hash IS NULL)
 		AND (integration_request_id IS NOT DISTINCT FROM NULLIF($4,'')::uuid)`, nodeID, sessionID, ticketHash, integrationRequestID).Scan(&count)
 	return count == 1, err
 }

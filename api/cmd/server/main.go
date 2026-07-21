@@ -155,10 +155,10 @@ func main() {
 
 	// 初始化 WebSocket 管理器
 	wsManager := websocket.NewConnectionManager(tokenManager, statusService)
-	integrationTerminalDispatcher := integration.NewTerminalDispatcher(integrationRequestRepo, database.NewTerminalSessionRepository(db), fileRepo, printerRepo, printJobRepo, wsManager, statusService)
+	integrationTerminalDispatcher := integration.NewTerminalDispatcher(integrationRequestRepo, database.NewTerminalSessionRepository(db), fileRepo, printerRepo, wsManager)
 	go integrationTerminalDispatcher.Run(context.Background())
 	jobUpdateReceiptRepo := database.NewEdgeJobUpdateReceiptRepository(db)
-	wsHandler := websocket.NewWebSocketHandler(wsManager, printerRepo, edgeNodeRepo, printJobRepo, fileRepo, tokenManager, cfg.Server.AllowedOrigins, statusService, jobUpdateReceiptRepo, database.NewTerminalSessionRepository(db), integrationCallbackRepo)
+	wsHandler := websocket.NewWebSocketHandler(wsManager, printerRepo, edgeNodeRepo, printJobRepo, fileRepo, tokenManager, cfg.Server.AllowedOrigins, statusService, jobUpdateReceiptRepo, database.NewTerminalSessionRepository(db), integrationCallbackRepo, integrationRequestRepo)
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -217,14 +217,15 @@ func main() {
 
 	// 初始化处理器
 	userHandler := handlers.NewUserHandler(userRepo)
-	edgeNodeHandler := handlers.NewEdgeNodeHandler(db, edgeNodeRepo, printerRepo, wsManager, tokenUsageRepo, alertRepo)
+	terminalTicketRepo := database.NewTerminalTicketRepository(db)
+	terminalUploadSessions := database.NewTerminalUploadSessionRepository(db)
+	edgeNodeHandler := handlers.NewEdgeNodeHandler(db, edgeNodeRepo, printerRepo, wsManager, tokenUsageRepo, alertRepo, terminalTicketRepo, terminalUploadSessions, integrationRequestRepo)
 	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo, printJobRepo, wsManager, tokenUsageRepo, statusService, alertRepo)
 	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, edgeNodeRepo, wsManager, statusService, alertRepo)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo, builtinAuth)
 	fileHandler := handlers.NewFileHandler(fileRepo, &cfg.Storage, storageService, wsManager, tokenManager, businessSettingsService, edgeNodeRepo, printerRepo)
-	terminalUploadSessions := database.NewTerminalUploadSessionRepository(db)
 	fileHandler.SetTerminalUploadSessionBinder(terminalUploadSessions)
-	terminalTicketHandler := handlers.NewTerminalTicketHandler(database.NewTerminalTicketRepository(db), printerRepo, edgeNodeRepo, integrationProviderRepo, terminalUploadSessions, tokenManager, cfg.Server.PublicBaseURL)
+	terminalTicketHandler := handlers.NewTerminalTicketHandler(terminalTicketRepo, printerRepo, edgeNodeRepo, integrationProviderRepo, terminalUploadSessions, tokenManager)
 	integrationProviderHandler := handlers.NewIntegrationProviderHandler(integrationProviderRepo, oauth2SecretCipher, cfg.Integration.RedisURL)
 	integrationPrintRequestHandler := handlers.NewIntegrationPrintRequestHandler(integrationProviderRepo, integrationRequestRepo, oauth2SecretCipher, integrationNonceStore)
 	businessSettingsHandler := handlers.NewBusinessSettingsHandler(businessSettingsService)
@@ -417,7 +418,6 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 			// 功能 3.2.3: 放行禁用打印机的状态上报请求，仅检查节点启用状态
 			// 放行禁用节点的批量状态上报，允许监控禁用节点的打印机状态
 			edgeGroup.POST("/:node_id/printers/status", middleware.OAuth2ResourceServer("edge:printer"), middleware.EdgeNodeIdentityMatch(), printerHandler.EdgeBatchUpdatePrinterStatus)
-			edgeGroup.POST("/self/terminal-tickets", middleware.OAuth2ResourceServer("edge:printer"), terminalTicketHandler.IssueForSelf)
 
 			// WebSocket 连接
 			edgeGroup.GET("/ws", wsHandler.HandleConnection)

@@ -34,21 +34,28 @@ const (
 
 // PreviewFilePayload 文件预览请求载荷
 type PreviewFilePayload struct {
-	FileID                   string     `json:"file_id"`
-	FileURL                  string     `json:"file_url"`
-	FileName                 string     `json:"file_name"`
-	FileSize                 int64      `json:"file_size"`
-	FileType                 string     `json:"file_type"`
-	ContentHash              string     `json:"content_hash"`
-	FileAccessToken          string     `json:"file_access_token,omitempty"`            // 文件访问凭证
-	FileAccessTokenExpiresAt *time.Time `json:"file_access_token_expires_at,omitempty"` // 凭证过期时间
+	FileID                   string                 `json:"file_id"`
+	FileURL                  string                 `json:"file_url"`
+	FileName                 string                 `json:"file_name"`
+	FileSize                 int64                  `json:"file_size"`
+	FileType                 string                 `json:"file_type"`
+	ContentHash              string                 `json:"content_hash"`
+	PrintOptions             map[string]interface{} `json:"print_options,omitempty"`
+	TerminalSessionID        string                 `json:"terminal_session_id,omitempty"`
+	TerminalTicketHash       string                 `json:"terminal_ticket_hash,omitempty"`
+	IntegrationRequestID     string                 `json:"integration_request_id,omitempty"`
+	FileAccessToken          string                 `json:"file_access_token,omitempty"`            // 文件访问凭证
+	FileAccessTokenExpiresAt *time.Time             `json:"file_access_token_expires_at,omitempty"` // 凭证过期时间
 }
 
 // SubmitPrintParamsPayload 提交打印参数载荷
 type SubmitPrintParamsPayload struct {
-	FileID    string                 `json:"file_id"`
-	PrinterID string                 `json:"printer_id"`
-	Options   map[string]interface{} `json:"options"` // copies, color, duplex, paper_size, etc.
+	FileID               string                 `json:"file_id"`
+	PrinterID            string                 `json:"printer_id"`
+	Options              map[string]interface{} `json:"options"` // copies, color, duplex, paper_size, etc.
+	TerminalSessionID    string                 `json:"terminal_session_id,omitempty"`
+	TerminalTicketHash   string                 `json:"terminal_ticket_hash,omitempty"`
+	IntegrationRequestID string                 `json:"integration_request_id,omitempty"`
 }
 
 // PrintJobPayload 打印任务指令载荷

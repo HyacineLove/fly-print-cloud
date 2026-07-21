@@ -14,6 +14,7 @@ interface Provider {
   enabled: boolean;
   allowed_ip_cidrs: string;
   allowed_file_hosts: string;
+  allow_private_file_hosts: boolean;
   max_file_size: number;
   allowed_mime_types: string;
 }
@@ -60,7 +61,7 @@ const IntegrationProviders: React.FC = () => {
 
   const openCreate = () => {
     setEditing(undefined);
-    form.setFieldsValue({ max_file_size: 10 * 1024 * 1024, allowed_mime_types: 'application/pdf' } as ProviderForm);
+    form.setFieldsValue({ max_file_size: 10 * 1024 * 1024, allowed_mime_types: 'application/pdf', allow_private_file_hosts: false } as ProviderForm);
     setFormVisible(true);
   };
 
@@ -142,6 +143,8 @@ const IntegrationProviders: React.FC = () => {
         <Form.Item name="callback_base_url" label="回调基础 URL" rules={[{ required: true, type: 'url' }]}><Input placeholder="http://provider.example.com" /></Form.Item>
         <Form.Item name="allowed_ip_cidrs" label="出口 CIDR（逗号分隔）" rules={[{ required: true }]}><Input placeholder="203.0.113.0/24" /></Form.Item>
         <Form.Item name="allowed_file_hosts" label="文件主机（逗号分隔）" rules={[{ required: true }]}><Input placeholder="files.provider.example.com" /></Form.Item>
+        <Form.Item name="allow_private_file_hosts" label="允许私网文件主机" valuePropName="checked"><Switch /></Form.Item>
+        <Alert type="warning" showIcon message="仅当第三方文件服务位于受控内网时开启；仍须配置精确的文件主机白名单。" style={{ marginBottom: 16 }} />
         <Form.Item name="max_file_size" label="最大文件字节数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
         <Form.Item name="allowed_mime_types" label="允许 MIME（逗号分隔）" rules={[{ required: true }]}><Input /></Form.Item>
         <div style={{ marginTop: 20 }}><Space><Button type="primary" htmlType="submit">保存</Button><Button onClick={() => setFormVisible(false)}>取消</Button></Space></div>

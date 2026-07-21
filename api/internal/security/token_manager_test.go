@@ -141,6 +141,25 @@ func TestVerifyUploadTokenAvailableRejectsWrongContext(t *testing.T) {
 	}
 }
 
+func TestValidateUploadTokenForContextRejectsMismatchWithoutConsuming(t *testing.T) {
+	repo := newTestTokenRepo()
+	tm := NewTokenManager("secret", 180, 180, repo)
+
+	token, _, err := tm.GenerateUploadToken("node-1", "printer-1")
+	if err != nil {
+		t.Fatalf("GenerateUploadToken() error = %v", err)
+	}
+	if _, err := tm.ValidateUploadTokenForContext(token, "node-2", "printer-1"); GetTokenErrorCode(err) != "invalid_context" {
+		t.Fatalf("error code = %s, want invalid_context", GetTokenErrorCode(err))
+	}
+	if _, err := tm.ValidateUploadTokenForContext(token, "node-1", "printer-1"); err != nil {
+		t.Fatalf("matching context should still consume the token: %v", err)
+	}
+	if _, err := tm.ValidateUploadTokenForContext(token, "node-1", "printer-1"); GetTokenErrorCode(err) != "token_already_used" {
+		t.Fatalf("second consume error code = %s, want token_already_used", GetTokenErrorCode(err))
+	}
+}
+
 func TestGenerateTokensUseDynamicTTLProvider(t *testing.T) {
 	t.Parallel()
 

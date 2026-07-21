@@ -9,7 +9,16 @@ import (
 
 type TerminalUploadSessionRepository struct{ db *DB }
 
-func NewTerminalUploadSessionRepository(db *DB) *TerminalUploadSessionRepository { return &TerminalUploadSessionRepository{db: db} }
+func NewTerminalUploadSessionRepository(db *DB) *TerminalUploadSessionRepository {
+	return &TerminalUploadSessionRepository{db: db}
+}
+
+// DeleteForNodeTx removes only ephemeral upload mappings when a node is
+// deleted. Terminal tickets and historical requests remain intact.
+func (r *TerminalUploadSessionRepository) DeleteForNodeTx(tx *Tx, nodeID string) error {
+	_, err := tx.Exec(`DELETE FROM terminal_upload_sessions WHERE node_id=$1`, nodeID)
+	return err
+}
 
 func (r *TerminalUploadSessionRepository) Create(rawToken, ticketHash, nodeID, printerID, sessionID string, expiresAt time.Time) error {
 	_, err := r.db.Exec(`INSERT INTO terminal_upload_sessions(upload_token_hash,terminal_ticket_hash,node_id,printer_id,terminal_session_id,expires_at)
@@ -19,17 +28,32 @@ func (r *TerminalUploadSessionRepository) Create(rawToken, ticketHash, nodeID, p
 
 // BindFile atomically consumes the official ticket only when upload succeeds.
 func (r *TerminalUploadSessionRepository) BindFile(rawToken, fileID string, now time.Time) error {
-	tx, err := r.db.Begin(); if err != nil { return err }; defer tx.Rollback()
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	var ticketHash string
 	err = tx.QueryRow(`SELECT terminal_ticket_hash FROM terminal_upload_sessions WHERE upload_token_hash=$1 AND file_id IS NULL AND expires_at>$2 FOR UPDATE`, uploadTokenHash(rawToken), now).Scan(&ticketHash)
 	// Existing Edge QR uploads predate the entry bridge and deliberately have no
 	// mapping. Preserve that protocol; a mapping, once present, is strict.
-	if err == sql.ErrNoRows { return nil }
-	if err != nil { return fmt.Errorf("terminal upload session unavailable: %w", err) }
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("terminal upload session unavailable: %w", err)
+	}
 	result, err := tx.Exec(`UPDATE terminal_tickets SET status='consumed',consumed_at=$2 WHERE ticket_hash=$1 AND status='selected' AND selected_entry='official' AND expires_at>$2`, ticketHash, now)
-	if err != nil { return err }
-	changed, _ := result.RowsAffected(); if changed != 1 { return fmt.Errorf("terminal ticket unavailable") }
-	if _, err := tx.Exec(`UPDATE terminal_upload_sessions SET file_id=$2::uuid WHERE upload_token_hash=$1`, uploadTokenHash(rawToken), fileID); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return fmt.Errorf("terminal ticket unavailable")
+	}
+	if _, err := tx.Exec(`UPDATE terminal_upload_sessions SET file_id=$2::uuid WHERE upload_token_hash=$1`, uploadTokenHash(rawToken), fileID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

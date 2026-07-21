@@ -18,6 +18,12 @@ func TestIsPublicAddressRejectsPrivateAndLoopbackRanges(t *testing.T) {
 	if !isPublicAddress(net.ParseIP("8.8.8.8")) {
 		t.Fatal("isPublicAddress() rejected a public address")
 	}
+	if !isAllowedProviderAddress(net.ParseIP("172.20.0.8"), true) {
+		t.Fatal("explicit private provider policy should allow Docker private address")
+	}
+	if isAllowedProviderAddress(net.ParseIP("127.0.0.1"), true) || isAllowedProviderAddress(net.ParseIP("169.254.1.1"), true) {
+		t.Fatal("private policy must not allow loopback or link-local addresses")
+	}
 }
 
 func TestAllowedCSVContainsIsCaseInsensitiveAndExact(t *testing.T) {

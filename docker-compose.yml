@@ -148,6 +148,30 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  integration-demo:
+    build:
+      context: ./integration-demo
+      dockerfile: Dockerfile
+      args:
+        - DOCKERHUB_MIRROR=${DOCKERHUB_MIRROR:-docker.1ms.run}
+    container_name: fly-print-integration-demo
+    environment:
+      - DEMO_DATA_DIR=/data
+      - DEMO_CLOUD_API_BASE=http://api:8080
+      - DEMO_ADMIN_PASSWORD=${INTEGRATION_DEMO_ADMIN_PASSWORD:-demo123}
+    volumes:
+      - integration_demo_data:/data
+    networks:
+      - fly-print-network
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health | grep ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
   admin-console-builder:
     build:
       context: ./admin
@@ -198,6 +222,7 @@ volumes:
   file_uploads:
   minio_data:
   redis_data:
+  integration_demo_data:
 
 networks:
   fly-print-network:

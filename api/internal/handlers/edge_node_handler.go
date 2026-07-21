@@ -15,23 +15,29 @@ import (
 
 // EdgeNodeHandler Edge Node 管理处理器
 type EdgeNodeHandler struct {
-	db             *database.DB
-	edgeNodeRepo   *database.EdgeNodeRepository
-	printerRepo    *database.PrinterRepository
-	wsManager      *websocket.ConnectionManager
-	tokenUsageRepo *database.TokenUsageRepository
-	alertRepo      *database.OperationalAlertRepository
+	db                  *database.DB
+	edgeNodeRepo        *database.EdgeNodeRepository
+	printerRepo         *database.PrinterRepository
+	wsManager           *websocket.ConnectionManager
+	tokenUsageRepo      *database.TokenUsageRepository
+	alertRepo           *database.OperationalAlertRepository
+	tickets             *database.TerminalTicketRepository
+	uploadSessions      *database.TerminalUploadSessionRepository
+	integrationRequests *database.IntegrationPrintRequestRepository
 }
 
 // NewEdgeNodeHandler 创建 Edge Node 管理处理器
-func NewEdgeNodeHandler(db *database.DB, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository, alertRepo *database.OperationalAlertRepository) *EdgeNodeHandler {
+func NewEdgeNodeHandler(db *database.DB, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository, alertRepo *database.OperationalAlertRepository, tickets *database.TerminalTicketRepository, uploadSessions *database.TerminalUploadSessionRepository, integrationRequests *database.IntegrationPrintRequestRepository) *EdgeNodeHandler {
 	return &EdgeNodeHandler{
-		db:             db,
-		edgeNodeRepo:   edgeNodeRepo,
-		printerRepo:    printerRepo,
-		wsManager:      wsManager,
-		tokenUsageRepo: tokenUsageRepo,
-		alertRepo:      alertRepo,
+		db:                  db,
+		edgeNodeRepo:        edgeNodeRepo,
+		printerRepo:         printerRepo,
+		wsManager:           wsManager,
+		tokenUsageRepo:      tokenUsageRepo,
+		alertRepo:           alertRepo,
+		tickets:             tickets,
+		uploadSessions:      uploadSessions,
+		integrationRequests: integrationRequests,
 	}
 }
 
@@ -525,8 +531,32 @@ func (h *EdgeNodeHandler) DeleteEdgeNode(c *gin.Context) {
 		}
 	}()
 
-	// 1. 级联删除该节点下的所有打印机（硬删除）
-	// 由于节点是软删除，数据库的 ON DELETE CASCADE 不会触发，需要手动删除打印机
+	// 1. 先取消仍可被打开或继续处理的临时业务数据。
+	// 历史票据、订单和打印任务保留，避免破坏审计和外部状态查询。
+	if h.integrationRequests != nil {
+		if err := h.integrationRequests.CancelForNodeTx(tx, nodeID); err != nil {
+			logger.Error("Failed to cancel integration requests for node", zap.String("node_id", nodeID), zap.Error(err))
+			InternalErrorResponse(c, "取消节点第三方任务失败")
+			return
+		}
+	}
+	if h.tickets != nil {
+		if err := h.tickets.CancelActiveForNodeTx(tx, nodeID); err != nil {
+			logger.Error("Failed to cancel terminal tickets for node", zap.String("node_id", nodeID), zap.Error(err))
+			InternalErrorResponse(c, "取消终端票据失败")
+			return
+		}
+	}
+	if h.uploadSessions != nil {
+		if err := h.uploadSessions.DeleteForNodeTx(tx, nodeID); err != nil {
+			logger.Error("Failed to delete upload sessions for node", zap.String("node_id", nodeID), zap.Error(err))
+			InternalErrorResponse(c, "清理上传会话失败")
+			return
+		}
+	}
+
+	// 2. 清理告警并软删除该节点下打印机。打印机不能硬删除，因为历史
+	// terminal_tickets 仍通过外键引用它们。
 	if h.alertRepo != nil {
 		if err := h.alertRepo.DeleteForNodeTx(tx, nodeID); err != nil {
 			logger.Error("Failed to delete alerts for node", zap.String("node_id", nodeID), zap.Error(err))
@@ -543,7 +573,7 @@ func (h *EdgeNodeHandler) DeleteEdgeNode(c *gin.Context) {
 		logger.Info("Successfully deleted all printers for node", zap.String("node_id", nodeID))
 	}
 
-	// 2. 删除节点（软删除）
+	// 3. 删除节点（软删除）
 	if err := h.edgeNodeRepo.DeleteEdgeNodeTx(tx, nodeID); err != nil {
 		logger.Error("Failed to delete edge node", zap.String("node_id", nodeID), zap.Error(err))
 		InternalErrorResponse(c, "删除 Edge Node 失败")

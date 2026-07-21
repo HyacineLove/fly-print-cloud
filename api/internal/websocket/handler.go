@@ -17,33 +17,35 @@ import (
 
 // WebSocketHandler WebSocket 处理器
 type WebSocketHandler struct {
-	manager          *ConnectionManager
-	printerRepo      *database.PrinterRepository
-	edgeNodeRepo     *database.EdgeNodeRepository
-	printJobRepo     *database.PrintJobRepository
-	fileRepo         *database.FileRepository
-	tokenManager     *security.TokenManager
-	allowedOrigins   []string // 允许的Origin列表
-	statusService    *operations.StatusService
-	receipts         *database.EdgeJobUpdateReceiptRepository
-	terminalSessions *database.TerminalSessionRepository
-	callbacks        *database.IntegrationCallbackRepository
+	manager             *ConnectionManager
+	printerRepo         *database.PrinterRepository
+	edgeNodeRepo        *database.EdgeNodeRepository
+	printJobRepo        *database.PrintJobRepository
+	fileRepo            *database.FileRepository
+	tokenManager        *security.TokenManager
+	allowedOrigins      []string // 允许的Origin列表
+	statusService       *operations.StatusService
+	receipts            *database.EdgeJobUpdateReceiptRepository
+	terminalSessions    *database.TerminalSessionRepository
+	callbacks           *database.IntegrationCallbackRepository
+	integrationRequests *database.IntegrationPrintRequestRepository
 }
 
 // NewWebSocketHandler 创建 WebSocket 处理器
-func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, allowedOrigins []string, statusService *operations.StatusService, receipts *database.EdgeJobUpdateReceiptRepository, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository) *WebSocketHandler {
+func NewWebSocketHandler(manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, allowedOrigins []string, statusService *operations.StatusService, receipts *database.EdgeJobUpdateReceiptRepository, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository, integrationRequests *database.IntegrationPrintRequestRepository) *WebSocketHandler {
 	return &WebSocketHandler{
-		manager:          manager,
-		printerRepo:      printerRepo,
-		edgeNodeRepo:     edgeNodeRepo,
-		printJobRepo:     printJobRepo,
-		fileRepo:         fileRepo,
-		tokenManager:     tokenManager,
-		allowedOrigins:   allowedOrigins,
-		statusService:    statusService,
-		receipts:         receipts,
-		terminalSessions: terminalSessions,
-		callbacks:        callbacks,
+		manager:             manager,
+		printerRepo:         printerRepo,
+		edgeNodeRepo:        edgeNodeRepo,
+		printJobRepo:        printJobRepo,
+		fileRepo:            fileRepo,
+		tokenManager:        tokenManager,
+		allowedOrigins:      allowedOrigins,
+		statusService:       statusService,
+		receipts:            receipts,
+		terminalSessions:    terminalSessions,
+		callbacks:           callbacks,
+		integrationRequests: integrationRequests,
 	}
 }
 
@@ -142,7 +144,7 @@ func (h *WebSocketHandler) HandleConnection(c *gin.Context) {
 	}
 
 	// 创建连接对象
-	connection := NewConnection(nodeID, conn, h.manager, h.printerRepo, h.edgeNodeRepo, h.printJobRepo, h.fileRepo, h.tokenManager, h.statusService, h.receipts, h.terminalSessions, h.callbacks)
+	connection := NewConnection(nodeID, conn, h.manager, h.printerRepo, h.edgeNodeRepo, h.printJobRepo, h.fileRepo, h.tokenManager, h.statusService, h.receipts, h.terminalSessions, h.callbacks, h.integrationRequests)
 
 	// 注册连接
 	h.manager.register <- connection

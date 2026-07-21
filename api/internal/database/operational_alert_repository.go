@@ -165,8 +165,9 @@ func (r *OperationalAlertRepository) DeviceOverview() (DeviceOverview, error) {
 			AND registration_state <> 'pending_activation' AND status='online'),
 		(SELECT COUNT(*) FROM edge_nodes WHERE deleted_at IS NULL AND registration_state <> 'pending_activation'),
 		(SELECT COUNT(*) FROM printers p JOIN edge_nodes n ON n.id=p.edge_node_id
-			WHERE p.deleted_at IS NULL AND p.enabled=true AND n.deleted_at IS NULL AND (
-				NOT n.enabled OR n.status <> 'online' OR p.status_received_at IS NULL OR
+			WHERE p.deleted_at IS NULL AND p.enabled=true AND n.deleted_at IS NULL
+				AND n.enabled=true AND n.status <> 'offline' AND (
+				p.status_received_at IS NULL OR
 				p.status_received_at < CURRENT_TIMESTAMP - INTERVAL '90 seconds' OR
 				p.status NOT IN ('idle','printing')
 			)),
@@ -190,7 +191,7 @@ func (r *OperationalAlertRepository) Summary() (OperationalAlertSummary, error) 
 		(SELECT COUNT(*) FROM edge_nodes WHERE deleted_at IS NULL AND enabled=true AND status='offline'),
 		(SELECT COUNT(*) FROM printers p JOIN edge_nodes n ON n.id=p.edge_node_id
 		 WHERE p.deleted_at IS NULL AND p.enabled=true AND n.enabled=true AND
-		 (n.status<>'online' OR p.status_received_at IS NULL OR
+		 n.status<>'offline' AND (p.status_received_at IS NULL OR
 		  p.status_received_at < CURRENT_TIMESTAMP - INTERVAL '90 seconds' OR
 		  p.status NOT IN ('idle','printing')))`).Scan(
 		&summary.Total, &summary.High, &summary.OfflineNodes, &summary.UnavailablePrinters,
@@ -220,7 +221,7 @@ func (r *OperationalAlertRepository) DeleteForNodeTx(tx *Tx, nodeID string) erro
 func (r *OperationalAlertRepository) DeleteForPrinter(printerID string) error {
 	_, err := r.db.Exec(`DELETE FROM operational_alerts
 		WHERE printer_id = $1::uuid
-		   OR (resource_type = 'printer' AND resource_id = $1)`, printerID)
+		   OR (resource_type = 'printer' AND resource_id = $1::text)`, printerID)
 	return err
 }
 

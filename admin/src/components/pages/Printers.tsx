@@ -5,7 +5,7 @@ import { DeleteOutlined } from '@ant-design/icons';
 import { buildApiUrl, buildAuthUrl } from '../../config';
 import { TwoLineValue } from '../DisplayValue';
 
-interface Node { id: string; name: string; alias?: string; }
+interface Node { id: string; name: string; alias?: string; connection_status: string; }
 interface Printer { id: string; name: string; display_name?: string; model?: string; printer_status: string; enabled: boolean; edge_node_id: string; }
 
 async function request(path: string, init?: RequestInit) {
@@ -24,6 +24,9 @@ const stateTag = (value: string) => {
   const state = states[value] || { color: 'default', label: value || '-' };
   return <Tag color={state.color}>{state.label}</Tag>;
 };
+
+export const effectivePrinterStatus = (printerStatus: string, nodeStatus?: string) =>
+  nodeStatus === 'offline' ? 'offline' : printerStatus;
 
 const Printers: React.FC = () => {
   const [printers, setPrinters] = useState<Printer[]>([]);
@@ -56,7 +59,7 @@ const Printers: React.FC = () => {
     { title: '打印机名称', width: 250, render: (_, printer) => editing === printer.id ? <Space.Compact className="inline-name-editor"><Input autoFocus value={name} onChange={event => setName(event.target.value)} onPressEnter={() => saveName(printer)} placeholder="留空以清除别名" /><Button type="primary" onClick={() => saveName(printer)}>保存</Button></Space.Compact> : <span style={{ cursor: 'pointer' }} onClick={() => { setEditing(printer.id); setName(printer.display_name || printer.name || ''); }}><div>{printer.display_name || printer.name}</div>{printer.display_name && <div style={{ color: '#8c8c8c', fontSize: 12 }}>（{printer.name}）</div>}</span> },
     { title: '打印机型号', dataIndex: 'model', render: value => value || '-' },
     { title: '打印机所属节点', width: 250, render: (_, printer) => <TwoLineValue id={printer.edge_node_id} name={nodes[printer.edge_node_id]?.alias || nodes[printer.edge_node_id]?.name} /> },
-    { title: '打印机当前状态', dataIndex: 'printer_status', render: stateTag },
+    { title: '打印机当前状态', render: (_, printer) => stateTag(effectivePrinterStatus(printer.printer_status, nodes[printer.edge_node_id]?.connection_status)) },
     { title: '打印机启用状态', width: 110, render: (_, printer) => <Switch checked={printer.enabled} onChange={enabled => update(printer, { enabled })} /> },
     { title: '', width: 70, render: (_, printer) => <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => remove(printer)} /> },
   ];

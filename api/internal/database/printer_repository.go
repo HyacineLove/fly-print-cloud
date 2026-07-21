@@ -380,7 +380,7 @@ func (r *PrinterRepository) DeletePrinter(printerID string) error {
 }
 
 func (r *PrinterRepository) DeletePrinterByEdgeNode(printerID string, edgeNodeID string) error {
-	query := `DELETE FROM printers WHERE id = $1 AND edge_node_id = $2`
+	query := `UPDATE printers SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1 AND edge_node_id = $2 AND deleted_at IS NULL`
 	result, err := r.db.Exec(query, printerID, edgeNodeID)
 	if err != nil {
 		return fmt.Errorf("failed to delete printer: %w", err)
@@ -458,10 +458,10 @@ func (r *PrinterRepository) EnablePrintersByEdgeNode(edgeNodeID string) error {
 	return err
 }
 
-// DeletePrintersByEdgeNode 删除指定Edge Node下的所有打印机
-// 用于节点软删除时级联删除打印机
+// DeletePrintersByEdgeNode 删除指定 Edge Node 下的所有打印机（软删除）。
+// 保留历史任务、票据和第三方订单所引用的打印机记录。
 func (r *PrinterRepository) DeletePrintersByEdgeNode(edgeNodeID string) error {
-	query := `DELETE FROM printers WHERE edge_node_id = $1`
+	query := `UPDATE printers SET deleted_at = CURRENT_TIMESTAMP WHERE edge_node_id = $1 AND deleted_at IS NULL`
 	result, err := r.db.DB.Exec(query, edgeNodeID)
 	if err != nil {
 		return fmt.Errorf("failed to delete printers by edge node: %w", err)
@@ -472,9 +472,9 @@ func (r *PrinterRepository) DeletePrintersByEdgeNode(edgeNodeID string) error {
 	return nil
 }
 
-// DeletePrintersByEdgeNodeTx 删除指定Edge Node下的所有打印机（使用事务）
+// DeletePrintersByEdgeNodeTx 删除指定 Edge Node 下的所有打印机（软删除，使用事务）。
 func (r *PrinterRepository) DeletePrintersByEdgeNodeTx(tx *Tx, edgeNodeID string) error {
-	query := `DELETE FROM printers WHERE edge_node_id = $1`
+	query := `UPDATE printers SET deleted_at = CURRENT_TIMESTAMP WHERE edge_node_id = $1 AND deleted_at IS NULL`
 	result, err := tx.Exec(query, edgeNodeID)
 	if err != nil {
 		return fmt.Errorf("failed to delete printers by edge node in transaction: %w", err)

@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -356,8 +358,6 @@ func (h *PrinterHandler) DeletePrinter(c *gin.Context) {
 	if h.alertRepo != nil {
 		if err := h.alertRepo.DeleteForPrinter(printerID); err != nil {
 			logger.Error("Failed to delete alerts for printer", zap.String("printer_id", printerID), zap.Error(err))
-			InternalErrorResponse(c, "failed to delete printer alerts")
-			return
 		}
 	}
 	logger.Info("Printer deleted successfully", zap.String("printer_id", printerID))
@@ -417,8 +417,13 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 		printer = existingPrinter
 		logger.Info("Printer updated by edge node", zap.String("printer_name", printer.Name), zap.String("edge_node_id", edgeNodeID), zap.String("printer_id", printer.ID))
 	} else {
+		if !errors.Is(err, sql.ErrNoRows) {
+			logger.Error("Failed to look up existing printer", zap.String("printer_name", req.Name), zap.String("edge_node_id", edgeNodeID), zap.Error(err))
+			InternalErrorResponse(c, "查询打印机失败")
+			return
+		}
+
 		// 打印机不存在，创建新记录
-		isNew = true
 		printer = &models.Printer{
 			ID:              uuid.New().String(),
 			Name:            req.Name,
@@ -435,6 +440,7 @@ func (h *PrinterHandler) EdgeRegisterPrinter(c *gin.Context) {
 			EdgeNodeID:      edgeNodeID,
 		}
 
+		isNew = true
 		if err := h.printerRepo.CreatePrinter(printer); err != nil {
 			logger.Error("Failed to create printer by edge node", zap.String("edge_node_id", edgeNodeID), zap.Error(err))
 			InternalErrorResponse(c, "注册打印机失败")

@@ -38,21 +38,22 @@ const (
 
 // Connection 表示单个 WebSocket 连接
 type Connection struct {
-	NodeID           string
-	Conn             *websocket.Conn
-	Send             chan []byte
-	done             chan struct{}
-	closeOnce        sync.Once
-	Manager          *ConnectionManager
-	PrinterRepo      *database.PrinterRepository
-	EdgeNodeRepo     *database.EdgeNodeRepository
-	PrintJobRepo     *database.PrintJobRepository
-	FileRepo         *database.FileRepository
-	TokenManager     *security.TokenManager
-	StatusService    *operations.StatusService
-	Receipts         *database.EdgeJobUpdateReceiptRepository
-	TerminalSessions *database.TerminalSessionRepository
-	Callbacks        *database.IntegrationCallbackRepository
+	NodeID              string
+	Conn                *websocket.Conn
+	Send                chan []byte
+	done                chan struct{}
+	closeOnce           sync.Once
+	Manager             *ConnectionManager
+	PrinterRepo         *database.PrinterRepository
+	EdgeNodeRepo        *database.EdgeNodeRepository
+	PrintJobRepo        *database.PrintJobRepository
+	FileRepo            *database.FileRepository
+	TokenManager        *security.TokenManager
+	StatusService       *operations.StatusService
+	Receipts            *database.EdgeJobUpdateReceiptRepository
+	TerminalSessions    *database.TerminalSessionRepository
+	Callbacks           *database.IntegrationCallbackRepository
+	IntegrationRequests *database.IntegrationPrintRequestRepository
 
 	// ACK 机制相关
 	pendingAcks map[string]chan struct{}
@@ -60,23 +61,24 @@ type Connection struct {
 }
 
 // NewConnection 创建新连接
-func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService, receipts *database.EdgeJobUpdateReceiptRepository, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository) *Connection {
+func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService, receipts *database.EdgeJobUpdateReceiptRepository, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository, integrationRequests *database.IntegrationPrintRequestRepository) *Connection {
 	return &Connection{
-		NodeID:           nodeID,
-		Conn:             conn,
-		Send:             make(chan []byte, 256),
-		done:             make(chan struct{}),
-		Manager:          manager,
-		PrinterRepo:      printerRepo,
-		EdgeNodeRepo:     edgeNodeRepo,
-		PrintJobRepo:     printJobRepo,
-		FileRepo:         fileRepo,
-		TokenManager:     tokenManager,
-		StatusService:    statusService,
-		Receipts:         receipts,
-		TerminalSessions: terminalSessions,
-		Callbacks:        callbacks,
-		pendingAcks:      make(map[string]chan struct{}),
+		NodeID:              nodeID,
+		Conn:                conn,
+		Send:                make(chan []byte, 256),
+		done:                make(chan struct{}),
+		Manager:             manager,
+		PrinterRepo:         printerRepo,
+		EdgeNodeRepo:        edgeNodeRepo,
+		PrintJobRepo:        printJobRepo,
+		FileRepo:            fileRepo,
+		TokenManager:        tokenManager,
+		StatusService:       statusService,
+		Receipts:            receipts,
+		TerminalSessions:    terminalSessions,
+		Callbacks:           callbacks,
+		IntegrationRequests: integrationRequests,
+		pendingAcks:         make(map[string]chan struct{}),
 	}
 }
 
@@ -215,7 +217,7 @@ func (c *Connection) handleMessage(msg *Message) {
 	node, err := c.EdgeNodeRepo.GetEdgeNodeByID(c.NodeID)
 	if err != nil || node == nil {
 		logger.Warn("Message rejected: node not found", zap.String("node_id", c.NodeID), zap.String("message_type", msg.Type))
-		c.sendError("node_not_found", "Edge node not found", "")
+		c.sendRequestError("node_not_found", "Edge node not found", "", c.uploadTokenRequestID(msg))
 		return
 	}
 
@@ -223,7 +225,7 @@ func (c *Connection) handleMessage(msg *Message) {
 	if msg.Type != MsgTypeHeartbeat && msg.Type != MsgTypeJobUpdate {
 		if !node.Enabled {
 			logger.Warn("Message rejected: node is disabled", zap.String("node_id", c.NodeID), zap.String("message_type", msg.Type))
-			c.sendError("node_disabled", "Edge node has been disabled by administrator", "")
+			c.sendRequestError("node_disabled", "Edge node has been disabled by administrator", "", c.uploadTokenRequestID(msg))
 			return
 		}
 	}
@@ -244,6 +246,23 @@ func (c *Connection) handleMessage(msg *Message) {
 	default:
 		logger.Warn("Unknown message type from node", zap.String("type", msg.Type), zap.String("node_id", c.NodeID))
 	}
+}
+
+// uploadTokenRequestID extracts the correlation ID only for upload-token
+// requests. Other messages intentionally remain uncorrelated error events.
+func (c *Connection) uploadTokenRequestID(msg *Message) string {
+	if msg == nil || msg.Type != MsgTypeRequestUploadToken {
+		return ""
+	}
+	data, err := json.Marshal(msg.Data)
+	if err != nil {
+		return ""
+	}
+	var payload RequestUploadTokenPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	return payload.RequestID
 }
 
 func (c *Connection) handleTerminalSessionState(msg *Message) {
@@ -370,6 +389,32 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 		return
 	}
 
+	if payload.IntegrationRequestID != "" {
+		if c.IntegrationRequests == nil || payload.TerminalSessionID == "" || payload.TerminalTicketHash == "" {
+			c.sendError("integration_context_mismatch", "Integration terminal context is incomplete", payload.PrinterID)
+			return
+		}
+		confirmation := database.IntegrationPrintConfirmation{
+			RequestID: payload.IntegrationRequestID, NodeID: c.NodeID, FileID: payload.FileID, PrinterID: payload.PrinterID,
+			TerminalSessionID: payload.TerminalSessionID, TerminalTicketHash: payload.TerminalTicketHash,
+			Copies: optionInt(payload.Options, "copies", 1), PaperSize: optionString(payload.Options, "paper_size"),
+			ColorMode: optionString(payload.Options, "color_mode"), DuplexMode: optionString(payload.Options, "duplex_mode"),
+		}
+		job, created, err := c.IntegrationRequests.ConfirmAndCreateJob(confirmation)
+		if err != nil {
+			logger.Warn("Integration print confirmation rejected", zap.String("request_id", payload.IntegrationRequestID), zap.Error(err))
+			c.sendError("integration_context_mismatch", "Integration request no longer matches this terminal", payload.PrinterID)
+			return
+		}
+		if !created {
+			return
+		}
+		go DispatchPrintJobAndRecord(c.Manager, c.PrintJobRepo, c.StatusService, job, c.NodeID, func() error {
+			return c.IntegrationRequests.MarkDispatched(payload.IntegrationRequestID, job.ID)
+		})
+		return
+	}
+
 	// 获取文件信息
 	file, err := c.FileRepo.GetByID(payload.FileID)
 	if err != nil {
@@ -469,6 +514,18 @@ func (c *Connection) handleSubmitPrintParams(msg *Message) {
 }
 
 // handleHeartbeat 处理心跳消息
+func optionInt(options map[string]interface{}, key string, fallback int) int {
+	if value, ok := options[key].(float64); ok && value >= 1 {
+		return int(value)
+	}
+	return fallback
+}
+
+func optionString(options map[string]interface{}, key string) string {
+	value, _ := options[key].(string)
+	return value
+}
+
 func (c *Connection) handleHeartbeat(msg *Message) {
 	logger.Debug("Processing heartbeat from node", zap.String("node_id", c.NodeID))
 
@@ -579,7 +636,7 @@ func (c *Connection) handleRequestUploadToken(msg *Message) {
 	apiUploadURL := fmt.Sprintf("/api/v1/files?token=%s", token)
 
 	// 2. Web上传页面URL：用于生成二维码/链接给用户（GET请求）
-	webUploadURL := fmt.Sprintf("/upload?token=%s&node_id=%s&printer_id=%s", token, c.NodeID, payload.PrinterID)
+	webUploadURL := fmt.Sprintf("/entry?token=%s&node_id=%s&printer_id=%s", token, c.NodeID, payload.PrinterID)
 
 	// 发送上传凭证响应
 	response := map[string]interface{}{
