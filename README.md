@@ -89,7 +89,7 @@ docker compose ps
 - 详细健康检查：`GET /api/v1/health`；
 - Swagger：`/swagger/index.html`；
 - 管理端：`/`。
-- 第三方 Demo：`/integration-demo/`（接入步骤见 [`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)）。
+- 第三方 Demo：`/integration-demo/`（**局域网演示**步骤见 [`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)；公网差异见 [`docs/第三方接入-公网部署要点.md`](docs/第三方接入-公网部署要点.md)）。
 
 查看日志：
 
@@ -228,7 +228,8 @@ Smoke/performance 脚本会读取同级工作区中的 `fly-print-edge/config.js
 
 ## 总体文档
 
-- 第三方演示与接入：[`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)（含演示就绪清单）
+- 第三方演示与接入（**局域网**）：[`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)
+- 公网 / 对外部署差异：[`docs/第三方接入-公网部署要点.md`](docs/第三方接入-公网部署要点.md)
 - 发版勾选：[`docs/agent/release-plan.md`](docs/agent/release-plan.md)
 
 跨仓开发计划、当前进度和非技术使用说明位于工作区根目录：
