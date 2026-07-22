@@ -110,8 +110,8 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 			   pj.copies, pj.paper_size, pj.color_mode, pj.duplex_mode, 
 			   pj.start_time, pj.end_time, COALESCE(pj.error_message, ''), pj.error_code, pj.retry_count,
 			   pj.max_retries, pj.created_at, pj.updated_at,
-			   COALESCE(p.display_name, p.name, '') as printer_name,
-			   COALESCE(n.alias, n.name, '') as node_name,
+			   COALESCE(NULLIF(p.display_name, ''), p.name, '') as printer_name,
+			   COALESCE(NULLIF(n.alias, ''), n.name, '') as node_name,
 			   COALESCE(p.edge_node_id, '') as edge_node_id,
 			   COALESCE(provider.display_name, '主系统') AS initiator_name
 		FROM print_jobs pj

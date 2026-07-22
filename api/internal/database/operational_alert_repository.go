@@ -125,7 +125,7 @@ func (r *OperationalAlertRepository) List(status, resourceType, nodeID, printerI
 		COALESCE(a.node_id,''), COALESCE(a.printer_id::text,''), COALESCE(a.job_id::text,''),
 		a.reason_code, a.category, a.title, a.status,
 		a.details, a.occurrence_count, a.first_seen_at, a.last_seen_at, a.resolved_at,
-		COALESCE(n.alias, n.name, ''), COALESCE(p.display_name, p.name, ''), COALESCE(j.name, '')
+		COALESCE(NULLIF(n.alias, ''), n.name, ''), COALESCE(NULLIF(p.display_name, ''), p.name, ''), COALESCE(j.name, '')
 		FROM operational_alerts a LEFT JOIN edge_nodes n ON n.id=a.node_id
 		LEFT JOIN printers p ON p.id=a.printer_id
 		LEFT JOIN print_jobs j ON j.id=a.job_id`+where+fmt.Sprintf(" ORDER BY a.last_seen_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)

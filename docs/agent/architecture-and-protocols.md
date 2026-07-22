@@ -31,7 +31,7 @@ nginx/ + docker-compose.yml
 
 ## 二维码入口
 
-- 仅 Edge `/api/qr_code`。Cloud 回相对 `/entry?token=...`；Edge 用 `cloud.base_url` 拼并对 localhost 改写局域网 IP（http 演示用；HTTPS 用域名）。`cloud.base_url` 支持 http(s)，WS 为 ws(s)。不依赖 `EXTERNAL_API_URL` 绝对地址。
+- 仅 Edge `/api/qr_code`。Cloud 回相对 `/entry?token=...`；Edge 用 `cloud.base_url` 拼接，并对 `localhost`/`127.0.0.1` **无条件**改写局域网 IP（代码不区分 http/https；HTTPS 应直接配证书域名）。`cloud.base_url` 支持 http(s)，WS 为 ws(s)。不依赖 `EXTERNAL_API_URL` 绝对地址。
 - `/entry` 校验上传凭证后签发独立 `terminal_ticket`；成功后下行 `terminal_occupied`（`msg_id` + Edge ACK；断线 pending，重连靠 `terminal_session_state` 补发）。官方再发上传凭证进 `/upload`；第三方只传终端票据。
 - 未消费前可回退 Entry 并重新选择入口（换发官方 upload token）；已上传/已提交三方单后拒绝再选。Edge 刷新会话作废未完成 ticket；官方上传/`verify` 须 `edge_terminal_sessions.Matches`；`preview_file` 须带 `terminal_session_id` + `terminal_ticket_hash`。
 
@@ -56,4 +56,4 @@ Edge→Cloud：`edge_heartbeat`、`job_update`、`submit_print_params`、`reques
 
 ## 已知缺口（勿当已交付）
 
-Users/Settings 占位；Dashboard 失败可能假数据；无 CI；无版本化 DB 迁移；MinIO 常用 `latest`；E2E/断线/升级兼容未成门禁。
+Users/Settings/OAuth2Clients 未挂管理端菜单；无独立运维迁移 CLI（启动时 `InitTables` + `migrations.Run`）；MinIO 常用 `latest`；E2E/断线/升级兼容未成门禁。

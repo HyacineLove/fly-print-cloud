@@ -124,7 +124,7 @@ describe('BusinessSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
 
     await waitFor(() => {
-      expect(message.error).toHaveBeenCalledWith('upload_max_size_bytes must be greater than 0');
+      expect(message.error).toHaveBeenCalledWith('上传大小上限必须大于 0');
     });
   });
 });

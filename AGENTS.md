@@ -9,11 +9,11 @@
 | 协议 / 目录 / 第三方与 Demo | `docs/agent/architecture-and-protocols.md` |
 | 启动 / 路由 / 测试命令 | `docs/agent/operations-and-verification.md` |
 | 发版 P0/P1 待办（M0） | `docs/agent/release-plan.md`（与 Edge 同名文件同步） |
-| **M0 完整交接手册（局域网主路径）** | `docs/M0演示交接手册.md` |
+| **系统说明（产品与行为）** | `docs/系统说明.md` |
+| **部署与验证（HTTPS 主路径）** | `docs/部署与验证.md` |
 | **第三方接入指南（对接契约）** | `docs/第三方接入指南.md`（含 http(s) 双兼容） |
-| 演示交付一页纸 | `docs/演示交付说明.md` |
 | http(s)/ws(s) 双兼容 | Provider/file URL 校验；Edge 见对仓 `url_scheme.py` |
-| 人类部署说明 | `README.md` |
+| 人类部署说明 | `README.md`；细节见 `docs/部署与验证.md` |
 
 ## 硬规则
 

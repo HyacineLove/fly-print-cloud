@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Button, Card, Col, Form, Input, InputNumber, Row, message } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import { buildApiUrl, buildAuthUrl } from '../../config';
+import { mapApiError } from '../../utils/mapApiError';
 
 interface BusinessSettingsPayload {
   upload_max_size_bytes: number;
@@ -59,10 +60,10 @@ const BusinessSettings: React.FC = () => {
       if (response.ok && result.code === 200 && result.data) {
         applySettings(result.data);
       } else {
-        message.error(result.message || '加载业务配置失败');
+        message.error(mapApiError(result, '加载业务配置失败'));
       }
-    } catch {
-      message.error('网络错误');
+    } catch (error) {
+      message.error(mapApiError(error, '网络错误'));
     } finally {
       setLoading(false);
     }
@@ -120,10 +121,10 @@ const BusinessSettings: React.FC = () => {
         applySettings(result.data);
         message.success('业务配置已更新');
       } else {
-        message.error(result.message || '保存业务配置失败');
+        message.error(mapApiError(result, '保存业务配置失败'));
       }
-    } catch {
-      message.error('网络错误');
+    } catch (error) {
+      message.error(mapApiError(error, '网络错误'));
     } finally {
       setSaving(false);
     }

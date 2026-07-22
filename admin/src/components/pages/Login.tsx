@@ -2,8 +2,17 @@ import React, { useState, useEffect } from 'react';
 import { Form, Input, Button, Card, message, Typography, Spin } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { buildAuthUrl } from '../../config';
+import { mapApiError } from '../../utils/mapApiError';
 
 const { Title, Text } = Typography;
+
+const loginShellStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'center',
+  minHeight: '100vh',
+  background: 'linear-gradient(160deg, #0b1f3a 0%, #1268e8 55%, #3d8bfd 100%)',
+};
 
 interface LoginForm {
   username: string;
@@ -56,11 +65,11 @@ const Login: React.FC = () => {
         // Redirect to dashboard
         window.location.href = '/';
       } else {
-        message.error(result.error_description || result.error || '登录失败');
+        message.error(mapApiError(result, '登录失败'));
       }
     } catch (error) {
       console.error('登录错误:', error);
-      message.error('网络错误，请稍后重试');
+      message.error(mapApiError(error, '网络错误，请稍后重试'));
     } finally {
       setLoading(false);
     }
@@ -69,36 +78,25 @@ const Login: React.FC = () => {
   // 检查模式中，显示加载状态
   if (checkingMode) {
     return (
-      <div style={{
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        minHeight: '100vh',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      }}>
+      <div style={loginShellStyle}>
         <Spin size="large" />
       </div>
     );
   }
 
   return (
-    <div style={{
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    }}>
+    <div style={loginShellStyle}>
       <Card
         style={{
           width: 400,
-          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-          borderRadius: 8,
+          boxShadow: '0 12px 40px rgba(11, 31, 58, 0.28)',
+          borderRadius: 12,
+          border: 'none',
         }}
       >
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <Title level={2} style={{ marginBottom: 8 }}>FlyPrint</Title>
-          <Text type="secondary">云端智能打印管理系统</Text>
+          <Title level={3} style={{ marginBottom: 8, color: '#0b1f3a' }}>飞印服务管理中心</Title>
+          <Text type="secondary">Cloud 管理端登录</Text>
         </div>
 
         <Form

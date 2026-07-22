@@ -7,22 +7,22 @@ import { UploadPolicy, uploadService } from '../../services/upload';
 
 const { Title, Text, Paragraph } = Typography;
 
-const EXPIRED_SESSION_MESSAGE = '二维码已过期，请返回 Edge 端重新生成二维码后再上传。';
+const EXPIRED_SESSION_MESSAGE = '二维码已过期，请到飞印终端重新扫码后再上传。';
 
 const ERROR_MESSAGES: Record<string, string> = {
-  missing_token: '缺少上传凭证，请返回 Edge 端重新生成二维码后再试。',
-  invalid_format: '二维码格式无效，请返回 Edge 端重新生成二维码后再试。',
-  invalid_signature: '二维码校验失败，请返回 Edge 端重新生成二维码后再试。',
-  invalid_type: '二维码类型无效，请使用当前上传流程生成的二维码。',
-  invalid_context: '当前二维码与设备上下文不匹配，请返回 Edge 端重新生成二维码。',
+  missing_token: '缺少上传凭证，请到飞印终端重新扫码后再试。',
+  invalid_format: '二维码格式无效，请到飞印终端重新扫码后再试。',
+  invalid_signature: '二维码校验失败，请到飞印终端重新扫码后再试。',
+  invalid_type: '二维码类型无效，请使用飞印终端当前生成的二维码。',
+  invalid_context: '当前二维码与终端不匹配，请到飞印终端重新扫码。',
   token_expired: EXPIRED_SESSION_MESSAGE,
-  token_already_used: '该二维码已经使用过，请返回 Edge 端重新生成二维码后再上传。',
-  token_revoked: '该二维码已经失效，请返回 Edge 端重新生成二维码后再上传。',
-  node_not_found: '当前 Edge 节点不存在，请返回 Edge 端重新发起上传流程。',
-  node_disabled: '当前 Edge 节点已停用，请返回 Edge 端检查设备状态或联系管理员。',
-  printer_not_found: '当前设备不存在，请返回 Edge 端重新选择可用设备。',
-  printer_disabled: '当前设备已停用，请返回 Edge 端重新选择可用设备。',
-  printer_not_belong_to_node: '当前设备与 Edge 节点不匹配，请返回 Edge 端重新发起上传流程。',
+  token_already_used: '该二维码已经使用过，请到飞印终端重新扫码后再上传。',
+  token_revoked: '该二维码已经失效，请到飞印终端重新扫码后再上传。',
+  node_not_found: '当前终端未在飞印平台登记，请联系工作人员。',
+  node_disabled: '当前终端已停用，请联系工作人员。',
+  printer_not_found: '当前打印机不可用，请到飞印终端重新选择可用设备。',
+  printer_disabled: '当前打印机已停用，请到飞印终端重新选择可用设备。',
+  printer_not_belong_to_node: '打印机与终端不匹配，请到飞印终端重新扫码上传。',
   file_type_not_allowed: '文件类型不受支持，请选择页面提示范围内的文件类型。',
   FILE_INVALID_TYPE: '文件类型不受支持，请选择页面提示范围内的文件类型。',
   FILE_TOO_LARGE: '文件大小超过当前限制，请压缩后再上传。',
@@ -208,7 +208,7 @@ const PublicUpload: React.FC = () => {
     const printerIdParam = searchParams.get('printer_id');
 
     if (!tokenParam || !nodeIdParam || !printerIdParam) {
-      setPageErrorMessage('缺少上传参数，请返回 Edge 端重新生成二维码后再试。');
+      setPageErrorMessage('缺少上传参数，请到飞印终端重新扫码后再试。');
       setPageState('invalid');
       return;
     }
@@ -239,7 +239,7 @@ const PublicUpload: React.FC = () => {
 
         const { rawMessage, errorCode } = extractErrorDetails(err);
         setPageErrorMessage(
-          getFriendlyErrorMessage(rawMessage, errorCode, '上传页面校验失败，请返回 Edge 端重新生成二维码后再试。')
+          getFriendlyErrorMessage(rawMessage, errorCode, '上传页面校验失败，请到飞印终端重新扫码后再试。')
         );
         setPageState('invalid');
       }
@@ -296,7 +296,7 @@ const PublicUpload: React.FC = () => {
 
   const handleUpload = async () => {
     if (!selectedFile || !token || !nodeId || !printerId) {
-      showUploadError('上传参数不完整，请返回 Edge 端重新生成二维码后再试。');
+      showUploadError('上传参数不完整，请到飞印终端重新扫码后再试。');
       return;
     }
 
@@ -391,7 +391,7 @@ const PublicUpload: React.FC = () => {
         <Result
           status="success"
           title="上传成功"
-          subTitle="文件已上传到云端，请返回 Edge 端继续后续操作。"
+          subTitle="文件已提交到飞印平台，请在终端屏幕上继续确认打印。"
           icon={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
           style={{ maxWidth: 520 }}
         />

@@ -77,7 +77,11 @@ docker compose up --build -d
 
 健康检查：`GET /health`、`GET /api/v1/health`。
 
-完整局域网交接（Cloud + Edge、可选 Demo、外接库等变体）：[`docs/M0演示交接手册.md`](docs/M0演示交接手册.md)。  
+**推荐阅读：**
+
+- 产品与行为：[`docs/系统说明.md`](docs/系统说明.md)
+- 部署与验证（默认 HTTPS 公网；局域网为特例）：[`docs/部署与验证.md`](docs/部署与验证.md)
+- 第三方对接：[`docs/第三方接入指南.md`](docs/第三方接入指南.md)
 **以上默认密钥/密码仅供本机或局域网演示，禁止用于公网或生产。** 要改端口、密码或密钥时再执行 `Copy-Item .env.example .env` 后编辑。第三方对接见 [`docs/第三方接入指南.md`](docs/第三方接入指南.md)。
 
 ## Docker Compose 启动（可选定制）
@@ -250,9 +254,9 @@ Smoke/performance 脚本会读取同级工作区中的 `fly-print-edge/config.js
 
 ## 总体文档
 
-- **M0 完整交接手册**：[`docs/M0演示交接手册.md`](docs/M0演示交接手册.md)
+- **系统说明**：[`docs/系统说明.md`](docs/系统说明.md)
+- **部署与验证**：[`docs/部署与验证.md`](docs/部署与验证.md)
 - **第三方接入指南（对接契约）**：[`docs/第三方接入指南.md`](docs/第三方接入指南.md)
-- 演示交付一页纸：[`docs/演示交付说明.md`](docs/演示交付说明.md)
 - 发版勾选：[`docs/agent/release-plan.md`](docs/agent/release-plan.md)
 
 跨仓开发计划、当前进度和非技术使用说明位于工作区根目录：

@@ -3,6 +3,7 @@ import { Alert, Button, Form, Input, InputNumber, message, Modal, Popconfirm, Sp
 import { EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { buildApiUrl, buildAuthUrl } from '../../config';
+import { mapApiError } from '../../utils/mapApiError';
 
 interface Provider {
   id: string;
@@ -63,7 +64,7 @@ const IntegrationProviders: React.FC = () => {
       if (!response.ok || result.code !== 200) throw new Error(result.message || '加载第三方接入配置失败');
       setProviders(result.data || []);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载第三方接入配置失败');
+      message.error(mapApiError(error, '加载第三方接入配置失败'));
     } finally {
       setLoading(false);
     }
@@ -128,7 +129,7 @@ const IntegrationProviders: React.FC = () => {
       const updated = result.data as Provider;
       setProviders(current => current.map(item => item.code === provider.code ? { ...item, [field]: updated[field] } : item));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '状态更新失败');
+      message.error(mapApiError(error, '状态更新失败'));
     }
   };
 
@@ -160,7 +161,7 @@ const IntegrationProviders: React.FC = () => {
     <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>创建三方</Button></div>
     <Table rowKey="id" columns={columns} dataSource={providers} loading={loading} pagination={{ pageSize: 10 }} />
     <Modal title={editing ? `编辑 ${editing.code}` : '创建三方'} open={formVisible} onCancel={() => setFormVisible(false)} footer={null} destroyOnClose>
-      <Form form={form} layout="vertical" onFinish={(values) => void save(values).catch((error) => message.error(error.message))}>
+      <Form form={form} layout="vertical" onFinish={(values) => void save(values).catch((error) => message.error(mapApiError(error, '保存失败')))}>
         <Form.Item name="code" label="三方代码" rules={[{ required: true }, { pattern: /^[a-z][a-z0-9-]{1,62}$/, message: '使用小写字母、数字和连字符；创建后不可修改' }]}><Input disabled={Boolean(editing)} /></Form.Item>
         <Form.Item name="display_name" label="显示名称" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="entry_url" label="第三方入口 URL" rules={[{ required: true, validator: isHttpUrlWithoutUserinfo }]}><Input placeholder="https://third.example.com/flyprint/entry" /></Form.Item>
@@ -176,8 +177,8 @@ const IntegrationProviders: React.FC = () => {
     </Modal>
     <Modal title="请立即安全保存双向 HMAC 密钥" open={Boolean(secrets)} onOk={() => setSecrets(undefined)} onCancel={() => setSecrets(undefined)} okText="已安全保存" cancelText="关闭">
       <Alert type="error" showIcon message="此处是唯一明文展示机会，关闭后无法再次读取。" style={{ marginBottom: 12 }} />
-      <p>入站密钥（Provider → FlyPrint）</p><Input.TextArea readOnly value={secrets?.inbound_hmac_secret} rows={2} />
-      <p>出站密钥（FlyPrint → Provider）</p><Input.TextArea readOnly value={secrets?.outbound_hmac_secret} rows={2} />
+      <p>入站密钥（接入方 → 飞印）</p><Input.TextArea readOnly value={secrets?.inbound_hmac_secret} rows={2} />
+      <p>出站密钥（飞印 → 接入方）</p><Input.TextArea readOnly value={secrets?.outbound_hmac_secret} rows={2} />
     </Modal>
   </div>;
 };

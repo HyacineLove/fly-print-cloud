@@ -55,10 +55,10 @@ func (h *TerminalTicketHandler) EntryPage(c *gin.Context) {
 		return
 	}
 	ticket := html.EscapeString(raw)
-	buttons := "<button data-entry=official><strong>官方打印</strong><span>上传文件并在当前终端打印</span></button>"
+	buttons := "<button data-entry=official><strong>飞印官方打印</strong><span>上传文件并在当前终端打印</span></button>"
 	for _, provider := range providers {
 		if provider.Enabled && provider.EntryVisible {
-			buttons += "<button data-entry='" + html.EscapeString(provider.Code) + "'><strong>" + html.EscapeString(provider.DisplayName) + "</strong><span>进入第三方打印服务</span></button>"
+			buttons += "<button data-entry='" + html.EscapeString(provider.Code) + "'><strong>" + html.EscapeString(provider.DisplayName) + "</strong><span>进入第三方打印入口</span></button>"
 		}
 	}
 	c.Header("Cache-Control", "no-store")

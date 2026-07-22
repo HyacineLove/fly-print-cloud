@@ -123,7 +123,7 @@ describe('PublicUpload', () => {
     });
 
     await screen.findByText(/访问失败/i);
-    expect(screen.getByText(/二维码已过期.*Edge/i)).toBeInTheDocument();
+    expect(screen.getByText(/二维码已过期.*飞印终端/i)).toBeInTheDocument();
   });
 
   it('keeps the user on the upload page and shows a top toast when upload fails', async () => {
@@ -237,7 +237,7 @@ describe('PublicUpload', () => {
 
     await screen.findByText('访问失败');
 
-    expect(screen.getByText('该二维码已经失效，请返回 Edge 端重新生成二维码后再上传。')).toBeInTheDocument();
+    expect(screen.getByText('该二维码已经失效，请到飞印终端重新扫码后再上传。')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '上传文件' })).toBeNull();
     expect(message.open).not.toHaveBeenCalled();
   });

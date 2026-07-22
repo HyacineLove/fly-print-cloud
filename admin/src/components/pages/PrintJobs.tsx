@@ -37,7 +37,7 @@ const PrintJobs: React.FC = () => {
     { title: '任务 ID', width: 250, render: (_, job) => <TwoLineValue id={job.id} name={job.name || '-'} /> },
     { title: '任务来源', dataIndex: 'initiator_name', width: 110, render: value => value || '主系统' },
     { title: '节点 ID', width: 220, render: (_, job) => <TwoLineValue id={job.edge_node_id} name={job.node_name} /> },
-    { title: '打印机 ID', width: 250, render: (_, job) => <TwoLineValue id={job.printer_id} name={job.printer_name} /> },
+    { title: '打印机 ID', width: 250, render: (_, job) => <TwoLineValue id={job.printer_id} name={job.printer_name || undefined} /> },
     { title: '任务创建时间', dataIndex: 'created_at', width: 150, render: value => <DateTimeValue value={value} /> },
     { title: '任务终态时间', width: 150, render: (_, job) => terminal(job.status) && job.end_time ? <DateTimeValue value={job.end_time} /> : '-' },
     { title: '任务结果', width: 120, render: (_, job) => result(job) },

@@ -3,6 +3,7 @@ import { Button, Form, Input, message, Modal, Popconfirm, Space, Table, Tag } fr
 import { CopyOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { buildApiUrl, buildAuthUrl } from '../../config';
+import { mapApiError } from '../../utils/mapApiError';
 
 interface OAuth2Client {
   id: string;
@@ -39,7 +40,7 @@ const OAuth2Clients: React.FC = () => {
       if (!response.ok || result.code !== 200) throw new Error(result.message || '获取客户端列表失败');
       setClients(result.data?.items || []);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '获取客户端列表失败');
+      message.error(mapApiError(error, '获取客户端列表失败'));
     } finally {
       setLoading(false);
     }
@@ -94,7 +95,7 @@ const OAuth2Clients: React.FC = () => {
       form.resetFields();
       await loadClients(token);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '操作失败');
+      message.error(mapApiError(error, '操作失败'));
     }
   };
 
@@ -114,7 +115,7 @@ const OAuth2Clients: React.FC = () => {
       await navigator.clipboard.writeText(result.data.client_secret);
       message.success('密钥已复制到剪贴板');
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '复制密钥失败');
+      message.error(mapApiError(error, '复制密钥失败'));
     } finally {
       setCopyingID(null);
     }
@@ -131,7 +132,7 @@ const OAuth2Clients: React.FC = () => {
       if (!response.ok || result.code !== 200) throw new Error(result.message || '重置失败');
       message.success('密钥已更新，可使用“复制密钥”获取新密钥');
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '重置失败');
+      message.error(mapApiError(error, '重置失败'));
     }
   };
 
@@ -147,7 +148,7 @@ const OAuth2Clients: React.FC = () => {
       message.success('删除成功');
       await loadClients(token);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '删除失败');
+      message.error(mapApiError(error, '删除失败'));
     }
   };
 
