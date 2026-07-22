@@ -56,23 +56,43 @@ fly-print-cloud/
 └── .env.example
 ```
 
-## Docker Compose 启动
+## 快速开始（局域网演示）
 
-### 1. 准备配置
+需要已安装 Docker Desktop（或等价 Docker Engine + Compose）。首次构建可能较慢。
+
+```powershell
+cd fly-print-cloud
+docker compose up --build -d
+```
+
+不必先复制 `.env`：演示默认值已在 `docker-compose.yml` 中。
+
+浏览器打开：`http://127.0.0.1:8012`  
+
+| 项 | 默认值 |
+|----|--------|
+| 用户名 | `admin` |
+| 密码 | `admin123` |
+
+健康检查：`GET /health`、`GET /api/v1/health`。
+
+**以上默认密钥/密码仅供本机或局域网演示，禁止用于公网或生产。** 要改端口、密码或密钥时再执行 `Copy-Item .env.example .env` 后编辑。公网差异见 [`docs/第三方接入-公网部署要点.md`](docs/第三方接入-公网部署要点.md)。
+
+## Docker Compose 启动（可选定制）
+
+### 1. 可选：准备 `.env`
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-首次启动前必须修改下列配置，禁止直接使用示例默认值：
+按需修改端口、管理员密码等。局域网演示**不必**为了启动而改 `EXTERNAL_API_URL` / `ALLOWED_ORIGINS`。
 
-- `POSTGRES_PASSWORD`；
-- `MINIO_ACCESS_KEY`；
-- `MINIO_SECRET_KEY`；
-- `DEFAULT_ADMIN_PASSWORD`；
-- `OAUTH2_JWT_SIGNING_SECRET`；
-- `FILE_ACCESS_SECRET`；
-- 对外部署时的 `EXTERNAL_API_URL`、`EXTERNAL_ADMIN_URL`、`ALLOWED_ORIGINS`。
+公网或生产部署前必须轮换：
+
+- `POSTGRES_PASSWORD`、`MINIO_*`、`DEFAULT_ADMIN_PASSWORD`
+- `OAUTH2_JWT_SIGNING_SECRET`、`FILE_ACCESS_SECRET`、`OAUTH_CLIENT_SECRET_ENCRYPTION_KEY`、`REDIS_PASSWORD`
+- 以及对外域名相关的 `EXTERNAL_API_URL`、`ADMIN_CONSOLE_URL`、`ALLOWED_ORIGINS`
 
 ### 2. 启动
 
@@ -217,7 +237,7 @@ Smoke/performance 脚本会读取同级工作区中的 `fly-print-edge/config.js
 
 ## 发布前最低检查
 
-1. 所有默认密码和签名密钥已替换；
+1. 所有默认密码和签名密钥已替换（含 `OAUTH_CLIENT_SECRET_ENCRYPTION_KEY`；勿沿用局域网演示默认）；
 2. Go 和前端测试通过；
 3. 数据库与对象存储已经备份；
 4. Cloud 可以看到 Edge 在线和打印机可用；
