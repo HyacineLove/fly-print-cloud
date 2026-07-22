@@ -1,6 +1,9 @@
 package database
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 // TerminalSessionRepository is the Cloud-side source of truth for the active
 // kiosk session. An Edge restart reports an empty session, so queued work is
@@ -9,6 +12,28 @@ type TerminalSessionRepository struct{ db *DB }
 
 func NewTerminalSessionRepository(db *DB) *TerminalSessionRepository {
 	return &TerminalSessionRepository{db: db}
+}
+
+type TerminalSessionSnapshot struct {
+	NodeID               string
+	TerminalSessionID    string
+	TerminalTicketHash   string
+	EntryType            string
+	IntegrationRequestID string
+}
+
+func (r *TerminalSessionRepository) Get(nodeID string) (*TerminalSessionSnapshot, error) {
+	row := r.db.QueryRow(`SELECT node_id, COALESCE(terminal_session_id,''), COALESCE(terminal_ticket_hash,''),
+		COALESCE(entry_type,''), COALESCE(integration_request_id::text,'')
+		FROM edge_terminal_sessions WHERE node_id=$1`, nodeID)
+	snap := &TerminalSessionSnapshot{}
+	if err := row.Scan(&snap.NodeID, &snap.TerminalSessionID, &snap.TerminalTicketHash, &snap.EntryType, &snap.IntegrationRequestID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return snap, nil
 }
 
 func (r *TerminalSessionRepository) Report(nodeID, sessionID, ticketHash, entryType, integrationRequestID string, now time.Time) error {

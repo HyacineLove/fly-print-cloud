@@ -22,6 +22,27 @@ func (r *TerminalTicketRepository) CancelActiveForNodeTx(tx *Tx, nodeID string) 
 	return err
 }
 
+// CancelActiveForNode invalidates issued/selected tickets when Edge refreshes
+// the kiosk session (new QR) so stale phone tickets fail immediately.
+func (r *TerminalTicketRepository) CancelActiveForNode(nodeID string) error {
+	_, err := r.db.Exec(`UPDATE terminal_tickets SET status='cancelled',consumed_at=NULL
+		WHERE node_id=$1 AND status IN ('issued','selected')`, nodeID)
+	return err
+}
+
+// GetActiveForSession returns the current issued/selected ticket for a kiosk
+// session, if any. Used to replay terminal_occupied after WS reconnect.
+func (r *TerminalTicketRepository) GetActiveForSession(nodeID, sessionID string, now time.Time) (*models.TerminalTicket, error) {
+	if nodeID == "" || sessionID == "" {
+		return nil, sql.ErrNoRows
+	}
+	row := r.db.QueryRow(`SELECT id, ticket_hash, node_id, printer_id, terminal_session_id, selected_entry,
+		status, issued_at, selected_at, consumed_at, expires_at FROM terminal_tickets
+		WHERE node_id=$1 AND terminal_session_id=$2 AND status IN ('issued','selected') AND expires_at>$3
+		ORDER BY issued_at DESC LIMIT 1`, nodeID, sessionID, now)
+	return scanTerminalTicket(row)
+}
+
 func (r *TerminalTicketRepository) Create(ticket *models.TerminalTicket) error {
 	return r.db.QueryRow(`INSERT INTO terminal_tickets
 		(ticket_hash, node_id, printer_id, terminal_session_id, status, expires_at)
@@ -87,11 +108,12 @@ func (r *TerminalTicketRepository) GetValidByHash(hash string, now time.Time) (*
 	return scanTerminalTicket(row)
 }
 
-// Select atomically locks a ticket to one entry. Replays and switching are
-// deliberately conflicts, never silently overwritten.
+// Select locks a ticket to one entry. While the ticket is still selected and
+// not consumed, the user may re-select (same or different entry) after backing
+// out of upload/provider without completing — e.g. WeChat back to Entry.
 func (r *TerminalTicketRepository) Select(hash, entry string, now time.Time) (*models.TerminalTicket, error) {
 	row := r.db.QueryRow(`UPDATE terminal_tickets SET selected_entry=$2,status='selected',selected_at=$3
-		WHERE ticket_hash=$1 AND status='issued' AND expires_at>$3
+		WHERE ticket_hash=$1 AND status IN ('issued','selected') AND expires_at>$3
 		RETURNING id,ticket_hash,node_id,printer_id,terminal_session_id,selected_entry,status,issued_at,selected_at,consumed_at,expires_at`, hash, entry, now)
 	ticket, err := scanTerminalTicket(row)
 	if err == sql.ErrNoRows {

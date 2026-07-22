@@ -22,17 +22,21 @@ type ConnectionManager struct {
 	mutex         sync.RWMutex           // 并发安全
 	TokenManager  *security.TokenManager // 凭证管理器
 	StatusService *operations.StatusService
+
+	occupiedMu      sync.Mutex
+	pendingOccupied map[string]*TerminalOccupiedPayload // node_id -> pending occupy until ACK
 }
 
 // NewConnectionManager 创建连接管理器
 func NewConnectionManager(tokenManager *security.TokenManager, statusService *operations.StatusService) *ConnectionManager {
 	return &ConnectionManager{
-		connections:   make(map[string]*Connection),
-		broadcast:     make(chan []byte),
-		register:      make(chan *Connection),
-		unregister:    make(chan *Connection),
-		TokenManager:  tokenManager,
-		StatusService: statusService,
+		connections:     make(map[string]*Connection),
+		broadcast:       make(chan []byte),
+		register:        make(chan *Connection),
+		unregister:      make(chan *Connection),
+		TokenManager:    tokenManager,
+		StatusService:   statusService,
+		pendingOccupied: make(map[string]*TerminalOccupiedPayload),
 	}
 }
 
@@ -192,10 +196,93 @@ func (m *ConnectionManager) DispatchPreviewFile(nodeID string, fileID, fileURL, 
 	return m.dispatchPreviewFile(nodeID, PreviewFilePayload{FileID: fileID, FileURL: fileURL, FileName: fileName, FileSize: fileSize, FileType: fileType, ContentHash: contentHash})
 }
 
+// DispatchOfficialPreview sends an official upload preview with terminal proof
+// so Edge can reject stale sessions.
+func (m *ConnectionManager) DispatchOfficialPreview(nodeID string, payload PreviewFilePayload) error {
+	return m.dispatchPreviewFile(nodeID, payload)
+}
+
 // DispatchIntegrationPreview uses the standard preview command while carrying
 // the terminal proof required to bind it to the active kiosk session.
 func (m *ConnectionManager) DispatchIntegrationPreview(nodeID string, payload PreviewFilePayload) error {
 	return m.dispatchPreviewFile(nodeID, payload)
+}
+
+// MarkTerminalOccupied records pending occupy state and pushes terminal_occupied
+// with ACK. HTTP entry redirect must not block on the ACK wait.
+func (m *ConnectionManager) MarkTerminalOccupied(nodeID string, payload TerminalOccupiedPayload) {
+	if nodeID == "" || payload.TerminalSessionID == "" || payload.TerminalTicketHash == "" {
+		return
+	}
+	m.occupiedMu.Lock()
+	copied := payload
+	m.pendingOccupied[nodeID] = &copied
+	m.occupiedMu.Unlock()
+	go m.dispatchTerminalOccupiedWithAck(nodeID, payload)
+}
+
+// ClearTerminalOccupied drops pending occupy state (QR refresh / session clear).
+func (m *ConnectionManager) ClearTerminalOccupied(nodeID string) {
+	m.occupiedMu.Lock()
+	delete(m.pendingOccupied, nodeID)
+	m.occupiedMu.Unlock()
+}
+
+// ReplayTerminalOccupiedIfNeeded re-arms occupy after reconnect when Edge has
+// not bound the ticket yet. Never re-push when Edge already reported the same
+// ticket hash (that path caused a session-report ↔ occupy flood).
+func (m *ConnectionManager) ReplayTerminalOccupiedIfNeeded(nodeID string, payload TerminalOccupiedPayload, edgeHasTicket bool) {
+	if nodeID == "" || payload.TerminalSessionID == "" {
+		return
+	}
+	m.occupiedMu.Lock()
+	pending := m.pendingOccupied[nodeID]
+	if pending != nil {
+		// ACK still outstanding — leave the in-flight wait alone; only refresh metadata.
+		if payload.TerminalTicketHash != "" {
+			pending.TerminalTicketHash = payload.TerminalTicketHash
+		}
+		if !payload.ExpiresAt.IsZero() {
+			pending.ExpiresAt = payload.ExpiresAt
+		}
+		m.occupiedMu.Unlock()
+		return
+	}
+	if edgeHasTicket {
+		m.occupiedMu.Unlock()
+		return
+	}
+	copied := payload
+	m.pendingOccupied[nodeID] = &copied
+	m.occupiedMu.Unlock()
+	go m.dispatchTerminalOccupiedWithAck(nodeID, payload)
+}
+
+func (m *ConnectionManager) dispatchTerminalOccupiedWithAck(nodeID string, payload TerminalOccupiedPayload) {
+	m.mutex.RLock()
+	conn, exists := m.connections[nodeID]
+	m.mutex.RUnlock()
+	if !exists {
+		logger.Debug("Deferred terminal_occupied until Edge reconnects", zap.String("node_id", nodeID))
+		return
+	}
+	command := Command{
+		Type:      CmdTypeTerminalOccupied,
+		CommandID: payload.TerminalSessionID,
+		Timestamp: time.Now(),
+		Target:    nodeID,
+		Data:      payload,
+	}
+	if err := conn.SendCommandWithAck(&command, 10*time.Second); err != nil {
+		logger.Warn("terminal_occupied ACK failed; will retry on session report", zap.String("node_id", nodeID), zap.Error(err))
+		return
+	}
+	m.occupiedMu.Lock()
+	if pending := m.pendingOccupied[nodeID]; pending != nil && pending.TerminalSessionID == payload.TerminalSessionID {
+		delete(m.pendingOccupied, nodeID)
+	}
+	m.occupiedMu.Unlock()
+	logger.Debug("terminal_occupied acknowledged", zap.String("node_id", nodeID), zap.String("session_id", payload.TerminalSessionID))
 }
 
 func (m *ConnectionManager) dispatchPreviewFile(nodeID string, payload PreviewFilePayload) error {

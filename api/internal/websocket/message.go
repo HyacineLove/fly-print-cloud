@@ -28,8 +28,9 @@ const (
 	CmdTypePreviewFile  = "preview_file"
 	CmdTypeNodeState    = "node_state"
 	CmdTypeError        = "error"        // 错误消息，用于通知 Edge 端操作失败
-	CmdTypeUploadToken  = "upload_token" // 下发上传凭证
-	CmdTypeJobUpdateAck = "job_update_ack"
+	CmdTypeUploadToken       = "upload_token" // 下发上传凭证
+	CmdTypeJobUpdateAck      = "job_update_ack"
+	CmdTypeTerminalOccupied  = "terminal_occupied" // 进门票已签发，一体机应遮挡二维码
 )
 
 // PreviewFilePayload 文件预览请求载荷
@@ -163,6 +164,14 @@ type TerminalSessionStateData struct {
 	TerminalTicketHash   string `json:"terminal_ticket_hash"`
 	EntryType            string `json:"entry_type"`
 	IntegrationRequestID string `json:"integration_request_id"`
+}
+
+// TerminalOccupiedPayload tells Edge a phone has entered via the current QR
+// session so the kiosk should obscure the code until refresh or expiry.
+type TerminalOccupiedPayload struct {
+	TerminalSessionID  string    `json:"terminal_session_id"`
+	TerminalTicketHash string    `json:"terminal_ticket_hash"`
+	ExpiresAt          time.Time `json:"expires_at"`
 }
 
 // UploadTokenResponsePayload 上传凭证响应载荷 (Cloud -> Edge)

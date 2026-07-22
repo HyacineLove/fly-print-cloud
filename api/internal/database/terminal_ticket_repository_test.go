@@ -104,3 +104,37 @@ func TestCancelActiveForNodeTxUpdatesOnlyOpenTickets(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSelectAllowsReselectWhileNotConsumed(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	repo := NewTerminalTicketRepository(&DB{DB: sqlDB})
+	now := time.Unix(200, 0)
+	issuedAt := time.Unix(100, 0)
+	selectedAt := now
+	expiresAt := time.Unix(500, 0)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`UPDATE terminal_tickets SET selected_entry=$2,status='selected',selected_at=$3
+		WHERE ticket_hash=$1 AND status IN ('issued','selected') AND expires_at>$3
+		RETURNING id,ticket_hash,node_id,printer_id,terminal_session_id,selected_entry,status,issued_at,selected_at,consumed_at,expires_at`)).
+		WithArgs("ticket-hash", "official", now).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "ticket_hash", "node_id", "printer_id", "terminal_session_id", "selected_entry",
+			"status", "issued_at", "selected_at", "consumed_at", "expires_at",
+		}).AddRow("ticket-1", "ticket-hash", "node-1", "printer-1", "session-1", "official",
+			"selected", issuedAt, selectedAt, nil, expiresAt))
+
+	ticket, err := repo.Select("ticket-hash", "official", now)
+	if err != nil {
+		t.Fatalf("Select() error = %v", err)
+	}
+	if ticket.SelectedEntry == nil || *ticket.SelectedEntry != "official" || ticket.Status != "selected" {
+		t.Fatalf("unexpected ticket: %#v", ticket)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

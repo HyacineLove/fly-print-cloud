@@ -15,6 +15,7 @@ import (
 
 	"fly-print-cloud/api/internal/business"
 	"fly-print-cloud/api/internal/config"
+	"fly-print-cloud/api/internal/database"
 	"fly-print-cloud/api/internal/logger"
 	"fly-print-cloud/api/internal/models"
 	"fly-print-cloud/api/internal/operations"
@@ -34,15 +35,16 @@ const (
 )
 
 type FileHandler struct {
-	repo             fileRepository
-	config           *config.StorageConfig
-	storage          storage.Service
-	wsManager        *websocket.ConnectionManager
-	tokenManager     *security.TokenManager
-	settingsProvider businessSettingsProvider
-	edgeNodeRepo     edgeNodeLookup
-	printerRepo      printerLookup
+	repo                   fileRepository
+	config                 *config.StorageConfig
+	storage                storage.Service
+	wsManager              *websocket.ConnectionManager
+	tokenManager           *security.TokenManager
+	settingsProvider       businessSettingsProvider
+	edgeNodeRepo           edgeNodeLookup
+	printerRepo            printerLookup
 	terminalUploadSessions terminalUploadSessionBinder
+	terminalSessions       terminalSessionMatcher
 }
 
 type businessSettingsProvider interface {
@@ -64,6 +66,11 @@ type printerLookup interface {
 
 type terminalUploadSessionBinder interface {
 	BindFile(rawToken, fileID string, now time.Time) error
+	GetByToken(rawToken string, now time.Time) (*database.TerminalUploadSessionInfo, error)
+}
+
+type terminalSessionMatcher interface {
+	Matches(nodeID, sessionID, ticketHash, integrationRequestID string) (bool, error)
 }
 
 func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageService storage.Service, wsManager *websocket.ConnectionManager, tokenManager *security.TokenManager, settingsProvider businessSettingsProvider, edgeNodeRepo edgeNodeLookup, printerRepo printerLookup) *FileHandler {
@@ -83,6 +90,10 @@ func NewFileHandler(repo fileRepository, cfg *config.StorageConfig, storageServi
 // changing the existing upload HTTP protocol.
 func (h *FileHandler) SetTerminalUploadSessionBinder(binder terminalUploadSessionBinder) {
 	h.terminalUploadSessions = binder
+}
+
+func (h *FileHandler) SetTerminalSessionMatcher(matcher terminalSessionMatcher) {
+	h.terminalSessions = matcher
 }
 
 // Upload 上传文件
@@ -111,6 +122,14 @@ func (h *FileHandler) Upload(c *gin.Context) {
 				"code":    401,
 				"error":   uploadTargetErrorCode(err),
 				"message": err.Error(),
+			})
+			return
+		}
+		if err := h.ensureTerminalUploadSessionActive(token); err != nil {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":    409,
+				"error":   "terminal_session_invalid",
+				"message": "终端会话已失效，请返回终端重新扫码。",
 			})
 			return
 		}
@@ -232,7 +251,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	if token != "" && h.terminalUploadSessions != nil {
 		if err := h.terminalUploadSessions.BindFile(token, file.ID, time.Now()); err != nil {
 			_ = h.storage.Delete(c.Request.Context(), objectKey)
-			c.JSON(http.StatusConflict, gin.H{"error": "terminal_upload_session_unavailable"})
+			c.JSON(http.StatusConflict, gin.H{"error": "terminal_upload_session_unavailable", "message": "终端会话已失效，请返回终端重新扫码。"})
 			return
 		}
 	}
@@ -242,9 +261,21 @@ func (h *FileHandler) Upload(c *gin.Context) {
 
 	// Check if node_id is provided for preview
 	if nodeID != "" {
-		// Dispatch preview command
-		if err := h.wsManager.DispatchPreviewFile(nodeID, file.ID, file.URL, file.OriginalName, file.Size, file.MimeType, file.ContentHash); err != nil {
-			// Log error but continue
+		preview := websocket.PreviewFilePayload{
+			FileID: file.ID, FileURL: file.URL, FileName: file.OriginalName,
+			FileSize: file.Size, FileType: file.MimeType, ContentHash: file.ContentHash,
+		}
+		if token != "" && h.terminalUploadSessions != nil {
+			if info, err := h.terminalUploadSessions.GetByToken(token, time.Now()); err == nil && info != nil {
+				preview.TerminalSessionID = info.SessionID
+				preview.TerminalTicketHash = info.TicketHash
+			}
+		}
+		if preview.TerminalSessionID != "" {
+			if err := h.wsManager.DispatchOfficialPreview(nodeID, preview); err != nil {
+				fmt.Printf("Failed to dispatch preview to node %s: %v\n", nodeID, err)
+			}
+		} else if err := h.wsManager.DispatchPreviewFile(nodeID, file.ID, file.URL, file.OriginalName, file.Size, file.MimeType, file.ContentHash); err != nil {
 			fmt.Printf("Failed to dispatch preview to node %s: %v\n", nodeID, err)
 		}
 	}
@@ -482,6 +513,15 @@ func (h *FileHandler) VerifyUploadToken(c *gin.Context) {
 		})
 		return
 	}
+	if err := h.ensureTerminalUploadSessionActive(token); err != nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":    409,
+			"error":   "terminal_session_invalid",
+			"message": "终端会话已失效，请返回终端重新扫码。",
+			"valid":   false,
+		})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "Upload session is valid",
@@ -514,6 +554,15 @@ func (h *FileHandler) PreflightUpload(c *gin.Context) {
 				"code":    401,
 				"error":   uploadTargetErrorCode(err),
 				"message": err.Error(),
+				"valid":   false,
+			})
+			return
+		}
+		if err := h.ensureTerminalUploadSessionActive(token); err != nil {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":    409,
+				"error":   "terminal_session_invalid",
+				"message": "终端会话已失效，请返回终端重新扫码。",
 				"valid":   false,
 			})
 			return
@@ -606,6 +655,30 @@ func (h *FileHandler) ensureUploadTargetActive(nodeID, printerID string) error {
 
 	return nil
 }
+
+func (h *FileHandler) ensureTerminalUploadSessionActive(rawToken string) error {
+	if h.terminalUploadSessions == nil || h.terminalSessions == nil || rawToken == "" {
+		return nil
+	}
+	info, err := h.terminalUploadSessions.GetByToken(rawToken, time.Now())
+	if err != nil {
+		return err
+	}
+	if info == nil {
+		// Legacy uploads without an entry-bridge mapping remain allowed.
+		return nil
+	}
+	ok, err := h.terminalSessions.Matches(info.NodeID, info.SessionID, info.TicketHash, "")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errTerminalSessionInvalid
+	}
+	return nil
+}
+
+var errTerminalSessionInvalid = errors.New("terminal session invalid")
 
 func uploadTargetErrorCode(err error) string {
 	switch err {

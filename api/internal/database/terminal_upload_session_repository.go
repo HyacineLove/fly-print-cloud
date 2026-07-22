@@ -26,6 +26,38 @@ func (r *TerminalUploadSessionRepository) Create(rawToken, ticketHash, nodeID, p
 	return err
 }
 
+// DeleteOpenForTicket drops unused official upload mappings for a ticket so
+// re-selecting official after backing out issues a fresh upload token binding.
+func (r *TerminalUploadSessionRepository) DeleteOpenForTicket(ticketHash string) error {
+	_, err := r.db.Exec(`DELETE FROM terminal_upload_sessions WHERE terminal_ticket_hash=$1 AND file_id IS NULL`, ticketHash)
+	return err
+}
+
+// TerminalUploadSessionInfo is the Cloud-side binding for an official upload
+// token issued after entry select.
+type TerminalUploadSessionInfo struct {
+	TicketHash string
+	NodeID     string
+	PrinterID  string
+	SessionID  string
+	FileID     sql.NullString
+	ExpiresAt  time.Time
+}
+
+func (r *TerminalUploadSessionRepository) GetByToken(rawToken string, now time.Time) (*TerminalUploadSessionInfo, error) {
+	info := &TerminalUploadSessionInfo{}
+	err := r.db.QueryRow(`SELECT terminal_ticket_hash,node_id,printer_id,terminal_session_id,file_id,expires_at
+		FROM terminal_upload_sessions WHERE upload_token_hash=$1 AND expires_at>$2`, uploadTokenHash(rawToken), now).Scan(
+		&info.TicketHash, &info.NodeID, &info.PrinterID, &info.SessionID, &info.FileID, &info.ExpiresAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
 // BindFile atomically consumes the official ticket only when upload succeeds.
 func (r *TerminalUploadSessionRepository) BindFile(rawToken, fileID string, now time.Time) error {
 	tx, err := r.db.Begin()

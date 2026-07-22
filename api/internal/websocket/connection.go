@@ -52,6 +52,8 @@ type Connection struct {
 	StatusService       *operations.StatusService
 	Receipts            *database.EdgeJobUpdateReceiptRepository
 	TerminalSessions    *database.TerminalSessionRepository
+	TerminalTickets     *database.TerminalTicketRepository
+	UploadSessions      *database.TerminalUploadSessionRepository
 	Callbacks           *database.IntegrationCallbackRepository
 	IntegrationRequests *database.IntegrationPrintRequestRepository
 
@@ -61,7 +63,7 @@ type Connection struct {
 }
 
 // NewConnection 创建新连接
-func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService, receipts *database.EdgeJobUpdateReceiptRepository, terminalSessions *database.TerminalSessionRepository, callbacks *database.IntegrationCallbackRepository, integrationRequests *database.IntegrationPrintRequestRepository) *Connection {
+func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManager, printerRepo *database.PrinterRepository, edgeNodeRepo *database.EdgeNodeRepository, printJobRepo *database.PrintJobRepository, fileRepo *database.FileRepository, tokenManager *security.TokenManager, statusService *operations.StatusService, receipts *database.EdgeJobUpdateReceiptRepository, terminalSessions *database.TerminalSessionRepository, terminalTickets *database.TerminalTicketRepository, uploadSessions *database.TerminalUploadSessionRepository, callbacks *database.IntegrationCallbackRepository, integrationRequests *database.IntegrationPrintRequestRepository) *Connection {
 	return &Connection{
 		NodeID:              nodeID,
 		Conn:                conn,
@@ -76,6 +78,8 @@ func NewConnection(nodeID string, conn *websocket.Conn, manager *ConnectionManag
 		StatusService:       statusService,
 		Receipts:            receipts,
 		TerminalSessions:    terminalSessions,
+		TerminalTickets:     terminalTickets,
+		UploadSessions:      uploadSessions,
 		Callbacks:           callbacks,
 		IntegrationRequests: integrationRequests,
 		pendingAcks:         make(map[string]chan struct{}),
@@ -286,8 +290,37 @@ func (c *Connection) handleTerminalSessionState(msg *Message) {
 			return
 		}
 	}
+
+	previous, _ := c.TerminalSessions.Get(c.NodeID)
+	sessionChanged := previous == nil || previous.TerminalSessionID != payload.TerminalSessionID
+	if sessionChanged {
+		if c.TerminalTickets != nil {
+			if err := c.TerminalTickets.CancelActiveForNode(c.NodeID); err != nil {
+				logger.Warn("Failed to cancel terminal tickets on session refresh", zap.String("node_id", c.NodeID), zap.Error(err))
+			}
+		}
+		if c.Manager != nil {
+			c.Manager.ClearTerminalOccupied(c.NodeID)
+		}
+	}
+
 	if err := c.TerminalSessions.Report(c.NodeID, payload.TerminalSessionID, payload.TerminalTicketHash, payload.EntryType, payload.IntegrationRequestID, time.Now()); err != nil {
 		logger.Error("Failed to persist terminal session state", zap.String("node_id", c.NodeID), zap.Error(err))
+		return
+	}
+
+	// Reconnect recovery only: active ticket + Edge missing ticket proof.
+	// Do not replay when Edge already bound the same hash (avoids occupy flood).
+	if payload.TerminalSessionID != "" && c.TerminalTickets != nil && c.Manager != nil {
+		ticket, err := c.TerminalTickets.GetActiveForSession(c.NodeID, payload.TerminalSessionID, time.Now())
+		if err == nil && ticket != nil {
+			edgeHasTicket := payload.TerminalTicketHash != "" && payload.TerminalTicketHash == ticket.TicketHash
+			c.Manager.ReplayTerminalOccupiedIfNeeded(c.NodeID, TerminalOccupiedPayload{
+				TerminalSessionID:  ticket.TerminalSessionID,
+				TerminalTicketHash: ticket.TicketHash,
+				ExpiresAt:          ticket.ExpiresAt,
+			}, edgeHasTicket)
+		}
 	}
 }
 
