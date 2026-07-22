@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"net"
+	"net/url"
 	"testing"
 	"time"
 
@@ -34,6 +35,24 @@ func TestAllowedCSVContainsIsCaseInsensitiveAndExact(t *testing.T) {
 		t.Fatal("allowedCSVContains() matched a suffix host")
 	}
 }
+
+func TestValidateProviderURLRejectsNonHTTPSchemes(t *testing.T) {
+	ctx := context.Background()
+	for _, raw := range []string{
+		"ftp://files.example.com/a.pdf",
+		"file://files.example.com/a.pdf",
+		"http://user:pass@files.example.com/a.pdf",
+	} {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %s: %v", raw, err)
+		}
+		if err := validateProviderURL(ctx, parsed, "files.example.com", false); err == nil {
+			t.Fatalf("validateProviderURL(%s) should fail", raw)
+		}
+	}
+}
+
 
 func TestDownloadAndStoreRejectsExpiredProviderURLBeforeNetwork(t *testing.T) {
 	worker := &FileWorker{}

@@ -223,7 +223,7 @@ func dialApprovedAddress(allowPrivate bool) func(context.Context, string, string
 }
 
 func validateProviderURL(ctx context.Context, target *url.URL, allowedHosts string, allowPrivate bool) error {
-	if target.Scheme != "http" || target.User != nil || !allowedCSVContains(allowedHosts, target.Hostname()) {
+	if !IsHTTPOrHTTPSScheme(target.Scheme) || target.User != nil || !allowedCSVContains(allowedHosts, target.Hostname()) {
 		return fmt.Errorf("provider file URL is not allowed")
 	}
 	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, target.Hostname())

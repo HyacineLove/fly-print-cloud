@@ -248,8 +248,8 @@ func (h *IntegrationProviderHandler) validate(provider *models.IntegrationProvid
 	}
 	for _, rawURL := range []string{provider.EntryURL, provider.CallbackBaseURL} {
 		parsedURL, err := url.Parse(rawURL)
-		if err != nil || parsedURL.Scheme != "http" || parsedURL.Host == "" || parsedURL.User != nil {
-			return fmt.Errorf("entry_url and callback_base_url must be HTTP URLs without user info")
+		if err != nil || !integration.IsHTTPOrHTTPSScheme(parsedURL.Scheme) || parsedURL.Host == "" || parsedURL.User != nil {
+			return fmt.Errorf("entry_url and callback_base_url must be HTTP or HTTPS URLs without user info")
 		}
 	}
 	if provider.Enabled {

@@ -56,7 +56,7 @@ fly-print-cloud/
 └── .env.example
 ```
 
-## 快速开始（局域网演示）
+## 快速开始（局域网主路径）
 
 需要已安装 Docker Desktop（或等价 Docker Engine + Compose）。首次构建可能较慢。
 
@@ -65,7 +65,8 @@ cd fly-print-cloud
 docker compose up --build -d
 ```
 
-不必先复制 `.env`：演示默认值已在 `docker-compose.yml` 中。
+不必先复制 `.env`：演示默认值已在 `docker-compose.yml` 中。  
+默认会顺带启动 `integration-demo` 容器；**官方扫码打印不依赖它**，可不配置。
 
 浏览器打开：`http://127.0.0.1:8012`  
 
@@ -76,7 +77,8 @@ docker compose up --build -d
 
 健康检查：`GET /health`、`GET /api/v1/health`。
 
-**以上默认密钥/密码仅供本机或局域网演示，禁止用于公网或生产。** 要改端口、密码或密钥时再执行 `Copy-Item .env.example .env` 后编辑。公网差异见 [`docs/第三方接入-公网部署要点.md`](docs/第三方接入-公网部署要点.md)。
+完整局域网交接（Cloud + Edge、可选 Demo、外接库等变体）：[`docs/M0演示交接手册.md`](docs/M0演示交接手册.md)。  
+**以上默认密钥/密码仅供本机或局域网演示，禁止用于公网或生产。** 要改端口、密码或密钥时再执行 `Copy-Item .env.example .env` 后编辑。第三方对接见 [`docs/第三方接入指南.md`](docs/第三方接入指南.md)。
 
 ## Docker Compose 启动（可选定制）
 
@@ -109,7 +111,7 @@ docker compose ps
 - 详细健康检查：`GET /api/v1/health`；
 - Swagger：`/swagger/index.html`；
 - 管理端：`/`。
-- 第三方 Demo：`/integration-demo/`（**局域网演示**步骤见 [`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)；公网差异见 [`docs/第三方接入-公网部署要点.md`](docs/第三方接入-公网部署要点.md)）。
+- 第三方 Demo（**可选**）：`/integration-demo/`（对接契约见 [`docs/第三方接入指南.md`](docs/第三方接入指南.md) §7）。
 
 查看日志：
 
@@ -248,9 +250,9 @@ Smoke/performance 脚本会读取同级工作区中的 `fly-print-edge/config.js
 
 ## 总体文档
 
-- 第三方演示与接入（**局域网**）：[`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)
+- **M0 完整交接手册**：[`docs/M0演示交接手册.md`](docs/M0演示交接手册.md)
+- **第三方接入指南（对接契约）**：[`docs/第三方接入指南.md`](docs/第三方接入指南.md)
 - 演示交付一页纸：[`docs/演示交付说明.md`](docs/演示交付说明.md)
-- 公网 / 对外部署差异：[`docs/第三方接入-公网部署要点.md`](docs/第三方接入-公网部署要点.md)
 - 发版勾选：[`docs/agent/release-plan.md`](docs/agent/release-plan.md)
 
 跨仓开发计划、当前进度和非技术使用说明位于工作区根目录：

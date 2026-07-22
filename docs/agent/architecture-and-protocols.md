@@ -31,7 +31,7 @@ nginx/ + docker-compose.yml
 
 ## 二维码入口
 
-- 仅 Edge `/api/qr_code`。Cloud 回相对 `/entry?token=...`；Edge 用 `cloud.base_url` 拼并对 localhost 改写局域网 IP。不依赖 `EXTERNAL_API_URL` 绝对地址。
+- 仅 Edge `/api/qr_code`。Cloud 回相对 `/entry?token=...`；Edge 用 `cloud.base_url` 拼并对 localhost 改写局域网 IP（http 演示用；HTTPS 用域名）。`cloud.base_url` 支持 http(s)，WS 为 ws(s)。不依赖 `EXTERNAL_API_URL` 绝对地址。
 - `/entry` 校验上传凭证后签发独立 `terminal_ticket`；官方再发上传凭证进 `/upload`；第三方只传终端票据。
 
 ## 部署边界
