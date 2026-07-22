@@ -6,9 +6,7 @@ import {
   PrinterOutlined, 
   CloudServerOutlined, 
   FileTextOutlined,
-  UserOutlined,
   LogoutOutlined,
-  SettingOutlined,
   ControlOutlined,
   ApiOutlined
 } from '@ant-design/icons';
@@ -131,21 +129,8 @@ const AdminApp: React.FC = () => {
     },
   ];
 
-  // 用户下拉菜单
+  // 用户下拉菜单（个人资料/系统设置仍为占位，不提供入口以免误导）
   const userMenuItems: MenuProps['items'] = [
-    {
-      key: 'profile',
-      icon: <UserOutlined />,
-      label: '个人资料',
-    },
-    {
-      key: 'settings',
-      icon: <SettingOutlined />,
-      label: '设置',
-    },
-    {
-      type: 'divider',
-    },
     {
       key: 'logout',
       icon: <LogoutOutlined />,

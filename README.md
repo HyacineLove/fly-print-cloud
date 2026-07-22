@@ -249,6 +249,7 @@ Smoke/performance 脚本会读取同级工作区中的 `fly-print-edge/config.js
 ## 总体文档
 
 - 第三方演示与接入（**局域网**）：[`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)
+- 演示交付一页纸：[`docs/演示交付说明.md`](docs/演示交付说明.md)
 - 公网 / 对外部署差异：[`docs/第三方接入-公网部署要点.md`](docs/第三方接入-公网部署要点.md)
 - 发版勾选：[`docs/agent/release-plan.md`](docs/agent/release-plan.md)
 

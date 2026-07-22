@@ -10,6 +10,7 @@
 | 启动 / 路由 / 测试命令 | `docs/agent/operations-and-verification.md` |
 | 发版 P0/P1 待办（M0） | `docs/agent/release-plan.md`（与 Edge 同名文件同步） |
 | **第三方演示 Guide（局域网）** | `docs/第三方接入简要指南.md` |
+| 演示交付一页纸 | `docs/演示交付说明.md` |
 | 公网部署差异要点 | `docs/第三方接入-公网部署要点.md` |
 | 人类部署说明 | `README.md` |
 
