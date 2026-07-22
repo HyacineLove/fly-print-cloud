@@ -22,6 +22,30 @@ interface Provider {
 type ProviderForm = Omit<Provider, 'id' | 'enabled' | 'entry_visible'>;
 interface OneTimeSecrets { inbound_hmac_secret: string; outbound_hmac_secret: string; }
 
+/** Align with Cloud Go url.Parse checks: http + host, allow Docker DNS names like integration-demo. */
+function isHttpUrlWithoutUserinfo(_: unknown, value: string) {
+  const raw = (value || '').trim();
+  if (!raw) {
+    return Promise.reject(new Error('必填'));
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return Promise.reject(new Error('不是合法 URL'));
+  }
+  if (parsed.protocol !== 'http:') {
+    return Promise.reject(new Error('须为 http URL（演示/当前后端仅支持 http）'));
+  }
+  if (!parsed.hostname) {
+    return Promise.reject(new Error('须包含主机名'));
+  }
+  if (parsed.username || parsed.password) {
+    return Promise.reject(new Error('URL 不能包含用户名/密码'));
+  }
+  return Promise.resolve();
+}
+
 const IntegrationProviders: React.FC = () => {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [token, setToken] = useState<string>();
@@ -139,8 +163,8 @@ const IntegrationProviders: React.FC = () => {
       <Form form={form} layout="vertical" onFinish={(values) => void save(values).catch((error) => message.error(error.message))}>
         <Form.Item name="code" label="三方代码" rules={[{ required: true }, { pattern: /^[a-z][a-z0-9-]{1,62}$/, message: '使用小写字母、数字和连字符；创建后不可修改' }]}><Input disabled={Boolean(editing)} /></Form.Item>
         <Form.Item name="display_name" label="显示名称" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item name="entry_url" label="第三方入口 URL" rules={[{ required: true, type: 'url' }]}><Input placeholder="http://provider.example.com/print" /></Form.Item>
-        <Form.Item name="callback_base_url" label="回调基础 URL" rules={[{ required: true, type: 'url' }]}><Input placeholder="http://provider.example.com" /></Form.Item>
+        <Form.Item name="entry_url" label="第三方入口 URL" rules={[{ required: true, validator: isHttpUrlWithoutUserinfo }]}><Input placeholder="http://192.168.1.10:8012/integration-demo/entry" /></Form.Item>
+        <Form.Item name="callback_base_url" label="回调基础 URL" rules={[{ required: true, validator: isHttpUrlWithoutUserinfo }]}><Input placeholder="http://integration-demo:8080" /></Form.Item>
         <Form.Item name="allowed_ip_cidrs" label="出口 CIDR（逗号分隔）" rules={[{ required: true }]}><Input placeholder="203.0.113.0/24" /></Form.Item>
         <Form.Item name="allowed_file_hosts" label="文件主机（逗号分隔）" rules={[{ required: true }]}><Input placeholder="files.provider.example.com" /></Form.Item>
         <Form.Item name="allow_private_file_hosts" label="允许私网文件主机" valuePropName="checked"><Switch /></Form.Item>
