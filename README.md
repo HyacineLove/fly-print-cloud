@@ -89,6 +89,7 @@ docker compose ps
 - 详细健康检查：`GET /api/v1/health`；
 - Swagger：`/swagger/index.html`；
 - 管理端：`/`。
+- 第三方 Demo：`/integration-demo/`（接入步骤见 [`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)）。
 
 查看日志：
 
@@ -227,8 +228,14 @@ Smoke/performance 脚本会读取同级工作区中的 `fly-print-edge/config.js
 
 ## 总体文档
 
+- 第三方演示与接入：[`docs/第三方接入简要指南.md`](docs/第三方接入简要指南.md)（含演示就绪清单）
+- 发版勾选：[`docs/agent/release-plan.md`](docs/agent/release-plan.md)
+
 跨仓开发计划、当前进度和非技术使用说明位于工作区根目录：
 
+- `FlyPrint开发计划.md`；
+- `FlyPrint任务清单.md`；
+- `FlyPrint总开发计划.md`；
 - `FlyPrint后续开发方案.md`；
 - `FlyPrint目前进度汇总.md`；
 - `FlyPrint使用说明书.md`。

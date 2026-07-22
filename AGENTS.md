@@ -9,6 +9,7 @@
 | 协议 / 目录 / 第三方与 Demo | `docs/agent/architecture-and-protocols.md` |
 | 启动 / 路由 / 测试命令 | `docs/agent/operations-and-verification.md` |
 | 发版 P0/P1 待办（M0） | `docs/agent/release-plan.md`（与 Edge 同名文件同步） |
+| **第三方演示 / 接入 Guide** | `docs/第三方接入简要指南.md` |
 | 人类部署说明 | `README.md` |
 
 ## 硬规则
