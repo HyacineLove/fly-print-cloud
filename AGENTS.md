@@ -4,9 +4,11 @@
 
 | 任务 | 文档 |
 |------|------|
+| **开发计划 / 任务清单** | 工作区根目录 `FlyPrint开发计划.md`、`FlyPrint任务清单.md`（先读） |
+| **全量归档（防上下文丢失）** | 工作区根目录 `FlyPrint总开发计划.md` |
 | 协议 / 目录 / 第三方与 Demo | `docs/agent/architecture-and-protocols.md` |
 | 启动 / 路由 / 测试命令 | `docs/agent/operations-and-verification.md` |
-| 发版 P0/P1 待办 | `docs/agent/release-plan.md`（上下文丢失时先读；与 Edge 同名文件同步） |
+| 发版 P0/P1 待办（M0） | `docs/agent/release-plan.md`（与 Edge 同名文件同步） |
 | 人类部署说明 | `README.md` |
 
 ## 硬规则
@@ -19,3 +21,4 @@
 - 保留工作区已有改动；禁止 `docker compose down -v`（删卷）。
 - 不提交密码、JWT/文件访问/MinIO 密钥或生产配置；`.env.example` 仅模板。
 - 提交前检查 `git status --short`、相关 diff 与测试；源码变则更新受影响说明。
+- **完成态**：`[x]` 仅表示已合入（及该项验收所要求的打包/预演）；「代码/单测通过」最多 `[~]`。细则见根目录 `FlyPrint任务清单.md`「用法」第 4 条；勾选须与 `docs/agent/release-plan.md` 同步。
