@@ -64,6 +64,9 @@ func TestSettingsServiceFallsBackToStaticDefaults(t *testing.T) {
 	if !reflect.DeepEqual(settings.AllowedExtensions, DefaultAllowedUploadExtensions) {
 		t.Fatalf("AllowedExtensions = %#v, want %#v", settings.AllowedExtensions, DefaultAllowedUploadExtensions)
 	}
+	if settings.MaxContactsPerNode != DefaultMaxContactsPerNode {
+		t.Fatalf("MaxContactsPerNode = %d, want %d", settings.MaxContactsPerNode, DefaultMaxContactsPerNode)
+	}
 }
 
 func TestSettingsServiceUsesStoredValues(t *testing.T) {
@@ -97,6 +100,9 @@ func TestSettingsServiceUsesStoredValues(t *testing.T) {
 	}
 	if !reflect.DeepEqual(settings.AllowedExtensions, []string{".pdf", ".png"}) {
 		t.Fatalf("AllowedExtensions = %#v, want %#v", settings.AllowedExtensions, []string{".pdf", ".png"})
+	}
+	if settings.MaxContactsPerNode != DefaultMaxContactsPerNode {
+		t.Fatalf("MaxContactsPerNode = %d, want default %d", settings.MaxContactsPerNode, DefaultMaxContactsPerNode)
 	}
 }
 

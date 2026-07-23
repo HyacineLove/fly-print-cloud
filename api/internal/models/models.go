@@ -133,6 +133,7 @@ type PrintJob struct {
 	TerminalTicketHash   string `json:"terminal_ticket_hash,omitempty"`
 	IntegrationRequestID string `json:"integration_request_id,omitempty"`
 	InitiatorName        string `json:"initiator_name,omitempty"`
+	InitiatorCode        string `json:"initiator_code,omitempty"` // integration provider code; empty = official/main
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

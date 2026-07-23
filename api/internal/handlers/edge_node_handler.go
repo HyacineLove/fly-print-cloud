@@ -18,6 +18,8 @@ type EdgeNodeHandler struct {
 	db                  *database.DB
 	edgeNodeRepo        *database.EdgeNodeRepository
 	printerRepo         *database.PrinterRepository
+	printJobRepo        *database.PrintJobRepository
+	opsContactRepo      *database.OpsContactRepository
 	wsManager           *websocket.ConnectionManager
 	tokenUsageRepo      *database.TokenUsageRepository
 	alertRepo           *database.OperationalAlertRepository
@@ -27,11 +29,13 @@ type EdgeNodeHandler struct {
 }
 
 // NewEdgeNodeHandler 创建 Edge Node 管理处理器
-func NewEdgeNodeHandler(db *database.DB, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository, alertRepo *database.OperationalAlertRepository, tickets *database.TerminalTicketRepository, uploadSessions *database.TerminalUploadSessionRepository, integrationRequests *database.IntegrationPrintRequestRepository) *EdgeNodeHandler {
+func NewEdgeNodeHandler(db *database.DB, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, printJobRepo *database.PrintJobRepository, wsManager *websocket.ConnectionManager, tokenUsageRepo *database.TokenUsageRepository, alertRepo *database.OperationalAlertRepository, tickets *database.TerminalTicketRepository, uploadSessions *database.TerminalUploadSessionRepository, integrationRequests *database.IntegrationPrintRequestRepository, opsContactRepo *database.OpsContactRepository) *EdgeNodeHandler {
 	return &EdgeNodeHandler{
 		db:                  db,
 		edgeNodeRepo:        edgeNodeRepo,
 		printerRepo:         printerRepo,
+		printJobRepo:        printJobRepo,
+		opsContactRepo:      opsContactRepo,
 		wsManager:           wsManager,
 		tokenUsageRepo:      tokenUsageRepo,
 		alertRepo:           alertRepo,
@@ -116,6 +120,8 @@ type EdgeNodeInfo struct {
 	ConnectionQuality string    `json:"connection_quality"`
 	Latency           int       `json:"latency"`
 	PrinterCount      int       `json:"printer_count"` // 管理的打印机数量
+	OpsContactCount   int       `json:"ops_contact_count"`
+	JobCount          int       `json:"job_count"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
@@ -280,6 +286,18 @@ func (h *EdgeNodeHandler) ListEdgeNodes(c *gin.Context) {
 		if err != nil {
 			printerCount = 0 // 如果查询失败，设置为0
 		}
+		opsContactCount := 0
+		if h.opsContactRepo != nil {
+			if count, err := h.opsContactRepo.CountActiveByNode(node.ID); err == nil {
+				opsContactCount = count
+			}
+		}
+		jobCount := 0
+		if h.printJobRepo != nil {
+			if count, err := h.printJobRepo.CountPrintJobs("", "", "", node.ID, nil, nil); err == nil {
+				jobCount = count
+			}
+		}
 
 		nodeInfos[i] = EdgeNodeInfo{
 			ID:                node.ID,
@@ -306,6 +324,8 @@ func (h *EdgeNodeHandler) ListEdgeNodes(c *gin.Context) {
 			ConnectionQuality: node.ConnectionQuality,
 			Latency:           node.Latency,
 			PrinterCount:      printerCount,
+			OpsContactCount:   opsContactCount,
+			JobCount:          jobCount,
 			CreatedAt:         node.CreatedAt,
 			UpdatedAt:         node.UpdatedAt,
 		}
@@ -333,6 +353,18 @@ func (h *EdgeNodeHandler) GetEdgeNode(c *gin.Context) {
 	if err != nil {
 		printerCount = 0 // 如果查询失败，设置为0
 	}
+	opsContactCount := 0
+	if h.opsContactRepo != nil {
+		if count, err := h.opsContactRepo.CountActiveByNode(node.ID); err == nil {
+			opsContactCount = count
+		}
+	}
+	jobCount := 0
+	if h.printJobRepo != nil {
+		if count, err := h.printJobRepo.CountPrintJobs("", "", "", node.ID, nil, nil); err == nil {
+			jobCount = count
+		}
+	}
 
 	nodeInfo := EdgeNodeInfo{
 		ID:                node.ID,
@@ -359,6 +391,8 @@ func (h *EdgeNodeHandler) GetEdgeNode(c *gin.Context) {
 		ConnectionQuality: node.ConnectionQuality,
 		Latency:           node.Latency,
 		PrinterCount:      printerCount,
+		OpsContactCount:   opsContactCount,
+		JobCount:          jobCount,
 		CreatedAt:         node.CreatedAt,
 		UpdatedAt:         node.UpdatedAt,
 	}

@@ -20,13 +20,14 @@ import (
 // IntegrationProviderHandler manages third-party providers. Secret values are
 // deliberately returned only from successful create and rotate responses.
 type IntegrationProviderHandler struct {
-	repo     *database.IntegrationProviderRepository
-	cipher   *security.ClientSecretCipher
-	redisURL string
+	repo         *database.IntegrationProviderRepository
+	printJobRepo *database.PrintJobRepository
+	cipher       *security.ClientSecretCipher
+	redisURL     string
 }
 
-func NewIntegrationProviderHandler(repo *database.IntegrationProviderRepository, cipher *security.ClientSecretCipher, redisURL string) *IntegrationProviderHandler {
-	return &IntegrationProviderHandler{repo: repo, cipher: cipher, redisURL: redisURL}
+func NewIntegrationProviderHandler(repo *database.IntegrationProviderRepository, printJobRepo *database.PrintJobRepository, cipher *security.ClientSecretCipher, redisURL string) *IntegrationProviderHandler {
+	return &IntegrationProviderHandler{repo: repo, printJobRepo: printJobRepo, cipher: cipher, redisURL: redisURL}
 }
 
 type providerRequest struct {
@@ -43,6 +44,11 @@ type providerRequest struct {
 	AllowedMIMETypes      string `json:"allowed_mime_types"`
 }
 
+type providerListItem struct {
+	*models.IntegrationProvider
+	JobCount int `json:"job_count"`
+}
+
 var providerCodePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
 
 func (h *IntegrationProviderHandler) List(c *gin.Context) {
@@ -51,7 +57,17 @@ func (h *IntegrationProviderHandler) List(c *gin.Context) {
 		InternalErrorResponse(c, "failed to list integration providers")
 		return
 	}
-	SuccessResponse(c, providers)
+	items := make([]providerListItem, 0, len(providers))
+	for _, provider := range providers {
+		item := providerListItem{IntegrationProvider: provider}
+		if h.printJobRepo != nil {
+			if count, countErr := h.printJobRepo.CountPrintJobsFiltered("", "", "", "", provider.Code, nil, nil); countErr == nil {
+				item.JobCount = count
+			}
+		}
+		items = append(items, item)
+	}
+	SuccessResponse(c, items)
 }
 
 func (h *IntegrationProviderHandler) Get(c *gin.Context) {

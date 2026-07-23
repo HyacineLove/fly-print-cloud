@@ -79,8 +79,8 @@ docker compose up --build -d
 
 **推荐阅读：**
 
-- 产品与行为：[`docs/系统说明.md`](docs/系统说明.md)
-- 部署与验证（默认 HTTPS 公网；局域网为特例）：[`docs/部署与验证.md`](docs/部署与验证.md)
+- 系统说明（产品架构与边界）：[`docs/系统说明.md`](docs/系统说明.md)
+- 部署与验证（默认 HTTPS；局域网见文内其他形态）：[`docs/部署与验证.md`](docs/部署与验证.md)
 - 第三方对接：[`docs/第三方接入指南.md`](docs/第三方接入指南.md)
 **以上默认密钥/密码仅供本机或局域网演示，禁止用于公网或生产。** 要改端口、密码或密钥时再执行 `Copy-Item .env.example .env` 后编辑。第三方对接见 [`docs/第三方接入指南.md`](docs/第三方接入指南.md)。
 
@@ -115,7 +115,7 @@ docker compose ps
 - 详细健康检查：`GET /api/v1/health`；
 - Swagger：`/swagger/index.html`；
 - 管理端：`/`。
-- 第三方 Demo（**可选**）：`/integration-demo/`（对接契约见 [`docs/第三方接入指南.md`](docs/第三方接入指南.md) §7）。
+- 第三方 Demo（**可选**）：`/integration-demo/`（对接契约见 [`docs/第三方接入指南.md`](docs/第三方接入指南.md) 第 8 节）。
 
 查看日志：
 
@@ -256,7 +256,7 @@ Smoke/performance 脚本会读取同级工作区中的 `fly-print-edge/config.js
 
 - **系统说明**：[`docs/系统说明.md`](docs/系统说明.md)
 - **部署与验证**：[`docs/部署与验证.md`](docs/部署与验证.md)
-- **第三方接入指南（对接契约）**：[`docs/第三方接入指南.md`](docs/第三方接入指南.md)
+- **第三方接入指南（接口契约）**：[`docs/第三方接入指南.md`](docs/第三方接入指南.md)
 - 发版勾选：[`docs/agent/release-plan.md`](docs/agent/release-plan.md)
 
 跨仓开发计划、当前进度和非技术使用说明位于工作区根目录：

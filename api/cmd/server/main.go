@@ -135,6 +135,7 @@ func main() {
 	}
 	integrationRequestRepo := database.NewIntegrationPrintRequestRepository(db)
 	integrationProviderRepo := database.NewIntegrationProviderRepository(db)
+	opsContactRepo := database.NewOpsContactRepository(db)
 	integrationCallbackRepo := database.NewIntegrationCallbackRepository(db)
 	integrationFileWorker := integration.NewFileWorker(integrationRequestRepo, integrationProviderRepo, fileRepo, storageService, cfg.Storage.Provider, cfg.Storage.MinIO.Bucket)
 	go integrationFileWorker.Run(context.Background())
@@ -220,7 +221,7 @@ func main() {
 
 	// 初始化处理器
 	userHandler := handlers.NewUserHandler(userRepo)
-	edgeNodeHandler := handlers.NewEdgeNodeHandler(db, edgeNodeRepo, printerRepo, wsManager, tokenUsageRepo, alertRepo, terminalTicketRepo, terminalUploadSessions, integrationRequestRepo)
+	edgeNodeHandler := handlers.NewEdgeNodeHandler(db, edgeNodeRepo, printerRepo, printJobRepo, wsManager, tokenUsageRepo, alertRepo, terminalTicketRepo, terminalUploadSessions, integrationRequestRepo, opsContactRepo)
 	printerHandler := handlers.NewPrinterHandler(printerRepo, edgeNodeRepo, printJobRepo, wsManager, tokenUsageRepo, statusService, alertRepo)
 	printJobHandler := handlers.NewPrintJobHandler(printJobRepo, printerRepo, edgeNodeRepo, wsManager, statusService, alertRepo)
 	oauth2Handler := handlers.NewOAuth2Handler(&cfg.OAuth2, &cfg.Admin, userRepo, builtinAuth)
@@ -228,9 +229,10 @@ func main() {
 	fileHandler.SetTerminalUploadSessionBinder(terminalUploadSessions)
 	fileHandler.SetTerminalSessionMatcher(terminalSessionRepo)
 	terminalTicketHandler := handlers.NewTerminalTicketHandler(terminalTicketRepo, printerRepo, edgeNodeRepo, integrationProviderRepo, terminalUploadSessions, tokenManager, wsManager, terminalSessionRepo)
-	integrationProviderHandler := handlers.NewIntegrationProviderHandler(integrationProviderRepo, oauth2SecretCipher, cfg.Integration.RedisURL)
+	integrationProviderHandler := handlers.NewIntegrationProviderHandler(integrationProviderRepo, printJobRepo, oauth2SecretCipher, cfg.Integration.RedisURL)
 	integrationPrintRequestHandler := handlers.NewIntegrationPrintRequestHandler(integrationProviderRepo, integrationRequestRepo, oauth2SecretCipher, integrationNonceStore)
 	businessSettingsHandler := handlers.NewBusinessSettingsHandler(businessSettingsService)
+	opsContactHandler := handlers.NewOpsContactHandler(opsContactRepo, businessSettingsService)
 	healthHandler := handlers.NewHealthHandler(db, wsManager)
 
 	// 启动 WebSocket 管理器
@@ -258,7 +260,7 @@ func main() {
 	r.Use(middleware.SecurityHeadersMiddleware())
 
 	// 设置路由
-	setupRoutes(r, userHandler, edgeNodeHandler, edgeActivationHandler, printerHandler, printJobHandler, wsHandler, oauth2Handler, fileHandler, terminalTicketHandler, integrationProviderHandler, integrationPrintRequestHandler, businessSettingsHandler, healthHandler, printJobRepo, edgeNodeRepo, printerRepo, alertRepo)
+	setupRoutes(r, userHandler, edgeNodeHandler, edgeActivationHandler, printerHandler, printJobHandler, wsHandler, oauth2Handler, fileHandler, terminalTicketHandler, integrationProviderHandler, integrationPrintRequestHandler, businessSettingsHandler, opsContactHandler, healthHandler, printJobRepo, edgeNodeRepo, printerRepo, alertRepo)
 
 	// 创建HTTP服务器
 	serverAddr := cfg.Server.GetServerAddr()
@@ -294,7 +296,7 @@ func main() {
 	logger.Info("Server exited")
 }
 
-func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandler *handlers.EdgeNodeHandler, edgeActivationHandler *handlers.EdgeActivationHandler, printerHandler *handlers.PrinterHandler, printJobHandler *handlers.PrintJobHandler, wsHandler *websocket.WebSocketHandler, oauth2Handler *handlers.OAuth2Handler, fileHandler *handlers.FileHandler, terminalTicketHandler *handlers.TerminalTicketHandler, integrationProviderHandler *handlers.IntegrationProviderHandler, integrationPrintRequestHandler *handlers.IntegrationPrintRequestHandler, businessSettingsHandler *handlers.BusinessSettingsHandler, healthHandler *handlers.HealthHandler, printJobRepo *database.PrintJobRepository, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, alertRepo *database.OperationalAlertRepository) {
+func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandler *handlers.EdgeNodeHandler, edgeActivationHandler *handlers.EdgeActivationHandler, printerHandler *handlers.PrinterHandler, printJobHandler *handlers.PrintJobHandler, wsHandler *websocket.WebSocketHandler, oauth2Handler *handlers.OAuth2Handler, fileHandler *handlers.FileHandler, terminalTicketHandler *handlers.TerminalTicketHandler, integrationProviderHandler *handlers.IntegrationProviderHandler, integrationPrintRequestHandler *handlers.IntegrationPrintRequestHandler, businessSettingsHandler *handlers.BusinessSettingsHandler, opsContactHandler *handlers.OpsContactHandler, healthHandler *handlers.HealthHandler, printJobRepo *database.PrintJobRepository, edgeNodeRepo *database.EdgeNodeRepository, printerRepo *database.PrinterRepository, alertRepo *database.OperationalAlertRepository) {
 	r.GET("/entry", terminalTicketHandler.EntryPage)
 	// Swagger 文档路由
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -362,6 +364,17 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 				integrationProviderGroup.POST("/:code/rotate-secret", integrationProviderHandler.Rotate)
 			}
 
+			opsContactGroup := adminGroup.Group("/ops-contacts", middleware.OAuth2ResourceServer("fly-print-admin", "fly-print-operator"))
+			{
+				opsContactGroup.GET("", opsContactHandler.List)
+				opsContactGroup.POST("", opsContactHandler.Create)
+				opsContactGroup.GET("/:id", opsContactHandler.Get)
+				opsContactGroup.PUT("/:id", opsContactHandler.Update)
+				opsContactGroup.DELETE("/:id", opsContactHandler.Delete)
+				opsContactGroup.PATCH("/:id/enabled", opsContactHandler.UpdateEnabled)
+				opsContactGroup.PUT("/:id/nodes", opsContactHandler.ReplaceNodes)
+			}
+
 			// Edge Node 管理路由 - 需要 admin 或 operator 权限
 			edgeNodeGroup := adminGroup.Group("/edge-nodes", middleware.OAuth2ResourceServer("fly-print-admin", "fly-print-operator"))
 			{
@@ -409,6 +422,7 @@ func setupRoutes(r *gin.Engine, userHandler *handlers.UserHandler, edgeNodeHandl
 				edgeGroup.POST("/activate", edgeActivationHandler.Activate)
 				edgeGroup.PUT("/self/profile", middleware.OAuth2ResourceServer("edge:register"), edgeActivationHandler.UpdateSelfProfile)
 			}
+			edgeGroup.GET("/self/contacts", middleware.OAuth2ResourceServer("edge:register"), opsContactHandler.ListSelfContacts)
 			// HTTP 心跳 API 已删除，改为通过 WebSocket 进行心跳
 
 			// Edge Node 的打印机管理 - 添加节点禁用检查

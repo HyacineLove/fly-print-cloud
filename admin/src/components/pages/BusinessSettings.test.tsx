@@ -19,6 +19,7 @@ const settingsResponse = {
     upload_token_ttl_seconds: 90,
     download_token_ttl_seconds: 120,
     allowed_extensions: ['.pdf', '.png'],
+    max_contacts_per_node: 5,
   },
 };
 
@@ -58,6 +59,7 @@ describe('BusinessSettings', () => {
     expect(screen.getByLabelText('上传凭证有效期（秒）')).toHaveValue('90');
     expect(screen.getByLabelText('下载凭证有效期（秒）')).toHaveValue('120');
     expect(screen.getByLabelText('允许上传扩展名')).toHaveValue('.pdf, .png');
+    expect(screen.getByLabelText('每节点运维联系人上限')).toHaveValue('5');
   });
 
   it('saves valid settings and refreshes the form', async () => {
@@ -74,6 +76,7 @@ describe('BusinessSettings', () => {
             upload_token_ttl_seconds: 180,
             download_token_ttl_seconds: 240,
             allowed_extensions: ['.pdf', '.docx'],
+            max_contacts_per_node: 5,
           },
         }),
       }) as jest.Mock;
@@ -99,6 +102,7 @@ describe('BusinessSettings', () => {
             upload_token_ttl_seconds: 180,
             download_token_ttl_seconds: 240,
             allowed_extensions: ['.pdf', '.docx'],
+            max_contacts_per_node: 5,
           }),
         })
       );

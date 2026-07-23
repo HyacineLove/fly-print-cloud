@@ -1,12 +1,17 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Button, Card, Input, Modal, Space, Switch, Table, Tag, message } from 'antd';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Card, Input, Modal, Select, Space, Switch, Table, Tag, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined } from '@ant-design/icons';
+import { DeleteOutlined, FileTextOutlined } from '@ant-design/icons';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { buildApiUrl, buildAuthUrl } from '../../config';
-import { TwoLineValue } from '../DisplayValue';
+import { TwoLineLink } from '../DisplayValue';
+import { RelationStack } from '../RelationLinks';
 
 interface Node { id: string; name: string; alias?: string; connection_status: string; }
-interface Printer { id: string; name: string; display_name?: string; model?: string; printer_status: string; enabled: boolean; edge_node_id: string; }
+interface Printer {
+  id: string; name: string; display_name?: string; model?: string; printer_status: string;
+  enabled: boolean; edge_node_id: string; job_count?: number;
+}
 
 async function request(path: string, init?: RequestInit) {
   const me = await fetch(buildAuthUrl('me')); const token = (await me.json())?.data?.access_token;
@@ -29,18 +34,31 @@ export const effectivePrinterStatus = (printerStatus: string, nodeStatus?: strin
   nodeStatus === 'offline' ? 'offline' : printerStatus;
 
 const Printers: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const edgeNodeFilter = searchParams.get('edge_node_id') || searchParams.get('node_id') || '';
+  const printerFilter = searchParams.get('printer_id') || '';
   const [printers, setPrinters] = useState<Printer[]>([]);
   const [nodes, setNodes] = useState<Record<string, Node>>({});
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [keyword, setKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [enabledFilter, setEnabledFilter] = useState<string | undefined>();
 
   const load = useCallback(async () => {
     try {
-      const [printerData, nodeData] = await Promise.all([request('/admin/printers?page=1&page_size=100'), request('/admin/edge-nodes?page=1&page_size=100')]);
+      const query = new URLSearchParams({ page: '1', page_size: '100' });
+      if (printerFilter) query.set('printer_id', printerFilter);
+      else if (edgeNodeFilter) query.set('edge_node_id', edgeNodeFilter);
+      const [printerData, nodeData] = await Promise.all([
+        request(`/admin/printers?${query}`),
+        request('/admin/edge-nodes?page=1&page_size=100'),
+      ]);
       setPrinters(printerData?.items || []); setNodes(Object.fromEntries((nodeData?.items || []).map((node: Node) => [node.id, node])));
     } catch { message.error('打印机信息加载失败'); } finally { setLoading(false); }
-  }, []);
+  }, [edgeNodeFilter, printerFilter]);
 
   useEffect(() => { load(); const timer = window.setInterval(load, 30000); return () => window.clearInterval(timer); }, [load]);
   useEffect(() => {
@@ -50,21 +68,101 @@ const Printers: React.FC = () => {
     return () => document.removeEventListener('mousedown', closeEditor);
   }, [editing]);
 
+  const visiblePrinters = useMemo(() => {
+    const q = keyword.trim().toLowerCase();
+    return printers.filter((printer) => {
+      if (statusFilter && effectivePrinterStatus(printer.printer_status, nodes[printer.edge_node_id]?.connection_status) !== statusFilter) return false;
+      if (enabledFilter === 'enabled' && !printer.enabled) return false;
+      if (enabledFilter === 'disabled' && printer.enabled) return false;
+      if (!q) return true;
+      return [printer.id, printer.name, printer.display_name, printer.model, printer.edge_node_id]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(q));
+    });
+  }, [printers, nodes, keyword, statusFilter, enabledFilter]);
+
   const update = async (printer: Printer, payload: object) => { try { await request(`/admin/printers/${printer.id}`, { method: 'PUT', body: JSON.stringify(payload) }); load(); } catch { message.error('打印机更新失败'); } };
   const saveName = (printer: Printer) => { update(printer, { display_name: name.trim() }); setEditing(null); };
   const remove = (printer: Printer) => Modal.confirm({ title: '删除打印机？', content: `${printer.display_name || printer.name}\n${printer.id}`, okText: '删除', okType: 'danger', cancelText: '取消', onOk: async () => { try { await request(`/admin/printers/${printer.id}`, { method: 'DELETE' }); message.success('打印机已删除'); load(); } catch { message.error('删除失败'); } } });
 
   const columns: ColumnsType<Printer> = [
-    { title: '打印机 ID', dataIndex: 'id', width: 270, render: (_, printer) => <TwoLineValue id={printer.id} name={printer.display_name || printer.name} /> },
-    { title: '打印机名称', width: 250, render: (_, printer) => editing === printer.id ? <Space.Compact className="inline-name-editor"><Input autoFocus value={name} onChange={event => setName(event.target.value)} onPressEnter={() => saveName(printer)} placeholder="留空以清除别名" /><Button type="primary" onClick={() => saveName(printer)}>保存</Button></Space.Compact> : <span style={{ cursor: 'pointer' }} onClick={() => { setEditing(printer.id); setName(printer.display_name || printer.name || ''); }}><div>{printer.display_name || printer.name}</div>{printer.display_name && <div style={{ color: '#8c8c8c', fontSize: 12 }}>（{printer.name}）</div>}</span> },
-    { title: '打印机型号', dataIndex: 'model', render: value => value || '-' },
-    { title: '打印机所属节点', width: 250, render: (_, printer) => <TwoLineValue id={printer.edge_node_id} name={nodes[printer.edge_node_id]?.alias || nodes[printer.edge_node_id]?.name} /> },
-    { title: '打印机当前状态', render: (_, printer) => stateTag(effectivePrinterStatus(printer.printer_status, nodes[printer.edge_node_id]?.connection_status)) },
+    { title: '打印机 ID', dataIndex: 'id', width: 280, sorter: (a, b) => a.id.localeCompare(b.id), render: (id: string) => <span style={{ wordBreak: 'break-all' }}>{id}</span> },
+    {
+      title: '打印机名称',
+      width: 220,
+      sorter: (a, b) => (a.display_name || a.name || '').localeCompare(b.display_name || b.name || ''),
+      render: (_, printer) => editing === printer.id
+        ? <Space.Compact className="inline-name-editor"><Input autoFocus value={name} onChange={event => setName(event.target.value)} onPressEnter={() => saveName(printer)} placeholder="留空以清除别名" /><Button type="primary" onClick={() => saveName(printer)}>保存</Button></Space.Compact>
+        : <span style={{ cursor: 'pointer' }} onClick={() => { setEditing(printer.id); setName(printer.display_name || printer.name || ''); }}><div>{printer.display_name || printer.name}</div>{printer.display_name && <div style={{ color: '#8c8c8c', fontSize: 12 }}>（{printer.name}）</div>}</span>,
+    },
+    { title: '打印机型号', dataIndex: 'model', sorter: (a, b) => (a.model || '').localeCompare(b.model || ''), render: value => value || '-' },
+    {
+      title: '所属节点',
+      width: 250,
+      sorter: (a, b) => (nodes[a.edge_node_id]?.alias || nodes[a.edge_node_id]?.name || a.edge_node_id).localeCompare(nodes[b.edge_node_id]?.alias || nodes[b.edge_node_id]?.name || b.edge_node_id),
+      render: (_, printer) => (
+        <TwoLineLink
+          to={`/edge-nodes?node_id=${encodeURIComponent(printer.edge_node_id)}`}
+          id={printer.edge_node_id}
+          name={nodes[printer.edge_node_id]?.alias || nodes[printer.edge_node_id]?.name}
+        />
+      ),
+    },
+    {
+      title: '任务',
+      width: 90,
+      sorter: (a, b) => (a.job_count || 0) - (b.job_count || 0),
+      render: (_, printer) => (
+        <RelationStack
+          items={[{
+            key: 'jobs',
+            title: '打印任务',
+            icon: <FileTextOutlined />,
+            value: printer.job_count ?? 0,
+            to: `/print-jobs?printer_id=${encodeURIComponent(printer.id)}`,
+          }]}
+        />
+      ),
+    },
+    {
+      title: '打印机当前状态',
+      width: 130,
+      filters: [
+        { text: '就绪', value: 'idle' }, { text: '打印中', value: 'printing' }, { text: '异常', value: 'error' },
+        { text: '离线', value: 'offline' }, { text: '已停止', value: 'printer_stopped' },
+      ],
+      onFilter: (value, record) => effectivePrinterStatus(record.printer_status, nodes[record.edge_node_id]?.connection_status) === value,
+      render: (_, printer) => stateTag(effectivePrinterStatus(printer.printer_status, nodes[printer.edge_node_id]?.connection_status)),
+    },
     { title: '打印机启用状态', width: 110, render: (_, printer) => <Switch checked={printer.enabled} onChange={enabled => update(printer, { enabled })} /> },
     { title: '', width: 70, render: (_, printer) => <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => remove(printer)} /> },
   ];
 
-  return <Card><Table rowKey="id" loading={loading} dataSource={printers} columns={columns} scroll={{ x: 1200 }} pagination={{ pageSize: 20, showSizeChanger: false }} /></Card>;
+  const hasUrlFilter = !!(edgeNodeFilter || printerFilter);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <Input.Search allowClear placeholder="搜索 ID / 名称 / 型号" style={{ width: 240 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+          <Select allowClear placeholder="打印机状态" style={{ width: 140 }} value={statusFilter} onChange={setStatusFilter}
+            options={[
+              { value: 'idle', label: '就绪' }, { value: 'printing', label: '打印中' }, { value: 'error', label: '异常' },
+              { value: 'offline', label: '离线' }, { value: 'printer_stopped', label: '已停止' },
+            ]} />
+          <Select allowClear placeholder="启用状态" style={{ width: 120 }} value={enabledFilter} onChange={setEnabledFilter}
+            options={[{ value: 'enabled', label: '已启用' }, { value: 'disabled', label: '已停用' }]} />
+          {hasUrlFilter ? (
+            <>
+              <span>已筛选{printerFilter ? '打印机' : '节点'}</span>
+              <Button onClick={() => navigate('/printers')}>清除筛选</Button>
+            </>
+          ) : null}
+        </Space>
+      </div>
+      <Card><Table rowKey="id" loading={loading} dataSource={visiblePrinters} columns={columns} scroll={{ x: 1300 }} pagination={{ pageSize: 20, showSizeChanger: false }} /></Card>
+    </div>
+  );
 };
 
 export default Printers;

@@ -63,6 +63,7 @@ type AdminUpdatePrinterRequest struct {
 type PrinterWithStatus struct {
 	*models.Printer
 	StatusStale bool `json:"status_stale"`
+	JobCount    int  `json:"job_count"`
 }
 
 // NewPrinterWithStatus 创建包含实际状态的打印机信息
@@ -139,6 +140,7 @@ func validatePrinterCapabilities(cap models.PrinterCapabilities) error {
 func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 	page, pageSize, _ := ParsePaginationParams(c)
 	edgeNodeID := c.Query("edge_node_id") // 支持按Edge Node筛选
+	printerID := c.Query("printer_id")
 	status := c.Query("printer_status")
 	search := c.Query("search") // 支持按名称/别名/ID搜索
 
@@ -146,7 +148,26 @@ func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 	var total int
 	var err error
 
-	if edgeNodeID != "" {
+	if printerID != "" {
+		printer, getErr := h.printerRepo.GetPrinterByID(printerID)
+		if getErr != nil {
+			if strings.Contains(getErr.Error(), "not found") {
+				SuccessResponse(c, gin.H{
+					"items":       []*PrinterWithStatus{},
+					"total":       0,
+					"page":        page,
+					"page_size":   pageSize,
+					"total_pages": 0,
+				})
+				return
+			}
+			logger.Error("Failed to get printer by id", zap.Error(getErr))
+			InternalErrorResponse(c, "获取打印机列表失败")
+			return
+		}
+		printers = []*models.Printer{printer}
+		total = 1
+	} else if edgeNodeID != "" {
 		// 按Edge Node筛选
 		printers, err = h.printerRepo.ListPrintersByEdgeNode(edgeNodeID)
 		if err != nil {
@@ -205,7 +226,13 @@ func (h *PrinterHandler) ListPrinters(c *gin.Context) {
 	// 添加状态新鲜度元数据，不派生新的打印机状态。
 	printersWithStatus := make([]*PrinterWithStatus, len(printers))
 	for i, printer := range printers {
-		printersWithStatus[i] = NewPrinterWithStatus(printer)
+		item := NewPrinterWithStatus(printer)
+		if h.printJobRepo != nil {
+			if count, countErr := h.printJobRepo.CountPrintJobs("", printer.ID, "", "", nil, nil); countErr == nil {
+				item.JobCount = count
+			}
+		}
+		printersWithStatus[i] = item
 	}
 
 	totalPages := (total + pageSize - 1) / pageSize

@@ -15,11 +15,13 @@ const (
 	KeyUploadTokenTTLSeconds   = "security.upload_token_ttl_seconds"
 	KeyDownloadTokenTTLSeconds = "security.download_token_ttl_seconds"
 	KeyAllowedExtensions       = "upload.allowed_extensions"
+	KeyMaxContactsPerNode      = "ops.max_contacts_per_node"
+	DefaultMaxContactsPerNode  = 5
 )
 
 var (
 	DefaultAllowedUploadExtensions = []string{".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff"}
-	settingsKeys                   = []string{KeyUploadMaxSizeBytes, KeyMaxDocumentPages, KeyUploadTokenTTLSeconds, KeyDownloadTokenTTLSeconds, KeyAllowedExtensions}
+	settingsKeys                   = []string{KeyUploadMaxSizeBytes, KeyMaxDocumentPages, KeyUploadTokenTTLSeconds, KeyDownloadTokenTTLSeconds, KeyAllowedExtensions, KeyMaxContactsPerNode}
 	extensionPattern               = regexp.MustCompile(`^\.[a-z0-9]+$`)
 )
 
@@ -34,6 +36,7 @@ type Settings struct {
 	UploadTokenTTLSeconds   int      `json:"upload_token_ttl_seconds"`
 	DownloadTokenTTLSeconds int      `json:"download_token_ttl_seconds"`
 	AllowedExtensions       []string `json:"allowed_extensions"`
+	MaxContactsPerNode      int      `json:"max_contacts_per_node"`
 }
 
 type SettingsService struct {
@@ -63,6 +66,7 @@ func (s *SettingsService) Current() (Settings, error) {
 	settings.MaxDocumentPages = parseInt(values[KeyMaxDocumentPages], settings.MaxDocumentPages)
 	settings.UploadTokenTTLSeconds = parseInt(values[KeyUploadTokenTTLSeconds], settings.UploadTokenTTLSeconds)
 	settings.DownloadTokenTTLSeconds = parseInt(values[KeyDownloadTokenTTLSeconds], settings.DownloadTokenTTLSeconds)
+	settings.MaxContactsPerNode = parseInt(values[KeyMaxContactsPerNode], settings.MaxContactsPerNode)
 	if extensions := parseExtensions(values[KeyAllowedExtensions]); len(extensions) > 0 {
 		settings.AllowedExtensions = extensions
 	}
@@ -88,6 +92,7 @@ func (s *SettingsService) Update(settings Settings) (Settings, error) {
 		KeyUploadTokenTTLSeconds:   strconv.Itoa(normalized.UploadTokenTTLSeconds),
 		KeyDownloadTokenTTLSeconds: strconv.Itoa(normalized.DownloadTokenTTLSeconds),
 		KeyAllowedExtensions:       strings.Join(normalized.AllowedExtensions, ","),
+		KeyMaxContactsPerNode:      strconv.Itoa(normalized.MaxContactsPerNode),
 	})
 	if err != nil {
 		return Settings{}, err
@@ -102,6 +107,7 @@ func defaultsFromConfig(cfg *config.Config) Settings {
 		UploadTokenTTLSeconds:   180,
 		DownloadTokenTTLSeconds: 180,
 		AllowedExtensions:       append([]string{}, DefaultAllowedUploadExtensions...),
+		MaxContactsPerNode:      DefaultMaxContactsPerNode,
 	}
 	if cfg == nil {
 		return settings
@@ -149,6 +155,12 @@ func validateSettings(settings Settings) error {
 	}
 	if len(settings.AllowedExtensions) == 0 {
 		return fmt.Errorf("allowed_extensions must not be empty")
+	}
+	if settings.MaxContactsPerNode <= 0 {
+		return fmt.Errorf("max_contacts_per_node must be greater than 0")
+	}
+	if settings.MaxContactsPerNode > 20 {
+		return fmt.Errorf("max_contacts_per_node must be at most 20")
 	}
 	return nil
 }

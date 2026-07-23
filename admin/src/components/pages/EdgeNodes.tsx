@@ -1,14 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Button, Card, Input, Modal, Space, Switch, Table, Tag, Tooltip, Typography, message } from 'antd';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Card, Input, Modal, Select, Space, Switch, Table, Tag, Tooltip, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, FileTextOutlined, PlusOutlined, PrinterOutlined, TeamOutlined } from '@ant-design/icons';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { buildApiUrl, buildAuthUrl } from '../../config';
-import { DateTimeValue, TwoLineValue } from '../DisplayValue';
+import { DateTimeValue } from '../DisplayValue';
+import { RelationStack } from '../RelationLinks';
 
 interface EdgeNode {
   id: string; name: string; alias?: string; location?: string; connection_status: string;
   health_status: string; health_message?: string; enabled: boolean; last_heartbeat?: string;
-  version?: string; registration_state: string;
+  version?: string; registration_state: string; ops_contact_count?: number; printer_count?: number; job_count?: number;
 }
 
 async function request(path: string, init?: RequestInit) {
@@ -26,11 +28,17 @@ const statusTag = (status: string) => <Tag color={status === 'online' ? 'success
 const healthTag = (status: string) => <Tag color={status === 'healthy' ? 'success' : status === 'critical' ? 'error' : status === 'degraded' ? 'warning' : 'default'}>{status === 'healthy' ? '健康' : status === 'critical' ? '严重' : status === 'degraded' ? '降级' : '未知'}</Tag>;
 
 const EdgeNodes: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const nodeFilter = searchParams.get('node_id') || '';
   const [nodes, setNodes] = useState<EdgeNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<string | null>(null);
   const [alias, setAlias] = useState('');
   const [activation, setActivation] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [keyword, setKeyword] = useState('');
+  const [connectionFilter, setConnectionFilter] = useState<string | undefined>();
+  const [enabledFilter, setEnabledFilter] = useState<string | undefined>();
 
   const load = useCallback(async () => {
     try { const data = await request('/admin/edge-nodes?page=1&page_size=100'); setNodes(data?.items || []); }
@@ -45,6 +53,20 @@ const EdgeNodes: React.FC = () => {
     document.addEventListener('mousedown', closeEditor);
     return () => document.removeEventListener('mousedown', closeEditor);
   }, [editing]);
+
+  const visibleNodes = useMemo(() => {
+    const q = keyword.trim().toLowerCase();
+    return nodes.filter((node) => {
+      if (nodeFilter && node.id !== nodeFilter) return false;
+      if (connectionFilter && node.connection_status !== connectionFilter) return false;
+      if (enabledFilter === 'enabled' && !node.enabled) return false;
+      if (enabledFilter === 'disabled' && node.enabled) return false;
+      if (!q) return true;
+      return [node.id, node.name, node.alias, node.location, node.version]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(q));
+    });
+  }, [nodes, nodeFilter, keyword, connectionFilter, enabledFilter]);
 
   const saveAlias = async (node: EdgeNode) => {
     try { await request(`/admin/edge-nodes/${node.id}/alias`, { method: 'PATCH', body: JSON.stringify({ alias: alias.trim() }) }); message.success('名称已保存'); setEditing(null); load(); }
@@ -65,20 +87,62 @@ const EdgeNodes: React.FC = () => {
   });
 
   const columns: ColumnsType<EdgeNode> = [
-    { title: '节点 ID', dataIndex: 'id', width: 245, render: (_, node) => <TwoLineValue id={node.id} name={node.alias || node.name} /> },
-    { title: '节点名称', width: 260, render: (_, node) => editing === node.id ? <Space.Compact className="inline-name-editor"><Input autoFocus value={alias} onChange={event => setAlias(event.target.value)} onPressEnter={() => saveAlias(node)} placeholder="留空以清除别名" /><Button type="primary" onClick={() => saveAlias(node)}>保存</Button></Space.Compact> : <span onClick={() => { setEditing(node.id); setAlias(node.alias || node.name || ''); }} style={{ cursor: 'pointer' }}><div>{node.alias || node.name || '待激活终端'}</div>{node.alias && <div style={{ color: '#8c8c8c', fontSize: 12 }}>（{node.name || '待上报'}）</div>}</span> },
-    { title: '节点位置', dataIndex: 'location', render: value => value || '-' },
-    { title: '节点状态', dataIndex: 'connection_status', render: statusTag },
-    { title: '节点健康状态', render: (_, node) => <Tooltip title={node.health_message}>{healthTag(node.health_status)}</Tooltip> },
-    { title: '节点最后心跳', dataIndex: 'last_heartbeat', width: 175, render: value => <DateTimeValue value={value} /> },
-    { title: '节点版本', dataIndex: 'version', render: value => value || '-' },
+    { title: '节点 ID', dataIndex: 'id', width: 280, sorter: (a, b) => a.id.localeCompare(b.id), render: (id: string) => <span style={{ wordBreak: 'break-all' }}>{id}</span> },
+    {
+      title: '节点名称',
+      width: 220,
+      sorter: (a, b) => (a.alias || a.name || '').localeCompare(b.alias || b.name || ''),
+      render: (_, node) => editing === node.id
+        ? <Space.Compact className="inline-name-editor"><Input autoFocus value={alias} onChange={event => setAlias(event.target.value)} onPressEnter={() => saveAlias(node)} placeholder="留空以清除别名" /><Button type="primary" onClick={() => saveAlias(node)}>保存</Button></Space.Compact>
+        : <span onClick={() => { setEditing(node.id); setAlias(node.alias || node.name || ''); }} style={{ cursor: 'pointer' }}><div>{node.alias || node.name || '待激活终端'}</div>{node.alias && <div style={{ color: '#8c8c8c', fontSize: 12 }}>（{node.name || '待上报'}）</div>}</span>,
+    },
+    { title: '节点位置', dataIndex: 'location', sorter: (a, b) => (a.location || '').localeCompare(b.location || ''), render: value => value || '-' },
+    {
+      title: '节点状态',
+      dataIndex: 'connection_status',
+      width: 110,
+      filters: [{ text: '在线', value: 'online' }, { text: '连接不稳定', value: 'unstable' }, { text: '离线', value: 'offline' }],
+      onFilter: (value, record) => record.connection_status === value,
+      render: statusTag,
+    },
+    { title: '节点健康状态', width: 120, render: (_, node) => <Tooltip title={node.health_message}>{healthTag(node.health_status)}</Tooltip> },
+    {
+      title: '关联',
+      width: 110,
+      render: (_, node) => (
+        <RelationStack
+          items={[
+            { key: 'ops', title: '运维人员', icon: <TeamOutlined />, value: node.ops_contact_count ?? 0, to: `/ops-contacts?node_id=${encodeURIComponent(node.id)}` },
+            { key: 'printers', title: '打印机', icon: <PrinterOutlined />, value: node.printer_count ?? 0, to: `/printers?edge_node_id=${encodeURIComponent(node.id)}` },
+            { key: 'jobs', title: '打印任务', icon: <FileTextOutlined />, value: node.job_count ?? 0, to: `/print-jobs?edge_node_id=${encodeURIComponent(node.id)}` },
+          ]}
+        />
+      ),
+    },
+    { title: '节点最后心跳', dataIndex: 'last_heartbeat', width: 150, sorter: (a, b) => String(a.last_heartbeat || '').localeCompare(String(b.last_heartbeat || '')), render: value => <DateTimeValue value={value} /> },
+    { title: '节点版本', dataIndex: 'version', width: 90, sorter: (a, b) => (a.version || '').localeCompare(b.version || ''), render: value => value || '-' },
     { title: '节点启用状态', width: 105, render: (_, node) => <Switch checked={node.enabled} disabled={node.registration_state === 'pending_activation'} onChange={value => toggle(node, value)} /> },
     { title: '', width: 70, render: (_, node) => <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => remove(node)} /> },
   ];
 
   return <div>
-    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={createActivation}>创建待激活终端</Button></div>
-    <Card><Table rowKey="id" loading={loading} dataSource={nodes} columns={columns} scroll={{ x: 1320 }} pagination={{ pageSize: 20, showSizeChanger: false }} /></Card>
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
+      <Space wrap>
+        <Input.Search allowClear placeholder="搜索 ID / 名称 / 位置" style={{ width: 240 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+        <Select allowClear placeholder="连接状态" style={{ width: 140 }} value={connectionFilter} onChange={setConnectionFilter}
+          options={[{ value: 'online', label: '在线' }, { value: 'unstable', label: '连接不稳定' }, { value: 'offline', label: '离线' }]} />
+        <Select allowClear placeholder="启用状态" style={{ width: 120 }} value={enabledFilter} onChange={setEnabledFilter}
+          options={[{ value: 'enabled', label: '已启用' }, { value: 'disabled', label: '已停用' }]} />
+        {nodeFilter ? (
+          <>
+            <span>已按节点筛选</span>
+            <Button onClick={() => navigate('/edge-nodes')}>清除筛选</Button>
+          </>
+        ) : null}
+      </Space>
+      <Button type="primary" icon={<PlusOutlined />} onClick={createActivation}>创建待激活终端</Button>
+    </div>
+    <Card><Table rowKey="id" loading={loading} dataSource={visibleNodes} columns={columns} scroll={{ x: 1400 }} pagination={{ pageSize: 20, showSizeChanger: false }} /></Card>
     <Modal open={!!activation} footer={<Button type="primary" onClick={() => setActivation(null)}>我已保存</Button>} closable={false} title="一次性激活码">
       <Typography.Paragraph>请在 Edge 的初始激活界面填写 Cloud URL 和以下激活码。激活码仅显示一次，10 分钟后失效。</Typography.Paragraph>
       <Typography.Title level={3} copyable={{ text: activation?.code }}>{activation?.code}</Typography.Title>

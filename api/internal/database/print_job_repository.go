@@ -103,7 +103,7 @@ func (r *PrintJobRepository) loadErrorCode(job *models.PrintJob) error {
 }
 
 // ListPrintJobs 获取打印任务列表
-func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID, userID, edgeNodeID string, startTime, endTime *time.Time) ([]*models.PrintJob, error) {
+func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID, userID, edgeNodeID, initiatorCode string, startTime, endTime *time.Time) ([]*models.PrintJob, error) {
 	query := `
 		SELECT pj.id, pj.name, pj.status, pj.printer_id, 
 			   pj.user_id, pj.user_name, pj.file_path, pj.file_url, pj.content_hash, pj.file_size, pj.page_count, 
@@ -113,10 +113,11 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 			   COALESCE(NULLIF(p.display_name, ''), p.name, '') as printer_name,
 			   COALESCE(NULLIF(n.alias, ''), n.name, '') as node_name,
 			   COALESCE(p.edge_node_id, '') as edge_node_id,
-			   COALESCE(provider.display_name, '主系统') AS initiator_name
+			   COALESCE(provider.display_name, '主系统') AS initiator_name,
+			   COALESCE(provider.code, '') AS initiator_code
 		FROM print_jobs pj
 		LEFT JOIN printers p ON pj.printer_id = p.id
-		LEFT JOIN edge_nodes n ON p.edge_node_id = n.id AND n.deleted_at IS NULL
+		LEFT JOIN edge_nodes n ON p.edge_node_id = n.id
 		LEFT JOIN integration_print_requests integration_request ON integration_request.print_job_id = pj.id
 		LEFT JOIN integration_providers provider ON provider.code = integration_request.provider_code
 		WHERE 1=1`
@@ -145,6 +146,14 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 	if edgeNodeID != "" {
 		query += fmt.Sprintf(" AND p.edge_node_id = $%d", argIndex)
 		args = append(args, edgeNodeID)
+		argIndex++
+	}
+
+	if initiatorCode == "official" {
+		query += ` AND integration_request.id IS NULL`
+	} else if initiatorCode != "" {
+		query += fmt.Sprintf(" AND provider.code = $%d", argIndex)
+		args = append(args, initiatorCode)
 		argIndex++
 	}
 
@@ -187,13 +196,14 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 		var nodeName sql.NullString
 		var edgeNodeID sql.NullString
 		var errorCode sql.NullString
+		var initiatorCode sql.NullString
 		err := rows.Scan(
 			&job.ID, &job.Name, &job.Status, &job.PrinterID,
 			&userID, &job.UserName, &job.FilePath, &job.FileURL, &job.ContentHash, &job.FileSize, &job.PageCount,
 			&job.Copies, &job.PaperSize, &job.ColorMode, &job.DuplexMode,
 			&job.StartTime, &job.EndTime, &job.ErrorMessage, &errorCode, &job.RetryCount,
 			&job.MaxRetries, &job.CreatedAt, &job.UpdatedAt,
-			&printerName, &nodeName, &edgeNodeID, &job.InitiatorName,
+			&printerName, &nodeName, &edgeNodeID, &job.InitiatorName, &initiatorCode,
 		)
 		if err != nil {
 			return nil, err
@@ -214,6 +224,9 @@ func (r *PrintJobRepository) ListPrintJobs(limit, offset int, status, printerID,
 		}
 		if errorCode.Valid {
 			job.ErrorCode = errorCode.String
+		}
+		if initiatorCode.Valid {
+			job.InitiatorCode = initiatorCode.String
 		}
 
 		jobs = append(jobs, job)
@@ -263,12 +276,12 @@ func (r *PrintJobRepository) DeletePrintJob(id string) error {
 
 // GetPrintJobsByPrinterID 根据打印机ID获取任务列表
 func (r *PrintJobRepository) GetPrintJobsByPrinterID(printerID string, limit, offset int) ([]*models.PrintJob, error) {
-	return r.ListPrintJobs(limit, offset, "", printerID, "", "", nil, nil)
+	return r.ListPrintJobs(limit, offset, "", printerID, "", "", "", nil, nil)
 }
 
 // GetPrintJobsByUserID 根据用户ID获取任务列表
 func (r *PrintJobRepository) GetPrintJobsByUserID(userID string, limit, offset int) ([]*models.PrintJob, error) {
-	return r.ListPrintJobs(limit, offset, "", "", userID, "", nil, nil)
+	return r.ListPrintJobs(limit, offset, "", "", userID, "", "", nil, nil)
 }
 
 // GetPendingOrDispatchedJobsByEdgeNodeID 获取指定节点下所有待处理或已分发但未完成的任务
@@ -334,13 +347,22 @@ func (r *PrintJobRepository) UpdateJobStatus(jobID, status string, progress int,
 
 // CountPrintJobs 统计打印任务总数
 func (r *PrintJobRepository) CountPrintJobs(status, printerID, userID, edgeNodeID string, startTime, endTime *time.Time) (int, error) {
-	query := `SELECT COUNT(*) FROM print_jobs pj`
+	return r.CountPrintJobsFiltered(status, printerID, userID, edgeNodeID, "", startTime, endTime)
+}
 
-	// 如果需要按节点ID筛选，需要 JOIN printers 表
-	if edgeNodeID != "" {
+// CountPrintJobsFiltered counts jobs with optional initiator/provider filter.
+// initiatorCode "" = no filter; "official" = no integration request; otherwise provider code.
+func (r *PrintJobRepository) CountPrintJobsFiltered(status, printerID, userID, edgeNodeID, initiatorCode string, startTime, endTime *time.Time) (int, error) {
+	query := `SELECT COUNT(*) FROM print_jobs pj`
+	needsPrinter := edgeNodeID != ""
+	needsIntegration := initiatorCode != ""
+	if needsPrinter {
 		query += ` LEFT JOIN printers p ON pj.printer_id = p.id`
 	}
-
+	if needsIntegration {
+		query += ` LEFT JOIN integration_print_requests integration_request ON integration_request.print_job_id = pj.id`
+		query += ` LEFT JOIN integration_providers provider ON provider.code = integration_request.provider_code`
+	}
 	query += ` WHERE 1=1`
 	args := []interface{}{}
 	argIndex := 1
@@ -350,35 +372,36 @@ func (r *PrintJobRepository) CountPrintJobs(status, printerID, userID, edgeNodeI
 		args = append(args, status)
 		argIndex++
 	}
-
 	if printerID != "" {
 		query += fmt.Sprintf(" AND pj.printer_id = $%d", argIndex)
 		args = append(args, printerID)
 		argIndex++
 	}
-
 	if userID != "" {
 		query += fmt.Sprintf(" AND pj.user_id = $%d", argIndex)
 		args = append(args, userID)
 		argIndex++
 	}
-
 	if edgeNodeID != "" {
 		query += fmt.Sprintf(" AND p.edge_node_id = $%d", argIndex)
 		args = append(args, edgeNodeID)
 		argIndex++
 	}
-
+	if initiatorCode == "official" {
+		query += ` AND integration_request.id IS NULL`
+	} else if initiatorCode != "" {
+		query += fmt.Sprintf(" AND provider.code = $%d", argIndex)
+		args = append(args, initiatorCode)
+		argIndex++
+	}
 	if startTime != nil {
 		query += fmt.Sprintf(" AND pj.created_at >= $%d", argIndex)
 		args = append(args, *startTime)
 		argIndex++
 	}
-
 	if endTime != nil {
 		query += fmt.Sprintf(" AND pj.created_at < $%d", argIndex)
 		args = append(args, *endTime)
-		argIndex++
 	}
 
 	var total int
@@ -493,15 +516,15 @@ func (r *PrintJobRepository) CleanupStaleJobs(timeout time.Duration) (int64, err
 }
 
 // ListPrintJobsWithTotal 获取打印任务列表并返回总数
-func (r *PrintJobRepository) ListPrintJobsWithTotal(limit, offset int, status, printerID, userID, edgeNodeID string, startTime, endTime *time.Time) ([]*models.PrintJob, int, error) {
+func (r *PrintJobRepository) ListPrintJobsWithTotal(limit, offset int, status, printerID, userID, edgeNodeID, initiatorCode string, startTime, endTime *time.Time) ([]*models.PrintJob, int, error) {
 	// 获取总数
-	total, err := r.CountPrintJobs(status, printerID, userID, edgeNodeID, startTime, endTime)
+	total, err := r.CountPrintJobsFiltered(status, printerID, userID, edgeNodeID, initiatorCode, startTime, endTime)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	// 获取列表
-	jobs, err := r.ListPrintJobs(limit, offset, status, printerID, userID, edgeNodeID, startTime, endTime)
+	jobs, err := r.ListPrintJobs(limit, offset, status, printerID, userID, edgeNodeID, initiatorCode, startTime, endTime)
 	if err != nil {
 		return nil, 0, err
 	}

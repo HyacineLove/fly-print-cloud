@@ -10,6 +10,7 @@ interface BusinessSettingsPayload {
   upload_token_ttl_seconds: number;
   download_token_ttl_seconds: number;
   allowed_extensions: string[];
+  max_contacts_per_node: number;
 }
 
 interface BusinessSettingsFormValues {
@@ -18,6 +19,7 @@ interface BusinessSettingsFormValues {
   upload_token_ttl_seconds: number;
   download_token_ttl_seconds: number;
   allowed_extensions: string;
+  max_contacts_per_node: number;
 }
 
 const bytesToMegabytes = (bytes: number): number => Number((bytes / (1024 * 1024)).toFixed(2));
@@ -42,6 +44,7 @@ const BusinessSettings: React.FC = () => {
       upload_token_ttl_seconds: settings.upload_token_ttl_seconds,
       download_token_ttl_seconds: settings.download_token_ttl_seconds,
       allowed_extensions: settings.allowed_extensions.join(', '),
+      max_contacts_per_node: settings.max_contacts_per_node ?? 5,
     });
   };
 
@@ -106,6 +109,7 @@ const BusinessSettings: React.FC = () => {
         upload_token_ttl_seconds: values.upload_token_ttl_seconds,
         download_token_ttl_seconds: values.download_token_ttl_seconds,
         allowed_extensions: parseExtensions(values.allowed_extensions),
+        max_contacts_per_node: values.max_contacts_per_node,
       };
 
       const response = await fetch(buildApiUrl('/admin/business-settings'), {
@@ -143,6 +147,7 @@ const BusinessSettings: React.FC = () => {
             upload_token_ttl_seconds: 180,
             download_token_ttl_seconds: 180,
             allowed_extensions: '.pdf, .doc, .docx, .jpg, .jpeg, .png, .gif, .bmp, .tiff',
+            max_contacts_per_node: 5,
           }}
         >
           <Row gutter={24}>
@@ -163,6 +168,9 @@ const BusinessSettings: React.FC = () => {
               </Form.Item>
               <Form.Item label="下载凭证有效期（秒）" name="download_token_ttl_seconds" rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的下载凭证有效期' }]}>
                 <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item label="每节点运维联系人上限" name="max_contacts_per_node" rules={[{ required: true, type: 'number', min: 1, max: 20, message: '请输入 1～20' }]}>
+                <InputNumber min={1} max={20} precision={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>

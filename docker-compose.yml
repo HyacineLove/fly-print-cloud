@@ -99,6 +99,7 @@ services:
       - FLY_PRINT_DATABASE_USER=${POSTGRES_USER:-postgres}
       - FLY_PRINT_DATABASE_PASSWORD=${POSTGRES_PASSWORD:-your-secure-password-here}
       - FLY_PRINT_SERVER_ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:8012,http://127.0.0.1:8012,http://192.168.*.*,http://10.*.*.*,http://172.16.*.*,http://172.17.*.*,http://172.18.*.*,http://172.19.*.*,http://172.2*.*.*,http://172.3*.*.*}
+      - FLY_PRINT_SERVER_TRUSTED_PROXY_CIDRS=${TRUSTED_PROXY_CIDRS:-}
       - FLY_PRINT_SERVER_PUBLIC_BASE_URL=${EXTERNAL_API_URL:-http://localhost:8012}
       - FLY_PRINT_CREATE_DEFAULT_ADMIN=${CREATE_DEFAULT_ADMIN:-true}
       - FLY_PRINT_DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123}

@@ -1,9 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Form, Input, InputNumber, message, Modal, Popconfirm, Space, Switch, Table, Tooltip } from 'antd';
-import { EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { EditOutlined, FileTextOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { buildApiUrl, buildAuthUrl } from '../../config';
 import { mapApiError } from '../../utils/mapApiError';
+import { TwoLineValue } from '../DisplayValue';
+import { RelationStack } from '../RelationLinks';
 
 interface Provider {
   id: string;
@@ -18,6 +21,7 @@ interface Provider {
   allow_private_file_hosts: boolean;
   max_file_size: number;
   allowed_mime_types: string;
+  job_count?: number;
 }
 
 type ProviderForm = Omit<Provider, 'id' | 'enabled' | 'entry_visible'>;
@@ -48,12 +52,16 @@ function isHttpUrlWithoutUserinfo(_: unknown, value: string) {
 }
 
 const IntegrationProviders: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const codeFilter = searchParams.get('code') || '';
   const [providers, setProviders] = useState<Provider[]>([]);
   const [token, setToken] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Provider>();
   const [formVisible, setFormVisible] = useState(false);
   const [secrets, setSecrets] = useState<OneTimeSecrets>();
+  const [keyword, setKeyword] = useState('');
   const [form] = Form.useForm<ProviderForm>();
 
   const loadProviders = async (accessToken: string) => {
@@ -83,6 +91,16 @@ const IntegrationProviders: React.FC = () => {
       } finally { setLoading(false); }
     })();
   }, []);
+
+  const visibleProviders = useMemo(() => {
+    const q = keyword.trim().toLowerCase();
+    return providers.filter((provider) => {
+      if (codeFilter && provider.code !== codeFilter) return false;
+      if (!q) return true;
+      return [provider.code, provider.display_name, provider.entry_url, provider.callback_base_url]
+        .some((value) => String(value).toLowerCase().includes(q));
+    });
+  }, [providers, codeFilter, keyword]);
 
   const openCreate = () => {
     setEditing(undefined);
@@ -144,9 +162,30 @@ const IntegrationProviders: React.FC = () => {
   };
 
   const columns: ColumnsType<Provider> = [
-    { title: '三方', width: 180, render: (_, provider) => <span><div>{provider.display_name}</div><code style={{ fontSize: 12 }}>{provider.code}</code></span> },
+    {
+      title: '三方',
+      width: 200,
+      sorter: (a, b) => a.code.localeCompare(b.code),
+      render: (_, provider) => <TwoLineValue id={provider.code} name={provider.display_name} highlightId />,
+    },
     { title: '入口地址', dataIndex: 'entry_url', width: 220, ellipsis: true, render: value => <Tooltip title={value}>{value}</Tooltip> },
     { title: '回调地址', dataIndex: 'callback_base_url', width: 200, ellipsis: true, render: value => <Tooltip title={value}>{value}</Tooltip> },
+    {
+      title: '任务',
+      width: 90,
+      sorter: (a, b) => (a.job_count || 0) - (b.job_count || 0),
+      render: (_, provider) => (
+        <RelationStack
+          items={[{
+            key: 'jobs',
+            title: '该来源的打印任务',
+            icon: <FileTextOutlined />,
+            value: provider.job_count ?? 0,
+            to: `/print-jobs?initiator_code=${encodeURIComponent(provider.code)}`,
+          }]}
+        />
+      ),
+    },
     { title: '入口显示', width: 95, render: (_, provider) => <Switch checked={provider.entry_visible} onChange={value => void updateSwitch(provider, 'entry_visible', value)} /> },
     { title: '启用状态', width: 95, render: (_, provider) => <Switch checked={provider.enabled} onChange={value => void updateSwitch(provider, 'enabled', value)} /> },
     { title: '操作', width: 210, render: (_, provider) => <Space>
@@ -158,8 +197,19 @@ const IntegrationProviders: React.FC = () => {
   ];
 
   return <div>
-    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>创建三方</Button></div>
-    <Table rowKey="id" columns={columns} dataSource={providers} loading={loading} pagination={{ pageSize: 10 }} />
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
+      <Space wrap>
+        <Input.Search allowClear placeholder="搜索代码 / 名称" style={{ width: 240 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+        {codeFilter ? (
+          <>
+            <span>已按来源筛选</span>
+            <Button onClick={() => navigate('/integration-providers')}>清除筛选</Button>
+          </>
+        ) : null}
+      </Space>
+      <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>创建三方</Button>
+    </div>
+    <Table rowKey="id" columns={columns} dataSource={visibleProviders} loading={loading} pagination={{ pageSize: 10 }} />
     <Modal title={editing ? `编辑 ${editing.code}` : '创建三方'} open={formVisible} onCancel={() => setFormVisible(false)} footer={null} destroyOnClose>
       <Form form={form} layout="vertical" onFinish={(values) => void save(values).catch((error) => message.error(mapApiError(error, '保存失败')))}>
         <Form.Item name="code" label="三方代码" rules={[{ required: true }, { pattern: /^[a-z][a-z0-9-]{1,62}$/, message: '使用小写字母、数字和连字符；创建后不可修改' }]}><Input disabled={Boolean(editing)} /></Form.Item>
